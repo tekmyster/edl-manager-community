@@ -1,0 +1,5 @@
+(() => {
+ const list=document.querySelector('[data-column-list]');if(!list)return;
+ function update(){const rows=[...list.children];rows.forEach((row,i)=>{for(const b of row.querySelectorAll('[data-move]')) b.disabled=b.dataset.move==='up'?i<=1:i===rows.length-1;});}
+ list.addEventListener('click',e=>{const button=e.target.closest('[data-move]');if(!button||button.disabled)return;const row=button.closest('[data-column]');const target=button.dataset.move==='up'?row.previousElementSibling:row.nextElementSibling;if(!target||target.dataset.column==='ip')return;if(button.dataset.move==='up')list.insertBefore(row,target);else list.insertBefore(target,row);update();const position=[...list.children].indexOf(row)+1;document.querySelector('[data-column-status]').textContent=row.querySelector('label').textContent.trim()+' moved to position '+position;(button.disabled?row.querySelector('[data-move]:not(:disabled)'):button)?.focus();});update();
+})();

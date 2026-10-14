@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<section class="card error-page"><h1>{{error_title}}</h1><p>{{error_message}}</p><a class="page-control" href="{{'/login' if error_code in [400,429] else '/'}}">{{'Sign in again' if error_code==400 else 'Back to sign in' if error_code==429 else 'Back to lists'}}</a></section>{% endblock %}

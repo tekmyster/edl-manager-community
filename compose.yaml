@@ -1,0 +1,38 @@
+x-common: &common
+  build: .
+  network_mode: host
+  volumes:
+    - edl-data:/data
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  environment:
+    EDL_CONFIG: /data/config.json
+    EDL_BIND: ${EDL_BIND:-127.0.0.1:9445}
+    EDL_INDEX_USER: ${EDL_INDEX_USER:-}
+    EDL_INDEX_PASSWORD: ${EDL_INDEX_PASSWORD:-}
+    EDL_INDEX_CA: ${EDL_INDEX_CA:-}
+    EDL_MISP_CA: ${EDL_MISP_CA:-}
+    EDL_ASN_DATABASE: ${EDL_ASN_DATABASE:-}
+services:
+  web:
+    <<: *common
+    command: [python, run_service.py, web]
+  ingest:
+    <<: *common
+    command: [python, run_service.py, ingest]
+  enrich:
+    <<: *common
+    command: [python, run_service.py, enrich]
+  setup:
+    <<: *common
+    profiles: [tools]
+    restart: "no"
+    stdin_open: true
+    tty: true
+    command: [python, setup.py]
+volumes:
+  edl-data:

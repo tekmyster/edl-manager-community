@@ -1,0 +1,64 @@
+EDL Manager Community License 1.0
+Copyright (c) 2026 tekmyster. All rights reserved except as granted below.
+
+1. Scope and acceptance
+This license applies to EDL Manager Community Edition source code, documentation,
+and modifications derived from them (the Software). By using, copying, modifying,
+or distributing the Software, you accept these terms. Third-party dependencies
+retain their own licenses and are not relicensed by this document.
+
+2. Free permitted use
+You may inspect, copy, modify and run the Software without a license fee solely:
+(a) for personal home-lab use, without providing a commercial service or operating
+    or protecting a commercial organization's systems; or
+(b) for a legally established nonprofit organization's own internal operations.
+These rights apply only while usage stays within Section 3. Commercial, enterprise,
+for-profit workplace, managed-service, hosted-service and resale use require a
+separate written license from the copyright holder, regardless of traffic volume.
+A commercial supplier may not claim a customer's nonprofit status as its own.
+
+3. Usage allowance
+A daily unique IP is a distinct public unicast source IP observed by the Software
+on a UTC calendar day. Multiple events, sources, enrichment checks and cache hits
+for the same address on the same day count once. An address observed on another
+day counts once on that day. Retention or publication alone does not count.
+The permitted average is at most 500 daily unique IPs over the rolling 30 UTC
+calendar days ending with the current day: sum of daily counts divided by 30.
+Inactive days count as zero, including days before initial installation.
+In addition, at most one UTC calendar day in each UTC calendar month may exceed
+500 daily unique IPs, and that day must not exceed 1,000. No day may exceed 1,000.
+Usage across installations operated by the same person or organization is combined,
+deduplicating an address observed in multiple installations on the same UTC day.
+A separate written license is required before enterprise use or use beyond any
+allowance. Splitting installations or altering usage accounting to evade these
+conditions does not expand the grant. The local usage display measures one
+installation; operators are responsible for combined usage where applicable.
+
+4. Distribution and modifications
+You may distribute original or modified source without charge under this same
+license, preserving this license and copyright notices and identifying modifications.
+You may not grant broader rights, remove these usage conditions, sell the Software,
+or offer it as a commercial service without a separate written license.
+No trademark rights or endorsement are granted. Contributions are accepted only
+under these terms unless a separate written agreement applies.
+
+5. License requests and separate agreements
+Contact the copyright holder through https://github.com/tekmyster to request an
+enterprise or higher-volume license. This license does not promise a price,
+support entitlement, license-key service or availability of a separate agreement.
+The Software does not automatically stop detection or enforcement at a usage limit;
+continued technical operation does not waive the licensing conditions.
+
+6. Termination
+Rights granted here end if you violate these terms. Rights are reinstated when a
+violation is cured within 30 days after you become aware of it, unless the copyright
+holder has expressly terminated the grant in writing for repeated violations.
+
+7. Warranty and liability
+THE SOFTWARE IS PROVIDED AS IS, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE COPYRIGHT HOLDER IS NOT LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+This is a custom source-available license with use and volume restrictions.
+It is not an OSI-approved open-source license.

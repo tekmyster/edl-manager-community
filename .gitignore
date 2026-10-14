@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.env
+*.sqlite*
+*.db
+*.pem
+*.key
+*.crt
+config.json
+providers.json
+data/
+logs/
+help-assets/
+ui-backups/
+*deployment-status*
+*rollout*
