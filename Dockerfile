@@ -1,6 +1,6 @@
 FROM python:3.13-slim
 WORKDIR /app
-COPY requirements.txt .
+COPY requirements.txt requirements-lock.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -c requirements-lock.txt && useradd --uid 10001 --create-home edl && mkdir /data && chown edl:edl /data
 COPY . .
 USER 10001:10001

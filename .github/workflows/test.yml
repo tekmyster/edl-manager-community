@@ -19,3 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker compose config --quiet
       - run: docker build -t edl-manager-community:test .
+      - name: Verify unprivileged container setup
+        run: |
+          docker run --rm --read-only --tmpfs /tmp --mount type=volume,src=edl-community-ci,dst=/data edl-manager-community:test python -c "from setup import initialize; from core import Store; cfg=initialize('/data','test-admin','temporary test password',['localhost'],['127.0.0.1/32'],[]); assert not Store(cfg['database']).all_scores(); print('Container setup verified')"
+          docker volume rm edl-community-ci
