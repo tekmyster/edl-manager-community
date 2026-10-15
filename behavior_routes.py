@@ -38,8 +38,8 @@ def register(app,store,cfg,login_required):
   if request.form.get('api_key','').strip():
    temp=secret.with_suffix('.new');temp.write_text(json.dumps({'key':request.form['api_key'].strip()}));temp.chmod(0o600);os.replace(temp,secret)
   if request.form.get('clear_key')=='on':secret.unlink(missing_ok=True)
-  store.state('behavior_settings',value);store.audit(session['user'],'behavior.configure',{'mode':'shadow','enabled':value['enabled'],'model_enabled':value['model_enabled'],'correlation_enabled':value['correlation_enabled']})
-  flash('Behavioral analysis settings saved. Blocking decisions remain deterministic.','success');return redirect(url_for('behavior_overview'))
+  store.state('behavior_settings',value);store.audit(session['user'],'behavior.configure',{'mode':'pilot' if value['scoring_enabled'] else 'shadow','scoring_enabled':value['scoring_enabled'],'max_bump':value['max_bump'],'enabled':value['enabled'],'model_enabled':value['model_enabled'],'correlation_enabled':value['correlation_enabled']})
+  flash('Analysis settings saved. Lists refresh on the next scheduled build.','success');return redirect(url_for('behavior_overview'))
  @app.post('/behavior/<address>/prepare')
  @login_required
  def behavior_prepare(address):

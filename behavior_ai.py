@@ -3,8 +3,9 @@ import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,s
 from core import now,ip
 VERSION='behavior-3'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
-DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24}
+DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24}
 SCHEMA='''
+CREATE TABLE IF NOT EXISTS publication_samples(created TEXT PRIMARY KEY,points REAL NOT NULL,adjusted INTEGER NOT NULL,blocks INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS analysis_counters(hour TEXT NOT NULL,kind TEXT NOT NULL,count INTEGER NOT NULL,PRIMARY KEY(hour,kind));
 CREATE TABLE IF NOT EXISTS packets(id TEXT PRIMARY KEY,ip TEXT NOT NULL,created TEXT NOT NULL,content TEXT NOT NULL,features TEXT NOT NULL,baseline INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS packets_ip ON packets(ip,created);
@@ -67,7 +68,9 @@ def validate_settings(form):
  except ValueError:raise ValueError('Enter a valid proposed adjustment.')
  if bump is not None and (not math.isfinite(bump) or not 0<=bump<=100):raise ValueError('Proposed adjustment must be between 0 and 100.')
  value['max_bump']=bump
- value.update({k:form.get(k)=='on' for k in ('enabled','model_enabled','correlation_enabled','palo_context_enabled')})
+ if form.get('scoring_enabled')=='on' and (bump is None or not 0<bump<=10):raise ValueError('AI scoring requires a maximum adjustment above 0 and no greater than 10.')
+ value.update({k:form.get(k)=='on' for k in ('enabled','model_enabled','correlation_enabled','palo_context_enabled','scoring_enabled')})
+ if value['scoring_enabled'] and not (value['enabled'] and value['model_enabled']):raise ValueError('Enable evidence collection and AI inspection before enabling scoring.')
  if value['model_enabled'] and (not value['endpoint'] or not value['model']):raise ValueError('Configure the model server and model before enabling AI inspection.')
  return value
 
@@ -90,7 +93,7 @@ class Brain:
   finally:db.close()
  def packet(self,row,cfg=None,at=None,source_cfg=None):
   cfg=cfg or settings(self.store);at=at or dt.datetime.now(dt.timezone.utc);cut=at-dt.timedelta(days=cfg['window_days'])
-  raw=row.get('evidence',[])+row.get('activity',[]);events={};total=0;source_counts={};features=set();missing=set()
+  raw=row.get('evidence',[])+row.get('activity',[]);counted={(e['source'],e['sensor']) for e in row.get('evidence',[]) if e['source']!='palo'};events={};total=0;source_counts={};features=set();missing=set()
   for record in raw:
    seen=timestamp(record.get('seen'))
    if not seen or not cut<=seen<=at+dt.timedelta(minutes=5):continue
@@ -112,10 +115,12 @@ class Brain:
     if not t or not cut<=t<=at+dt.timedelta(minutes=5):continue
     path,parameters=path_shape(sample.get('path',''));action=safe_text(sample.get('action'),80)
     event={'seen':t.isoformat(timespec='seconds'),'source':source,'sensor':sensor,'action':action,'path':path,'parameter_names':parameters,'method':safe_text(sample.get('method'),12),'status':safe_text(sample.get('status'),8),'port':str(sample.get('port','')) if str(sample.get('port','')).isdigit() else '', 'client_type':safe_text(sample.get('client_type'),50),'native_attempts':max(0,min(1000000,int(details.get('native_attempt_count',0) or 0))),'native_records':max(0,min(1000000,int(details.get('native_event_count',0) or 0)))}
+    event['independent_evidence']=details.get('deterministic_qualifying') is False and (source,sensor) not in counted and isinstance(activity,dict) and bool(activity.get('events'))
     # Aggregate bucket counters may increase without creating a new underlying sample.
-    identity={k:v for k,v in event.items() if k not in ('native_attempts','native_records','client_type')}
+    identity={k:v for k,v in event.items() if k not in ('native_attempts','native_records','client_type','independent_evidence')}
     eid='ev_'+digest([row['ip'],source,sensor,sample.get('id'),identity])[:24];event['id']=eid
     if eid in events:
+     events[eid]['independent_evidence']=events[eid]['independent_evidence'] and event['independent_evidence']
      for counter in ('native_attempts','native_records'):events[eid][counter]=max(events[eid][counter],event[counter])
      continue
     events[eid]=event;total+=1;source_counts[source]=source_counts.get(source,0)+1
@@ -197,7 +202,10 @@ class Brain:
   status='completed' if assessment else a['status'] if a else 'awaiting_model' if cfg['model_enabled'] else 'model_not_configured'
   if a and a['expires']<=now():status='expired';assessment=None
   hypothetical=round(min(100,float(row['baseline'])+float(cfg['max_bump'])*assessment['maliciousness_confidence']),2) if assessment and assessment['classification']=='malicious' and cfg['max_bump'] is not None and status=='completed' else None
-  return {'status':status,'mode':'shadow','enabled':cfg['enabled'],'packet_id':row['id'],'indexed':row['created'],'assessed':a['created'] if a else None,'latency_seconds':a['latency'] if a else None,'events':len(data['events']),'evidence':data['events'],'context':data.get('context',[]),'sources':data['source_counts'],'coverage':data['coverage'],'limitations':data['limitations'],'matches':matches,'assessment':assessment,'baseline_at_analysis':row['baseline'],'hypothetical_score':hypothetical,'applied_bump':0,'scoring_eligible':False,'scoring_reason':'Calibration and independent-evidence approval are required before active scoring'}
+  from behavior_scoring import apply as ai_scores
+  effective=ai_scores(self.store,[self.store.describe(address)])[0]
+  applied=effective.get('ai_bump',0)
+  return {'status':status,'mode':('pilot' if cfg.get('scoring_enabled') else 'shadow'),'enabled':cfg['enabled'],'packet_id':row['id'],'indexed':row['created'],'assessed':a['created'] if a else None,'latency_seconds':a['latency'] if a else None,'events':len(data['events']),'evidence':data['events'],'context':data.get('context',[]),'sources':data['source_counts'],'coverage':data['coverage'],'limitations':data['limitations'],'matches':matches,'assessment':assessment,'baseline_at_analysis':row['baseline'],'hypothetical_score':hypothetical,'applied_bump':applied,'scoring_eligible':bool(applied),'scoring_reason':('Fresh behavior outside native scoring' if applied else 'No eligible independent evidence, or scoring is off')}
  def packet_view(self,ident):
   with self.connect() as db:row=db.execute('SELECT * FROM packets WHERE id=?',(ident,)).fetchone()
   if not row:return None
@@ -218,9 +226,10 @@ class Brain:
    links=db.execute("SELECT count(*) FROM links WHERE state!='rejected'").fetchone()[0]
    groups=db.execute("SELECT count(*) FROM behavior_groups WHERE status='active'").fetchone()[0]
    today=db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()
-  return {'mode':'shadow','indexed_ips':indexed,'assessments':counts,'similar_relationships':links,'activity_groups':groups,'requests_today':today[0] if today else 0,'applied_bump':0,'active_scoring':False}
+  cfg=settings(self.store);active=all(cfg.get(k) for k in ('enabled','model_enabled','scoring_enabled'));publication=(self.store.state('latest_build') or {}).get('ai_scoring',{})
+  return {'mode':'pilot' if active else 'shadow','indexed_ips':indexed,'assessments':counts,'similar_relationships':links,'activity_groups':groups,'requests_today':today[0] if today else 0,'applied_bump':publication.get('applied_points',0) if active else 0,'active_scoring':active}
 
-def config_id(cfg):return digest({k:v for k,v in cfg.items() if k not in ('batch_size','daily_budget','palo_daily_budget','palo_context_enabled','max_bump','enabled')})
+def config_id(cfg):return digest({k:v for k,v in cfg.items() if k not in ('batch_size','daily_budget','palo_daily_budget','palo_context_enabled','max_bump','enabled','scoring_enabled')})
 
 def obj(properties):return {'type':'object','properties':properties,'required':list(properties),'additionalProperties':False}
 def text(limit=600,enum=None):return {'type':'string','maxLength':limit,**({'enum':list(enum)} if enum else {})}
@@ -393,7 +402,7 @@ def run(store,index_only=False,source_cfg=None):
    status=model_job(brain,ident,packet,features,cfg);results[status]=results.get(status,0)+1
    if status not in ('cached','budget','leased_or_exhausted'):calls+=1
  store.state('behavior_cursor',{'offset':offset+len(chosen)})
- status={'completed':now(),'indexed':len(chosen),'fingerprints_backfilled':backfilled,'analysis':results,'palo_context':palo_results,'mode':'shadow','scoring_enabled':False}
+ status={'completed':now(),'indexed':len(chosen),'fingerprints_backfilled':backfilled,'analysis':results,'palo_context':palo_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  store.state('behavior_worker',status);return status
 
 

@@ -14,12 +14,16 @@ def metrics(brain, period='24h', at=None):
     bins = [{'start': (start + dt.timedelta(seconds=i * seconds)).isoformat(),
              'end': (start + dt.timedelta(seconds=(i + 1) * seconds)).isoformat(),
              'completed': 0, 'failed': 0, 'superseded': 0, 'input': 0, 'output': 0,
-             'known_tokens': 0, 'unknown_tokens': 0, 'durations': []} for i in range(count)]
+             'known_tokens': 0, 'unknown_tokens': 0, 'durations': [], 'ai_samples': []} for i in range(count)]
     with brain.connect() as db:
         rows = db.execute('SELECT created,status,result,latency FROM assessments WHERE created>=? AND created<? ORDER BY created',
                           (start.isoformat(), at.isoformat())).fetchall()
         cached = db.execute("SELECT coalesce(sum(count),0) FROM analysis_counters WHERE kind='cached' AND hour>=? AND hour<?",
                             (start.isoformat(), at.isoformat())).fetchone()[0]
+        samples=db.execute('SELECT created,blocks FROM publication_samples WHERE created>=? AND created<?',(start.isoformat(),at.isoformat())).fetchall()
+    for sample in samples:
+        index=int((dt.datetime.fromisoformat(sample['created'])-start).total_seconds()//seconds)
+        if 0<=index<count:bins[index]['ai_samples'].append(sample['blocks'])
     durations, success_times, models = [], [], set()
     malicious = benign = inconclusive = 0
     for row in rows:
@@ -58,6 +62,8 @@ def metrics(brain, period='24h', at=None):
             inconclusive += classification == 'inconclusive'
     for bucket in bins:
         values = bucket.pop('durations')
+        samples=bucket.pop('ai_samples')
+        bucket['ai_blocks']=round(sum(samples)/len(samples),2) if samples else None
         bucket['latency'] = round(sum(values) / len(values), 2) if values else None
         bucket['requests'] = bucket['completed'] + bucket['failed'] + bucket['superseded']
         bucket['tokens'] = bucket['input'] + bucket['output']
@@ -72,13 +78,14 @@ def metrics(brain, period='24h', at=None):
     # SVG coordinates share a disciplined plot area. Missing latency remains a gap.
     peaks = {'tokens': max(1, max(b['tokens'] for b in bins)),
              'requests': max(1, max(b['requests'] for b in bins)),
-             'latency': max(1, max((b['latency'] or 0) for b in bins))}
+             'latency': max(1, max((b['latency'] or 0) for b in bins)), 'ai':max(1,max((b['ai_blocks'] or 0) for b in bins))}
     for i, b in enumerate(bins):
         b['x'] = round(48 + (i + .5) * 624 / count, 2)
         b['width'] = round(min(36, 624 / count * .65), 2)
         for name in ('input', 'output', 'completed', 'failed', 'superseded'):
             peak = peaks['tokens' if name in ('input', 'output') else 'requests']
             b[name + '_height'] = round(140 * b[name] / peak, 2)
+        b['ai_y']=round(166-140*b['ai_blocks']/peaks['ai'],2) if b['ai_blocks'] is not None else None
         b['latency_y'] = round(166 - 140 * b['latency'] / peaks['latency'], 2) if b['latency'] is not None else None
     segments, points = [], []
     for b in bins:
@@ -87,6 +94,32 @@ def metrics(brain, period='24h', at=None):
         else:
             points.append(f"{b['x']},{b['latency_y']}")
     if points: segments.append(' '.join(points))
+    ai_segments=[];points=[]
+    for b in bins:
+        if b['ai_y'] is None:
+            if points:ai_segments.append(' '.join(points));points=[]
+        else:points.append(f"{b['x']},{b['ai_y']}")
+    if points:ai_segments.append(' '.join(points))
+    cfg=brain.store.state('behavior_settings') or {}
+    active=all(cfg.get(k) for k in ('enabled','model_enabled','scoring_enabled'))
+    publication=(brain.store.state('latest_build') or {}).get('ai_scoring',{})
     return {'period': period, 'start': start.isoformat(), 'end': at.isoformat(), 'bins': bins,
-            'totals': totals, 'peaks': peaks, 'latency_segments': segments, 'models': sorted(models),
-            'active_scoring': False, 'applied_points': 0}
+            'totals': totals, 'peaks': peaks, 'latency_segments': segments,'ai_segments':ai_segments, 'models': sorted(models),
+            'active_scoring': active, 'applied_points': publication.get('applied_points',0) if active else 0,'ai_blocks':len(publication.get('ai_only_ips',[])) if active else 0}
+
+
+def record_publication(store, manifest):
+    """Record one publication sample, never an accumulating per-IP score."""
+    if not (store.state('behavior_settings') or {}).get('enabled'):
+        return
+    from behavior_ai import brain
+    import sqlite3
+    try:
+        service=brain(store)
+        value=manifest.get('ai_scoring',{})
+        with service.connect() as db:
+            db.execute('INSERT OR REPLACE INTO publication_samples VALUES(?,?,?,?)',
+                       (manifest['created'],value.get('applied_points',0),value.get('adjusted_ips',0),len(value.get('ai_only_ips',[]))))
+    except (OSError,sqlite3.Error):
+        # Measurements must never stop native EDL publication.
+        return

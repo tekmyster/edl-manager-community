@@ -7,6 +7,7 @@ from flask.sessions import SecureCookieSessionInterface
 from werkzeug.security import check_password_hash,generate_password_hash
 
 from core import Store,now,selector,display_sources
+from behavior_scoring import apply as ai_scores
 
 from presentation import feed_label,audit_label,PROVIDERS
 
@@ -222,7 +223,7 @@ def create_app(config=None):
 
     if dashboard_cache['until']<=time.monotonic() or dashboard_cache['snapshot'] is not None:
 
-     dashboard_cache.update(rows=store.all_scores(),snapshot=None,until=time.monotonic()+15)
+     dashboard_cache.update(rows=ai_scores(store,store.all_scores()),snapshot=None,until=time.monotonic()+15)
 
     return dashboard_cache['rows']
 
@@ -830,7 +831,7 @@ def create_app(config=None):
 
  def detail(address):
 
-  try:r=attach_times(store,[store.describe(address)])[0]
+  try:r=attach_times(store,ai_scores(store,[store.describe(address)]))[0]
 
   except ValueError:abort(400)
 

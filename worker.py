@@ -22,7 +22,7 @@ def strength(source,detector):
  return 'http',5
 def ingest_source(s,k,d,updated,records):
  if d.get('edl_activity_json','{}')!='{}':
-  try:s.source_activity(k['ip'],k['source'],k['detector'].split(':')[0],d['edl_seen_utc'],{'activity':d['edl_activity_json'],**({'native_event_count':int(d['edl_native_event_count'])} if 'edl_native_event_count' in d else {}),**({'native_attempt_count':int(d['edl_native_attempt_count'])} if 'edl_native_attempt_count' in d else {}),**({'destination_ports':d['edl_dst_ports'].split(',')} if 'edl_dst_ports' in d else {})})
+  try:s.source_activity(k['ip'],k['source'],k['detector'].split(':')[0],d['edl_seen_utc'],{'activity':d['edl_activity_json'],'deterministic_qualifying':d.get('edl_qualifying')!='no',**({'native_event_count':int(d['edl_native_event_count'])} if 'edl_native_event_count' in d else {}),**({'native_attempt_count':int(d['edl_native_attempt_count'])} if 'edl_native_attempt_count' in d else {}),**({'destination_ports':d['edl_dst_ports'].split(',')} if 'edl_dst_ports' in d else {})})
   except ValueError:return False
  if d.get('edl_qualifying')=='no':return False
  family,points=strength(k['source'],k['detector'])

@@ -71,6 +71,7 @@ def backfill_published(store,output):
    exact=[str(n.network_address) for n in nets if n.num_addresses==1];networks=[n for n in nets if n.num_addresses>1]
    matcher=contains(networks)
    addresses=exact+([a for a in observed if matcher(a)] if networks else [])
+   ai_only=set(m.get('ai_scoring',{}).get('ai_only_ips',[]));addresses=[a for a in addresses if a not in ai_only]
    groups[digest]={'addresses':addresses,'first':created,'last':created}
    scanned+=1
   except (OSError,ValueError,KeyError,TypeError):continue

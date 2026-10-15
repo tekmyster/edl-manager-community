@@ -107,5 +107,37 @@ The existing reporting-token and management-source restrictions apply.
 Small-GPU analysis requests compact findings and compares the strongest historical
 candidate per model call. Saved similarity results still include other candidates.
 Output-limit responses and invalid evidence references are rejected. Failed calls
-retain usage metadata, never the rejected raw reply. Scoring remains off until the
-separate scoring pilot is enabled; the performance view reports zero applied points.
+retain usage metadata, never the rejected raw reply. Scoring is optional and off by default. The performance view shows current applied
+points and blocks requiring AI points; its impact chart averages active blocks in each interval.
+
+
+## Bounded scoring pilot
+
+Enable **AI scoring pilot** under Analysis limits and set **Maximum AI adjustment**
+to a value above zero and no greater than 10. Evidence collection and AI inspection
+must also be enabled. With the switch off, the maximum remains a simulation setting.
+The pilot is intended for gradual homelab evaluation; model confidence is an
+uncalibrated assessment, not a measured probability or validated production precision.
+
+An adjustment requires a fresh, schema-validated malicious assessment with confidence
+at least 0.90, no contradictory evidence, and at least two distinct cited observations
+from the last 24 hours. Those observations must have explicit ingestion provenance
+showing that they were not native scoring inputs. Missing provenance gives no credit.
+If native scoring already uses that source/sensor bucket, its activity is excluded.
+Duplicate copies of a request across logs do not create additional observations.
+Palo drops, ownership, block history and behavioral similarity cannot satisfy this test.
+Verified crawlers, whitelists and cached GreyNoise benign classifications receive no adjustment.
+Already-blocked native scores receive no extra points.
+
+The adjustment is `maximum * confidence`, capped at 10 and the combined score at 100.
+It is recalculated from the native score; repeated analysis never adds cumulative points.
+It expires with the assessment, after at most 24 hours, or when its supporting observations
+age out. Disabling the pilot removes its contribution at the next list build.
+Native retention and previous-block score floors never inherit AI-only scores.
+AI-only block entries are excluded from the native repeat-offender backfill.
+A native rule can independently qualify the IP later under the existing policy.
+
+IP details show the native score, AI contribution and expiry. The AI performance page
+shows current impact and historical publication samples. Missing assessment data or
+an unavailable AI database falls back to native enforcement without blocking ingestion.
+Publication metrics are best-effort and cannot interrupt EDL generation.

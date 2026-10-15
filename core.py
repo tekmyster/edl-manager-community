@@ -15,7 +15,7 @@ def display_sources(row):
  return [labels[p] for p in labels if found[p] and (p in active or p=='crawler' and row.get('verified_crawler'))]
 
 def display_row(row):
- keys=('ip','asn','organization','sources','source_labels','source_details','ports','source_count','honeypot_count','client_types','score','auto_candidate','verified_crawler','enrichment_text','enrichment_details','intelligence')
+ keys=('ip','asn','organization','sources','source_labels','source_details','ports','source_count','honeypot_count','client_types','score','native_score','ai_bump','ai_assessment_id','ai_expires','auto_candidate','verified_crawler','enrichment_text','enrichment_details','intelligence')
  return {**{k:row[k] for k in keys if k in row},'source_identity':{'clients':row.get('source_identity',{}).get('clients',[])},'enrichment_sources':display_sources(row),'retention':({k:row['retention'][k] for k in ('expires','last_seen','last_source')} if row.get('retention') else None)}
 def now():return dt.datetime.now(UTC).isoformat(timespec='seconds')
 def ip(value):
@@ -393,6 +393,9 @@ class Store:
     expires=(dt.datetime.fromisoformat(seen)+dt.timedelta(days=30)).isoformat(timespec='seconds')
     snapshot=json.dumps({'sources':row['sources'],'source_details':row['source_details']})
     d.execute('INSERT INTO block_retention VALUES(?,?,?,?,?,?,?) ON CONFLICT(ip) DO UPDATE SET score=excluded.score,snapshot=excluded.snapshot,first_blocked=CASE WHEN block_retention.expires<=? THEN excluded.first_blocked ELSE block_retention.first_blocked END,last_seen=CASE WHEN block_retention.expires<=? THEN excluded.last_seen ELSE block_retention.last_seen END,last_source=CASE WHEN block_retention.expires<=? THEN excluded.last_source ELSE block_retention.last_source END,expires=CASE WHEN block_retention.expires<=? THEN excluded.expires ELSE block_retention.expires END', (row['ip'],now(),seen,expires,latest['source'],row['score'],snapshot,now(),now(),now(),now()))
+  native_scores=scores
+  from behavior_scoring import apply as ai_scores
+  scores=ai_scores(self,scores)
   for rule in rules:
    if rule['kind']=='asn':
     n=rule['value'][2:];nets=[ipaddress.ip_network(r['ip']) for r in scores if n in r['cache'].get('asn',{}).get('asn','').split() and r['cache']['asn'].get('database_build_epoch',dt.datetime.now(UTC).timestamp())>dt.datetime.now(UTC).timestamp()-30*86400]
@@ -414,6 +417,7 @@ class Store:
    if len(vals)>50000:raise ValueError('Publication guard: list exceeds 50,000 entries')
    (gen/(name+'.txt')).write_text(''.join(v+'\n' for v in vals),encoding='utf8');counts[name]=len(vals)
   manifest={'created':now(),'counts':counts,'mode':'production','palo_policy_managed':False,'window_days':30,'asn_rule_scope':'observed IPs only','rule_count':len(rules),'scoring_policy':{'block_threshold':BLOCK_THRESHOLD,'honeypot_minimum_score':HONEYPOT_FLOOR,'honeypot_repeat_bonus':HONEYPOT_REPEAT_BONUS,'honeypot_repeat_unit':'distinct sessions/authentication attempts per source IP; first observation per honeypot/port +50; repeats +25; newest rolling counters; behavioral subsets excluded','honeypot_sources':sorted(HONEYPOT_SOURCES),'malicious_enrichment_bonus_cap':25,'palo_drop_score':0,'retention_days':30,'retention_policy':'30 days from latest qualifying native observation; Palo block hits only renew existing blocks using native firewall timestamps','enrichment_required_for_block':False,'whitelist_and_verified_crawler_protection':True,'previous_block_history_days':365,'previous_block_return_minimum':75,'previous_block_aged_bonus':25,'previous_block_aged_after_days':30}}
+  manifest['ai_scoring']={'enabled':bool((self.state('behavior_settings') or {}).get('scoring_enabled')),'maximum':10,'applied_points':round(sum(r.get('ai_bump',0) for r in scores),2),'adjusted_ips':sum(bool(r.get('ai_bump')) for r in scores),'ai_only_ips':[r['ip'] for r in scores if r.get('ai_bump') and r['auto_candidate'] and r.get('native_score',0)<75 and any(ipaddress.ip_address(r['ip']) in n for n in lists['combined-block'])]}
   # The display snapshot and EDLs share one atomic generation. Never score on a cache hit.
   display=[display_row(row) for row in scores]
   (gen/'dashboard.json').write_text(json.dumps({'created':manifest['created'],'rows':display},separators=(',',':')),encoding='utf-8')
@@ -421,7 +425,10 @@ class Store:
   (gen/'manifest.json').write_text(json.dumps(manifest,indent=2));tmp=out/'current.new'
   if tmp.exists() or tmp.is_symlink():tmp.unlink()
   tmp.symlink_to(gen.name,target_is_directory=True);os.replace(tmp,out/'current');self.state('latest_build',manifest)
+  from behavior_metrics import record_publication
+  record_publication(self,manifest)
   from offenders import mark_blocks
-  mark_blocks(self,scores,lists['combined-block'],manifest['created'])
+  native_combined=subtract(lists['manual-block']+subtract([ipaddress.ip_network(r['ip']) for r in native_scores if r['auto_candidate']],allow+protected),allow)+emergency
+  mark_blocks(self,native_scores,native_combined,manifest['created'])
   list_changes(self,lists,manifest['created'],gen.name,actor)
   return manifest

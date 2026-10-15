@@ -129,7 +129,8 @@ def register(app,store,cfg,reports,display_rows,login_required):
   except ValueError:abort(400,description='A public unicast IP is required')
   with store.connect(commit=False) as d:exists=d.execute('SELECT 1 FROM ips WHERE ip=? UNION SELECT 1 FROM rules WHERE kind=? AND value=? LIMIT 1',(address,'ip',address)).fetchone()
   if not exists:abort(404,description='IP has no saved evidence or exact-IP policy')
-  return store.describe(address)
+  from behavior_scoring import apply as ai_scores
+  return ai_scores(store,[store.describe(address)])[0]
  @app.get('/api/v1/ips/<address>')
  @required
  def api_ip(address):
