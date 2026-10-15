@@ -48,6 +48,17 @@ def register(app,store,cfg,reports,display_rows,login_required):
   limit=integer('limit',250,1,1000);offset=integer('offset',0,0,1000000)
   return {'data':rows[offset:offset+limit],'total':len(rows),'limit':limit,'offset':offset,'next_offset':offset+limit if offset+limit<len(rows) else None}
  def rows():return reports.decorate(display_rows())
+ @app.get('/api/v1/behavior')
+ @required
+ def api_behavior():
+  from behavior_ai import brain
+  return jsonify(schema_version=1,generated=now(),**brain(store).summary())
+ @app.get('/api/v1/ips/<address>/behavior')
+ @required
+ def api_ip_behavior(address):
+  from behavior_ai import brain
+  row=detail(address)
+  return jsonify(schema_version=1,generated=now(),ip=row['ip'],**brain(store).view(row['ip']))
  @app.get('/api/v1/intelligence')
  @required
  def api_intelligence():

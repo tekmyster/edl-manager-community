@@ -33,3 +33,7 @@ Test databases and example addresses are synthetic fixtures. Native detection re
 ## Enforcement
 
 Use `/feeds/combined-block.txt` from explicitly allowed firewall source addresses. Configure the firewall's EDL refresh and rule placement separately. Authenticated administrators download lists from the web UI. Feeds revalidate with ETag against the latest complete generation. Firewall download, acceptance and enforcement are separate outcomes.
+
+## Behavioral intelligence
+
+Optional background AI inspection and behavioral similarity are available in shadow mode. They never change enforcement in this release. See [configuration, evidence handling and limitations](docs/BEHAVIORAL-ANALYSIS.md).

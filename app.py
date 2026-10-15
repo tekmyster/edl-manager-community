@@ -1126,6 +1126,8 @@ def create_app(config=None):
   return response
 
  register_api(app,store,cfg,reports,dashboard_scores,login_required)
+ from behavior_routes import register as register_behavior
+ register_behavior(app,store,cfg,login_required)
 
  return app
 

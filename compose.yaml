@@ -27,6 +27,9 @@ services:
   enrich:
     <<: *common
     command: [python, run_service.py, enrich]
+  behavior:
+    <<: *common
+    command: [python, run_service.py, behavior]
   setup:
     <<: *common
     profiles: [tools]
