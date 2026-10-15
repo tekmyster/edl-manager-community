@@ -80,7 +80,9 @@ def test_transport_pins_tls_disables_redirects_and_restricts_output(evidence):
   def close(self):calls.append('closed')
  def send(url,**kwargs):
   assert url=='https://127.0.0.1/api/chat' and kwargs['verify']=='/trusted/ca.pem' and kwargs['allow_redirects'] is False
-  schema=kwargs['json']['format']['properties'];assert schema['attack_techniques']['maxItems']==0 and schema['actor_correlation']['maxItems']==0
+  schema=kwargs['json']['format']['properties'];assert schema['maliciousness_confidence']['enum'][0]==0 and schema['maliciousness_confidence']['enum'][-1]==1
+  assert schema['automation']['properties']['confidence']['enum']==schema['maliciousness_confidence']['enum']
+  assert schema['attack_techniques']['maxItems']==0 and schema['actor_correlation']['maxItems']==0
   assert 'tools' not in kwargs['json']
   return Response()
  assessment,metadata=infer(cfg,packet,[],{},'secret',requester=send)

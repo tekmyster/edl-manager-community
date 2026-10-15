@@ -2,7 +2,7 @@ import datetime as dt
 import json
 import pytest
 from core import Store, now
-from behavior_ai import Brain, DEFAULTS, config_id, settings
+from behavior_ai import Brain, DEFAULTS, config_id, settings, PROMPT_VERSION
 from behavior_scoring import contribution, apply
 
 
@@ -16,7 +16,7 @@ def fixture(tmp_path):
     ident, packet, _ = b.packet(s.describe('8.8.8.8'))
     events = [e['id'] for e in packet['events'] if e.get('independent_evidence')]
     assessment = {'classification': 'malicious', 'maliciousness_confidence': .95,
-                  'findings': [{'evidence_ids': events}], 'contradictory_evidence': [], 'metadata': {'model': 'test'}}
+                  'findings': [{'evidence_ids': events}], 'contradictory_evidence': [], 'metadata': {'model': 'test','prompt_version':PROMPT_VERSION}}
     expiry = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()
     s.state('behavior_settings', {**DEFAULTS, 'enabled': True, 'model_enabled': True, 'scoring_enabled': True,
                                   'model': 'test', 'max_bump': 10})

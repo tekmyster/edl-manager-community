@@ -141,3 +141,10 @@ IP details show the native score, AI contribution and expiry. The AI performance
 shows current impact and historical publication samples. Missing assessment data or
 an unavailable AI database falls back to native enforcement without blocking ingestion.
 Publication metrics are best-effort and cannot interrupt EDL generation.
+
+
+The small-GPU adapter constrains confidence to explicit numeric choices from 0.00 to
+1.00. Replies outside that range are rejected rather than converted from percentages.
+Prompt revisions invalidate cached inference jobs and score eligibility; evidence
+packet versions remain separate. Only the strongest supplied historical candidate
+contributes to an inference cache key, matching the actual model input.

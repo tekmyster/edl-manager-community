@@ -69,7 +69,7 @@ def apply(store, rows):
     path = pathlib.Path(store.path).parent / 'behavior.sqlite3'
     if not path.exists():
         return rows
-    from behavior_ai import config_id,settings
+    from behavior_ai import config_id,settings,PROMPT_VERSION
     prefix=config_id(settings(store))+'-%'
     try:
         db = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=2)
@@ -100,7 +100,7 @@ def apply(store, rows):
             try:
                 packet, assessment = json.loads(saved['content']), json.loads(saved['result'])
                 created = dt.datetime.fromisoformat(saved['created'])
-                if assessment.get('metadata',{}).get('model')!=cfg.get('model') or packet.get('version') != 'behavior-3' or not at - dt.timedelta(hours=24) <= created <= at:
+                if assessment.get('metadata',{}).get('model')!=cfg.get('model') or assessment.get('metadata',{}).get('prompt_version')!=PROMPT_VERSION or packet.get('version') != 'behavior-3' or not at - dt.timedelta(hours=24) <= created <= at:
                     result.append(row);continue
                 if enabled is not None:
                     packet['events'] = [e for e in packet['events'] if e['source'] in enabled]
