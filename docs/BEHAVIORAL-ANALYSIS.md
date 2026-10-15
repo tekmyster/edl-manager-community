@@ -86,3 +86,26 @@ Similarity retrieval supplies up to three candidate windows with supporting hist
 Reporting adds paginated `GET /api/v1/behavior/groups` and `GET /api/v1/behavior/groups/<id>`. IP behavior reports include memberships. Member and relationship views are bounded; member totals and truncation are explicit.
 
 Saved windows are accessible through authenticated observation pages and `GET /api/v1/behavior/observations/<id>`. Matches and group members link to the exact historical evidence, even after an IP’s current window changes. Prepared times are preserved with immutable packets. Parent bucket counters are not summed across duplicated samples, and repeated summaries are not supplied as additional intelligence evidence.
+
+
+## AI performance
+
+Open **System settings > AI performance** to view token usage, valid-response rate,
+average response time, request outcomes and reused assessments. Select 24 hours
+(hourly bins), 7 days or 30 days (daily bins). Charts use the selected display timezone.
+The interval table provides the same values without relying on color or hover.
+Average response measures valid assessments; the 95th percentile and latency chart
+include failed and superseded requests. Superseded means evidence changed during analysis.
+Tokens include both input and output, including rejected replies when the model reports usage.
+Older or interrupted requests without token metadata are marked unavailable, not estimated.
+Cache hits are recorded from this release onward and represent avoided model requests.
+
+Grafana can read the same metrics with a reporting token:
+`GET /api/v1/behavior/metrics?period=24h` (`7d` and `30d` are also supported).
+The existing reporting-token and management-source restrictions apply.
+
+Small-GPU analysis requests compact findings and compares the strongest historical
+candidate per model call. Saved similarity results still include other candidates.
+Output-limit responses and invalid evidence references are rejected. Failed calls
+retain usage metadata, never the rejected raw reply. Scoring remains off until the
+separate scoring pilot is enabled; the performance view reports zero applied points.

@@ -100,6 +100,7 @@ def test_behavior_routes_require_auth_csrf_and_reporting_token(tmp_path):
  from reporting_api import issue
  app=create_app({'database':str(tmp_path/'manager.sqlite3'),'output':str(tmp_path/'out'),'providers_file':str(tmp_path/'keys'),'session_secret':'test','hosts':['localhost']});app.testing=True;c=app.test_client()
  assert c.get('/behavior',base_url='https://localhost').status_code==302
+ assert c.get('/behavior/metrics',base_url='https://localhost').status_code==302
  with app.store.connect() as d:d.execute('INSERT INTO users VALUES(?,?,?)',('admin','hash',1))
  with c.session_transaction() as s:s.update(user='admin',version=1,expires_at=dt.datetime.now(dt.timezone.utc).timestamp()+3600,csrf='csrf')
  assert c.get('/behavior',base_url='https://localhost').status_code==200
@@ -107,3 +108,60 @@ def test_behavior_routes_require_auth_csrf_and_reporting_token(tmp_path):
  assert c.get('/api/v1/behavior',base_url='https://localhost').status_code==401
  token=issue(app.store,'test',30,'admin');r=c.get('/api/v1/behavior',base_url='https://localhost',headers={'Authorization':'Bearer '+token})
  assert r.status_code==200 and r.json['active_scoring'] is False
+ assert c.get('/behavior/metrics',base_url='https://localhost').status_code==200
+ assert c.get('/api/v1/behavior/metrics',base_url='https://localhost').status_code==401
+ response=c.get('/api/v1/behavior/metrics?period=7d',base_url='https://localhost',headers={'Authorization':'Bearer '+token})
+ assert response.status_code==200 and len(response.json['bins'])==7
+ assert c.get('/api/v1/behavior/metrics?period=all',base_url='https://localhost',headers={'Authorization':'Bearer '+token}).status_code==400
+
+
+def test_small_gpu_response_is_compact_and_truncation_is_rejected(evidence):
+ from behavior_ai import infer
+ packet=Brain(evidence).packet(evidence.describe('8.8.8.8'))[1]
+ cfg={**DEFAULTS,'endpoint':'https://127.0.0.1','model':'test'}
+ class Response:
+  status_code=200
+  def iter_content(self,n):
+   yield json.dumps({'done':True,'done_reason':'length','model':'test','message':{'content':json.dumps(result(packet))}}).encode()
+  def close(self):pass
+ def send(*args,**kwargs):
+  schema=kwargs['json']['format']['properties']
+  assert schema['findings']['maxItems']==2
+  assert schema['findings']['items']['properties']['evidence_ids']['maxItems']==2
+  assert schema['analysis_summary']['maxLength']==240
+  return Response()
+ with pytest.raises(ValueError,match='output_limit'):
+  infer(cfg,packet,[],{},'',requester=send)
+
+
+def test_model_failure_records_token_usage_without_storing_reply(evidence,monkeypatch):
+ import behavior_ai
+ b=Brain(evidence);ident,packet,features=b.packet(evidence.describe('8.8.8.8'))
+ cfg={**DEFAULTS,'model_enabled':True,'model':'test','daily_budget':1}
+ def fail(*args):raise behavior_ai.ModelOutputError('output_limit',{'input_tokens':200,'output_tokens':1800})
+ monkeypatch.setattr(behavior_ai,'infer',fail)
+ assert model_job(b,ident,packet,features,cfg)=='failed'
+ with b.connect() as db:
+  r=db.execute('SELECT result,error FROM assessments').fetchone()
+ assert r['error']=='output_limit' and json.loads(r['result'])['metadata']['output_tokens']==1800
+
+
+def test_inference_separates_current_and_historical_references(evidence):
+ from behavior_ai import infer
+ packet=Brain(evidence).packet(evidence.describe('8.8.8.8'))[1]
+ candidate={'candidate_id':'peer','historical_events':[{'id':'remote-event'}]}
+ cfg={**DEFAULTS,'endpoint':'https://127.0.0.1','model':'test'}
+ class Response:
+  status_code=200
+  def iter_content(self,n):
+   r=result(packet)
+   r['actor_correlation']=[{'candidate_id':'peer','confidence':.5,'current_evidence_ids':[packet['events'][0]['id']],'historical_evidence_ids':['remote-event'],'explanation':'Similar requests','alternative_explanations':['Shared tooling']}]
+   yield json.dumps({'done':True,'model':'test','message':{'content':json.dumps(r)}}).encode()
+  def close(self):pass
+ def send(*args,**kw):
+  fields=kw['json']['format']['properties']['actor_correlation']['items']['properties']
+  assert fields['historical_evidence_ids']['items']['enum']==['remote-event']
+  assert 'evidence_ids' not in fields
+  return Response()
+ r,meta=infer(cfg,packet,[candidate],{},'',requester=send)
+ assert r['actor_correlation'][0]['evidence_ids']==[packet['events'][0]['id'],'remote-event']

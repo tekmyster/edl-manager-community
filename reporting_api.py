@@ -53,6 +53,14 @@ def register(app,store,cfg,reports,display_rows,login_required):
  def api_behavior():
   from behavior_ai import brain
   return jsonify(schema_version=1,generated=now(),**brain(store).summary())
+ @app.get('/api/v1/behavior/metrics')
+ @required
+ def api_behavior_metrics():
+  from behavior_ai import brain
+  from behavior_metrics import metrics
+  try:data=metrics(brain(store),request.args.get('period','24h'))
+  except ValueError:abort(400)
+  return jsonify(schema_version=1,generated=now(),**data)
  @app.get('/api/v1/behavior/groups')
  @required
  def api_behavior_groups():

@@ -10,6 +10,13 @@ def register(app,store,cfg,login_required):
  @login_required
  def behavior_overview():
   return render_template('behavior.html',behavior_settings=settings(store),behavior_summary=service.summary(),worker_state=store.state('behavior_worker') or {},activity_groups=groups(service))
+ @app.get('/behavior/metrics')
+ @login_required
+ def behavior_metrics():
+  from behavior_metrics import metrics
+  try:data=metrics(service,request.args.get('period','24h'))
+  except ValueError:abort(400)
+  return render_template('behavior_metrics.html',metrics=data)
  @app.get('/behavior/groups/<ident>')
  @login_required
  def behavior_group(ident):
