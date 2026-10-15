@@ -53,12 +53,36 @@ def register(app,store,cfg,reports,display_rows,login_required):
  def api_behavior():
   from behavior_ai import brain
   return jsonify(schema_version=1,generated=now(),**brain(store).summary())
+ @app.get('/api/v1/behavior/groups')
+ @required
+ def api_behavior_groups():
+  from behavior_ai import brain
+  from behavior_groups import groups
+  service=brain(store);limit=integer('limit',50,1,100);offset=integer('offset',0,0,1000000)
+  with service.connect() as db:total=db.execute("SELECT count(*) FROM behavior_groups WHERE status='active'").fetchone()[0]
+  return jsonify(schema_version=1,generated=now(),data=groups(service,limit=limit,offset=offset),total=total,limit=limit,offset=offset,next_offset=offset+limit if offset+limit<total else None)
+ @app.get('/api/v1/behavior/groups/<ident>')
+ @required
+ def api_behavior_group(ident):
+  from behavior_ai import brain
+  from behavior_groups import groups
+  found=groups(brain(store),ident=ident)
+  if not found:abort(404)
+  return jsonify(schema_version=1,generated=now(),group=found[0])
+ @app.get('/api/v1/behavior/observations/<ident>')
+ @required
+ def api_behavior_observation(ident):
+  from behavior_ai import brain
+  found=brain(store).packet_view(ident)
+  if not found:abort(404)
+  return jsonify(schema_version=1,generated=now(),observation=found)
  @app.get('/api/v1/ips/<address>/behavior')
  @required
  def api_ip_behavior(address):
   from behavior_ai import brain
+  from behavior_groups import groups
   row=detail(address)
-  return jsonify(schema_version=1,generated=now(),ip=row['ip'],**brain(store).view(row['ip']))
+  return jsonify(schema_version=1,generated=now(),ip=row['ip'],groups=groups(brain(store),address=row['ip']),**brain(store).view(row['ip']))
  @app.get('/api/v1/intelligence')
  @required
  def api_intelligence():

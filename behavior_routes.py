@@ -5,10 +5,23 @@ from behavior_ai import brain,settings,validate_settings
 
 def register(app,store,cfg,login_required):
  service=brain(store)
+ from behavior_groups import groups
  @app.get('/behavior')
  @login_required
  def behavior_overview():
-  return render_template('behavior.html',behavior_settings=settings(store),behavior_summary=service.summary(),worker_state=store.state('behavior_worker') or {})
+  return render_template('behavior.html',behavior_settings=settings(store),behavior_summary=service.summary(),worker_state=store.state('behavior_worker') or {},activity_groups=groups(service))
+ @app.get('/behavior/groups/<ident>')
+ @login_required
+ def behavior_group(ident):
+  found=groups(service,ident=ident)
+  if not found:abort(404)
+  return render_template('behavior_group.html',group=found[0])
+ @app.get('/behavior/observations/<ident>')
+ @login_required
+ def behavior_observation(ident):
+  found=service.packet_view(ident)
+  if not found:abort(404)
+  return render_template('behavior_observation.html',analysis=found)
  @app.post('/settings/behavior')
  @login_required
  def behavior_settings():
@@ -24,7 +37,7 @@ def register(app,store,cfg,login_required):
  @login_required
  def behavior_prepare(address):
   try:
-   row=store.describe(address);ident,packet,features=service.packet(row)
+   row=store.describe(address);ident,packet,features=service.packet(row,source_cfg=cfg)
    if settings(store)['correlation_enabled']:service.candidates(ident,features)
   except ValueError:abort(400)
   store.audit(session['user'],'behavior.prepare',{'ip':row['ip'],'packet_id':ident})
@@ -37,3 +50,6 @@ def register(app,store,cfg,login_required):
   else:flash('Relationship review saved. No policy was changed.','success')
   return redirect(url_for('behavior_overview'))
  app.jinja_env.globals['behavior_view']=service.view
+ app.jinja_env.globals['behavior_groups']=lambda address:groups(service,address=address)
+ from source_settings import SOURCES
+ app.jinja_env.filters['behavior_source']=lambda value:{**SOURCES,'palo':'Palo Alto'}.get(value,value)

@@ -8,5 +8,5 @@ def main():
  with open(pathlib.Path(store.path).parent/'behavior.lock','w') as lock:
   try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
   except BlockingIOError:return
-  print(json.dumps(run(store,index_only='--index-only' in __import__('sys').argv)))
+  print(json.dumps(run(store,index_only='--index-only' in __import__('sys').argv,source_cfg=cfg)))
 if __name__=='__main__':main()

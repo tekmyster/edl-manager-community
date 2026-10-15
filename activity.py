@@ -67,6 +67,22 @@ def fetch(cfg,target):
   k=b['key'];destinations.append({**k,'destination':address(k.get('destination')),'nat':address(k.get('nat')),'count':b['doc_count']})
  return {'events':events,'destinations':destinations,'total':v['hits']['total']['value'],'destinations_limited':bool(agg.get('after_key')) and len(destinations)>=500,'fetched':now(),'cutoff':cut.isoformat(),'status':'ok'}
 
+def claim_activity(store,key,quota_key=None,budget=None):
+ """Coordinate UI and background readers using one durable per-IP lease."""
+ current=dt.datetime.now(UTC)
+ with store.connect() as db:
+  db.execute('BEGIN IMMEDIATE')
+  row=db.execute('SELECT value FROM state WHERE key=?',(key,)).fetchone();saved=json.loads(row[0]) if row else {};fetched=timestamp(saved.get('fetched'))
+  if fetched and 0<=(current-fetched).total_seconds()<300:return 'cached'
+  row=db.execute('SELECT value FROM state WHERE key=?',('ip_activity_pending:'+key,)).fetchone();pending=json.loads(row[0]) if row else {};started=timestamp(pending.get('started'))
+  if started and 0<=(current-started).total_seconds()<90:return 'pending'
+  if quota_key is not None:
+   row=db.execute('SELECT value FROM state WHERE key=?',(quota_key,)).fetchone();used=json.loads(row[0]) if row else 0
+   if used>=budget:return 'budget'
+   db.execute('INSERT OR REPLACE INTO state VALUES(?,?)',(quota_key,json.dumps(used+1)))
+  db.execute('INSERT OR REPLACE INTO state VALUES(?,?)',('ip_activity_pending:'+key,json.dumps({'started':now()})))
+ return 'claimed'
+
 class ActivityCache:
  def __init__(self,store,cfg):self.store=store;self.cfg=cfg;self.pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='ip-investigation');self.lock=threading.Lock();self.pending=set()
  def get(self,target):
@@ -77,8 +93,10 @@ class ActivityCache:
   if not fresh and not active and (self.cfg.get('index_url') and self.cfg.get('palo_location')):
    with self.lock:
     if key not in self.pending and len(self.pending)<8:
-     self.pending.add(key);self.store.state('ip_activity_pending:'+key,{'started':now()});self.pool.submit(self.refresh,target,cfg,key)
-     active=True
+     claimed=claim_activity(self.store,key)
+     if claimed=='claimed':self.pending.add(key);self.pool.submit(self.refresh,target,cfg,key)
+     active=claimed in ('claimed','pending')
+     if claimed=='cached':data=self.store.state(key) or data
   return {**data,'loading':bool(active),'enabled':bool((self.cfg.get('index_url') and self.cfg.get('palo_location')))}
  def refresh(self,target,cfg=None,key=None):
   cfg=cfg or dict(self.cfg);key=key or 'ip_activity:'+target
