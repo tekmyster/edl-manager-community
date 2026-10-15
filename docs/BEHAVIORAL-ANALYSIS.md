@@ -148,3 +148,67 @@ The small-GPU adapter constrains confidence to explicit numeric choices from 0.0
 Prompt revisions invalidate cached inference jobs and score eligibility; evidence
 packet versions remain separate. Only the strongest supplied historical candidate
 contributes to an inference cache key, matching the actual model input.
+
+
+## Richer cached event history
+
+IP details link to **Browse cached history**, a paginated local view. The reporting
+API adds `GET /api/v1/ips/<ip>/history?limit=100&offset=0` under the existing
+reporting-token and management-source checks. Browser reads never query sources.
+
+The separate behavioral worker queries at most two IPs per pass with its own
+round-robin cursor and a 100-query UTC daily budget. Each exact-IP index query
+reads at most 500 recent index records from the currently configured source/agent
+scope. Successful reads reuse a five-minute cache; failures retain existing events
+and back off for an hour. Disabled or unconfigured sources require no query.
+The index receives source summaries, not full traffic. Even when all matching
+index records fit, coverage remains partial. Repeated summary copies do not imply
+new independent attacks. General Wazuh alerts are additional source observations;
+EDL Manager still owns all scoring decisions.
+
+Normalized history in `behavior.sqlite3` retains original event times, upstream
+IDs where available, index record references, first local cache receipt time,
+separate upstream index time where supplied, source/sensor and destinations.
+Internal destinations use stable asset references. These references reduce
+exposure; they are not cryptographic anonymity. Source-scope changes hide the
+previous scope. A bounded worker cleanup removes derived events older than 30 days
+(up to 5,000 per pass); native retention and existing immutable assessment packets
+remain separate. This is not a complete audit-log archive or a new retention policy
+for previously saved packets. Back up the derived database with SQLite online backup.
+
+Small-model packets select source-balanced time endpoints and spaced intermediate
+observations, sort them by original event time, and cap packet bytes. Available,
+included and locally cached totals, query limits, and sequence span are explicit.
+First-cache times do not reconstruct original network delivery. Late events can
+appear in a later packet. Unchanged query refresh timestamps do not force a new
+inference. Prompt revision `behavior-3.2` invalidates older model jobs/eligibility.
+No accuracy or calibration claim follows from a successful request.
+
+Query parameter names and syntax survive; values do not. Credential-like names
+are redacted. HTTP method/status, a fixed protocol/content-type vocabulary, and
+client categories are allowlisted. Authorization, cookies, arbitrary headers,
+session values and bodies are omitted before derived persistence and model input.
+Paths receive the existing identifier/secret redaction; free-form path text remains
+potentially sensitive and operators must use appropriate source logging policy.
+TLS and header-order fingerprints remain **unavailable** from these collectors.
+No fields are inferred to fill those gaps. Cached/forwarded observations are
+ineligible for pilot points; current native-row samples keep the existing explicit
+novelty, freshness, distinct-observation and protection gates. AI outages cannot
+interrupt native ingestion/publication.
+
+Collection volume is deliberately limited for the trial. A large deployment will
+have unqueried IPs and missing earlier requests. No routing changes or new sensors
+are required. This release does not establish comprehensive telemetry or independently
+labeled model precision.
+
+
+For external normalized collectors, each `edl_activity_json.events` item may supply
+`id`, timezone-qualified `seen`, `path`, `parameter_names`, `parameter_count`,
+`method`, `status`, `destination`, `port`, and `http_metadata`. Query values must
+be stripped upstream; parameter structures are names/counts only. `http_metadata`
+accepts only fixed `protocol` and `content_type` values listed by the normalizer.
+All other headers and bodies are ignored. Collector agent, index and index-record
+provenance come from the actual configured index hit, not claims inside an event.
+A later indexed copy can fill missing provenance without adding an observation or
+changing its first local receipt. Changing the configured firewall source also
+isolates the cached history scope.

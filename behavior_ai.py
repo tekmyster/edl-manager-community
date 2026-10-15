@@ -2,7 +2,7 @@
 import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.1'
+PROMPT_VERSION='behavior-3.2'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24}
 SCHEMA='''
@@ -43,7 +43,8 @@ def path_shape(value):
  try:
   parsed=urllib.parse.urlsplit(str(value or '')[:4096]);path=safe_text(parsed.path,200)
   path=re.sub(r'(?<=/)[0-9]+(?=/|$)','{number}',path)
-  names=sorted({safe_text(k,40) for k,v in urllib.parse.parse_qsl(parsed.query,keep_blank_values=True)})[:12]
+  from web_client import request_structure
+  names=request_structure(value)['parameter_names']
   path=re.sub(r'(?i)((?:password|reset-password|token|secret|session|api[_-]?key)/)[^/]+',r'\1[redacted]',path)
   return path,names
  except ValueError:return '',[]
@@ -86,6 +87,8 @@ class Brain:
   self.store=store;self.path=pathlib.Path(store.path).parent/'behavior.sqlite3'
   from behavior_groups import SCHEMA as GROUP_SCHEMA
   with self.connect() as db:db.executescript('PRAGMA journal_mode=WAL;'+SCHEMA+GROUP_SCHEMA)
+  from evidence_history import initialize
+  with self.connect() as db:initialize(db)
  @contextlib.contextmanager
  def connect(self):
   db=sqlite3.connect(str(self.path),timeout=15);db.row_factory=sqlite3.Row
@@ -94,8 +97,13 @@ class Brain:
   finally:db.close()
  def packet(self,row,cfg=None,at=None,source_cfg=None):
   cfg=cfg or settings(self.store);at=at or dt.datetime.now(dt.timezone.utc);cut=at-dt.timedelta(days=cfg['window_days'])
+  from evidence_history import cache_rows,cache_palo,query,normalize,active_sources,representative
+  cache_rows(self,row,at,source_cfg);cache_palo(self,row['ip'],source_cfg,at);history=query(self,row['ip'],at,source_cfg=source_cfg)
+  history['collection']={k:v for k,v in history['collection'].items() if k!='fetched'}
   raw=row.get('evidence',[])+row.get('activity',[]);counted={(e['source'],e['sensor']) for e in row.get('evidence',[]) if e['source']!='palo'};events={};total=0;source_counts={};features=set();missing=set()
+  allowed_sources=active_sources(self,source_cfg)
   for record in raw:
+   if allowed_sources is not None and record.get('source') not in allowed_sources:continue
    seen=timestamp(record.get('seen'))
    if not seen or not cut<=seen<=at+dt.timedelta(minutes=5):continue
    details=record.get('details',{})
@@ -109,7 +117,7 @@ class Brain:
     except ValueError:activity={}
    samples=activity.get('events',[]) if isinstance(activity,dict) else []
    # Original records and source samples are separately traceable, never called independent attacks.
-   if not samples:samples=[{'id':record.get('id',''),'seen':record['seen'],'action':details.get('detector') or record.get('family','observed')}];missing.add('Detailed request samples unavailable for some sources')
+   if not samples:samples=[{'id':record.get('id',''),'seen':record['seen'],'action':details.get('detector') or record.get('family','observed'),'_summary':True}];missing.add('Detailed request samples unavailable for some sources')
    for sample in samples[:50]:
     if not isinstance(sample,dict):continue
     t=timestamp(sample.get('seen'))
@@ -118,8 +126,9 @@ class Brain:
     event={'seen':t.isoformat(timespec='seconds'),'source':source,'sensor':sensor,'action':action,'path':path,'parameter_names':parameters,'method':safe_text(sample.get('method'),12),'status':safe_text(sample.get('status'),8),'port':str(sample.get('port','')) if str(sample.get('port','')).isdigit() else '', 'client_type':safe_text(sample.get('client_type'),50),'native_attempts':max(0,min(1000000,int(details.get('native_attempt_count',0) or 0))),'native_records':max(0,min(1000000,int(details.get('native_event_count',0) or 0)))}
     event['independent_evidence']=details.get('deterministic_qualifying') is False and (source,sensor) not in counted and isinstance(activity,dict) and bool(activity.get('events'))
     # Aggregate bucket counters may increase without creating a new underlying sample.
-    identity={k:v for k,v in event.items() if k not in ('native_attempts','native_records','client_type','independent_evidence')}
-    eid='ev_'+digest([row['ip'],source,sensor,sample.get('id'),identity])[:24];event['id']=eid
+    normalized=normalize(row['ip'],source,sensor,sample,at.isoformat(timespec='seconds'))
+    if not normalized:continue
+    eid=normalized['id'];event.update({k:normalized[k] for k in ('id','seen','destination','provenance','parameter_names','parameter_count')});event['http_metadata']=normalized.get('http_metadata',{})
     if eid in events:
      events[eid]['independent_evidence']=events[eid]['independent_evidence'] and event['independent_evidence']
      for counter in ('native_attempts','native_records'):events[eid][counter]=max(events[eid][counter],event[counter])
@@ -130,19 +139,32 @@ class Brain:
     if event['method']:features.add('method:'+event['method'])
     if parameters:features.add('params:'+','.join(parameters))
     if sensor:features.add('sensor:'+sensor)
+  for cached in history['events']:
+   if cached['id'] not in events:
+    events[cached['id']]=cached
+    if cached['path']:features.add('path:'+cached['path'])
+    if cached['action']:features.add('action:'+cached['action'].casefold())
+    source_counts[cached['source']]=source_counts.get(cached['source'],0)+1;total+=1
   ordered=sorted(events.values(),key=lambda e:(e['seen'],e['id']))
   # Bound packet size deterministically and preserve source coverage.
   selected=[]
   for left,right in zip(ordered,ordered[1:]):
    if left['path'] and right['path']:features.add('sequence:'+left['path']+' -> '+right['path'])
-  for source in sorted(source_counts):selected.extend([e for e in ordered if e['source']==source][-40:])
-  selected=sorted(selected,key=lambda e:(e['seen'],e['id']))[-160:]
+  groups={source:representative([e for e in ordered if e['source']==source]) for source in sorted(source_counts)}
+  for index in range(40):
+   for group in groups.values():
+    if index<len(group):
+     selected.append(group[index])
+  selected=selected[:160]
   if total>len(selected):missing.add('Only a bounded subset of saved samples was included')
   from behavior_context import context as build_context
-  content={'version':VERSION,'window_days':cfg['window_days'],'events':selected,'context':build_context(self.store,row,source_cfg,at),'source_counts':source_counts,'coverage':'saved_samples','limitations':sorted(missing|{'Saved source summaries are not a complete raw event history','Intelligence and history are bounded, field-allowlisted context','Native attempt/record counters summarize parent buckets; do not sum repeated bucket counts across samples','TLS and header-order fingerprints are not collected by this packet builder'})}
-  while len(json.dumps(content,ensure_ascii=True).encode())>10000 and content['events']:
-   content['events'].pop(0)
+  content={'version':VERSION,'window_days':cfg['window_days'],'events':selected,'context':build_context(self.store,row,source_cfg,at),'source_counts':source_counts,'coverage':'saved_samples','history_coverage':{k:v for k,v in history.items() if k!='events'},'sequence':{},'limitations':sorted(missing|{'Saved source summaries are not a complete raw event history','Intelligence and history are bounded, field-allowlisted context','Native attempt/record counters summarize parent buckets; do not sum repeated bucket counts across samples','TLS and header-order fingerprints are not collected by this packet builder'})}
+  while len(json.dumps(content,ensure_ascii=True).encode())>11200 and content['events']:
+   content['events'].pop()
    if 'Input limited to a bounded evidence subset' not in content['limitations']:content['limitations'].append('Input limited to a bounded evidence subset')
+  content['events']=sorted(content['events'],key=lambda e:(e['seen'],e['id']))
+  chosen_events=content['events']
+  content['sequence']={'available':total,'cached_total':history['total'],'cached_read':len(history['events']),'included':len(chosen_events),'partial':True,'selection':'time endpoints then spaced positions per source, round robin, bounded by bytes','first':chosen_events[0]['seen'] if chosen_events else None,'last':chosen_events[-1]['seen'] if chosen_events else None}
   ident='pkt_'+digest([row['ip'],content])
   content['packet_id']=ident;content['prepared_at']=at.isoformat(timespec='seconds')
   with self.connect() as db:
@@ -206,12 +228,12 @@ class Brain:
   from behavior_scoring import apply as ai_scores
   effective=ai_scores(self.store,[self.store.describe(address)])[0]
   applied=effective.get('ai_bump',0)
-  return {'status':status,'mode':('pilot' if cfg.get('scoring_enabled') else 'shadow'),'enabled':cfg['enabled'],'packet_id':row['id'],'indexed':row['created'],'assessed':a['created'] if a else None,'latency_seconds':a['latency'] if a else None,'events':len(data['events']),'evidence':data['events'],'context':data.get('context',[]),'sources':data['source_counts'],'coverage':data['coverage'],'limitations':data['limitations'],'matches':matches,'assessment':assessment,'baseline_at_analysis':row['baseline'],'hypothetical_score':hypothetical,'applied_bump':applied,'scoring_eligible':bool(applied),'scoring_reason':('Fresh behavior outside native scoring' if applied else 'No eligible independent evidence, or scoring is off')}
+  return {'status':status,'mode':('pilot' if cfg.get('scoring_enabled') else 'shadow'),'enabled':cfg['enabled'],'packet_id':row['id'],'indexed':row['created'],'assessed':a['created'] if a else None,'latency_seconds':a['latency'] if a else None,'events':len(data['events']),'evidence':data['events'],'context':data.get('context',[]),'sources':data['source_counts'],'coverage':data['coverage'],'limitations':data['limitations'],'history_coverage':data.get('history_coverage',{}),'sequence':data.get('sequence',{}),'matches':matches,'assessment':assessment,'baseline_at_analysis':row['baseline'],'hypothetical_score':hypothetical,'applied_bump':applied,'scoring_eligible':bool(applied),'scoring_reason':('Fresh behavior outside native scoring' if applied else 'No eligible independent evidence, or scoring is off')}
  def packet_view(self,ident):
   with self.connect() as db:row=db.execute('SELECT * FROM packets WHERE id=?',(ident,)).fetchone()
   if not row:return None
   data=json.loads(row['content'])
-  return {'ip':row['ip'],'packet_id':row['id'],'indexed':row['created'],'evidence':data['events'],'context':data.get('context',[]),'limitations':data['limitations'],'coverage':data['coverage'],'sources':data['source_counts'],'historical':True}
+  return {'ip':row['ip'],'packet_id':row['id'],'indexed':row['created'],'evidence':data['events'],'context':data.get('context',[]),'limitations':data['limitations'],'coverage':data['coverage'],'sources':data['source_counts'],'historical':True,'history_coverage':data.get('history_coverage',{}),'sequence':data.get('sequence',{})}
  def review(self,target,outcome,notes,actor):
   if outcome not in ('accepted','rejected') or not 1<=len(notes.strip())<=1000:raise ValueError('Choose an outcome and enter notes of up to 1,000 characters.')
   with self.connect() as db:
@@ -397,7 +419,14 @@ def run(store,index_only=False,source_cfg=None):
  brain=Brain(store);backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
  # Round-robin all known addresses; new and updated windows are revisited without starving older IPs.
  rows=sorted(rows,key=lambda r:r['ip']);offset=cursor['offset'] if cursor['offset']<len(rows) else 0
- chosen=rows[offset:offset+cfg['batch_size']];results={};calls=0;palo_calls=0;palo_results={}
+ chosen=rows[offset:offset+cfg['batch_size']];results={};calls=0;palo_calls=0;palo_results={};history_results={}
+ from evidence_history import refresh,cleanup
+ cleanup(brain,dt.datetime.now(dt.timezone.utc))
+ if source_cfg is not None and rows:
+  history_offset=(store.state('behavior_history_cursor') or 0)%len(rows)
+  for history_row in (rows+rows)[history_offset:history_offset+min(2,len(rows))]:
+   status=refresh(brain,history_row['ip'],source_cfg,dt.datetime.now(dt.timezone.utc));history_results[status]=history_results.get(status,0)+1
+  store.state('behavior_history_cursor',(history_offset+min(2,len(rows)))%len(rows))
  for row in chosen:
   if source_cfg is not None and cfg['palo_context_enabled'] and palo_calls<2:
    from behavior_context import refresh_palo
@@ -409,7 +438,7 @@ def run(store,index_only=False,source_cfg=None):
    status=model_job(brain,ident,packet,features,cfg);results[status]=results.get(status,0)+1
    if status not in ('cached','budget','leased_or_exhausted'):calls+=1
  store.state('behavior_cursor',{'offset':offset+len(chosen)})
- status={'completed':now(),'indexed':len(chosen),'fingerprints_backfilled':backfilled,'analysis':results,'palo_context':palo_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ status={'completed':now(),'indexed':len(chosen),'fingerprints_backfilled':backfilled,'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  store.state('behavior_worker',status);return status
 
 

@@ -91,6 +91,16 @@ def register(app,store,cfg,reports,display_rows,login_required):
   from behavior_groups import groups
   row=detail(address)
   return jsonify(schema_version=1,generated=now(),ip=row['ip'],groups=groups(brain(store),address=row['ip']),**brain(store).view(row['ip']))
+ @app.get('/api/v1/ips/<address>/history')
+ @required
+ def api_ip_history(address):
+  from behavior_ai import brain
+  from evidence_history import query
+  from core import ip
+  try:address=str(ip(address))
+  except ValueError:abort(400)
+  limit=integer('limit',100,1,200);offset=integer('offset',0,0,1000000)
+  return jsonify(schema_version=1,generated=now(),ip=address,**query(brain(store),address,dt.datetime.now(dt.timezone.utc),limit=limit,offset=offset,source_cfg=cfg))
  @app.get('/api/v1/intelligence')
  @required
  def api_intelligence():

@@ -56,4 +56,22 @@ def http_details(v):
  try:status=str(int(status)) if 100<=int(status)<=599 else ''
  except (ValueError,TypeError):status=''
  host=host_name(v.get('http_host') or v.get('request_host') or v.get('server_name') or v.get('hostname') or headers.get('host'))
- return {**info,'method':method,'status':status,'host':host}
+ protocol=str(v.get('server_protocol') or v.get('protocol') or '').upper()
+ media=str(headers.get('content-type','')).split(';')[0].lower()
+ media=media if media in ('application/json','application/x-www-form-urlencoded','multipart/form-data','text/plain','application/xml','text/xml') else ''
+ return {**info,'method':method,'status':status,'host':host,'http_metadata':{'protocol':protocol if protocol in ('HTTP/1.0','HTTP/1.1','HTTP/2','HTTP/3') else '', 'content_type':media}}
+
+
+
+def request_structure(value):
+ """Only syntax and fixed vocabulary survive; never retain query/header values."""
+ raw=str(value or '')[:4096]
+ try:
+  parsed=urllib.parse.urlsplit(raw)
+  names=[]
+  for name,unused in urllib.parse.parse_qsl(parsed.query,keep_blank_values=True)[:32]:
+   if re.search(r'(?i)password|passwd|token|secret|auth|cookie|session|key|email',name):name='[sensitive]'
+   elif not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.\[\]-]{0,39}',name):name='[redacted]'
+   names.append(name)
+  return {'parameter_names':sorted(set(names))[:12],'parameter_count':len(urllib.parse.parse_qsl(parsed.query,keep_blank_values=True)[:32])}
+ except ValueError:return {'parameter_names':[],'parameter_count':0}

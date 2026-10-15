@@ -29,6 +29,16 @@ def register(app,store,cfg,login_required):
   found=service.packet_view(ident)
   if not found:abort(404)
   return render_template('behavior_observation.html',analysis=found)
+ @app.get('/behavior/<address>/history')
+ @login_required
+ def behavior_history(address):
+  from evidence_history import query
+  from core import ip
+  import datetime as dt
+  try:address=str(ip(address));offset=min(1000000,max(0,int(request.args.get('offset','0'))))
+  except ValueError:abort(400)
+  data=query(service,address,dt.datetime.now(dt.timezone.utc),limit=100,offset=offset,source_cfg=cfg)
+  return render_template('evidence_history.html',history=data,address=address)
  @app.post('/settings/behavior')
  @login_required
  def behavior_settings():
