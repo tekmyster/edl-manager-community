@@ -108,6 +108,30 @@ is not device kernel timing, and prompt evaluation is not standalone tokenizer
 time. No extra inference request, gateway route, model option, quota or prompt
 change is introduced. Existing assessments are not rewritten.
 
+Cache accounting is required before interpreting prompt evaluation throughput.
+`prompt_eval_count` is total prompt tokens; optional `prompt_eval_cached_count`
+reports prompt tokens reused from cache. `prompt_eval_duration` covers uncached
+prompt evaluation under the documented protocol. Cached counts accept only whole
+integers from 0 through 10,000,000, with booleans rejected. Missing or invalid
+cached/total counts leave accounting unknown. A validated cached count greater
+than the total is retained as reported and flagged inconsistent; no uncached
+count is derived. Consistent counts yield the arithmetic difference as
+`uncached_input_tokens`; no rate is computed or asserted by capture code.
+
+Never divide total prompt tokens by uncached evaluation duration to claim
+uncached evaluation throughput. A rate may be interpreted only when the actual
+backend version/provenance and its field semantics are established for the
+observed cohort, cache accounting is consistent, and the matching duration is
+known and positive. Its numerator is total minus cached tokens. Unknown cache
+counts or backend semantics require abstention from that rate; retain raw counts
+and duration only. An absent cached field does not mean no cache reuse, and the
+current online API documentation alone does not prove an installed version's
+semantics. Correlate a separately timestamped read-only `/api/version` observation
+with genuine request context; the chat response does not provide backend version
+provenance. Fully cached/zero-uncached cases must not be presented as uncached
+token evaluation capacity. Prompt evaluation still is not standalone tokenizer
+or GPU-kernel timing.
+
 For native pipeline observation, the worker records first/last normalized
 `Store.evidence` input receipt timestamps and monotonic times only for changed
 non-Palo upserts in that cycle. Exact duplicate replays do not increment them.

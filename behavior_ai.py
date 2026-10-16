@@ -376,6 +376,12 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
    return value if type(value) is int and 0<=value<=3600000000000 else None
   metadata['backend_timings']={name:duration(name) for name in ('total_duration','load_duration','prompt_eval_duration','eval_duration')}
   metadata['backend_timings_unit']='nanoseconds'
+  # Prompt duration covers uncached evaluation under the documented protocol.
+  # Missing cache counts are unknown, never an assumed zero. Preserve validated
+  # raw counts on inconsistency, but do not derive a usable uncached count/rate.
+  cached=count('prompt_eval_cached_count');total=metadata['input_tokens']
+  accounting='unknown' if cached is None or total is None else 'consistent' if cached<=total else 'inconsistent'
+  metadata.update(cached_input_tokens=cached,input_cache_accounting=accounting,uncached_input_tokens=total-cached if accounting=='consistent' else None)
   if envelope.get('done') is not True or envelope.get('model')!=cfg['model']:raise ModelOutputError('incomplete_response',metadata)
   if envelope.get('done_reason')=='length':raise ModelOutputError('output_limit',metadata)
   try:
