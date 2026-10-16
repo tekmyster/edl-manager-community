@@ -4,6 +4,29 @@ import requests,maxminddb,contextlib
 from core import Store,now,ip
 from source_settings import effective
 UTC=dt.timezone.utc
+def misp_attributes(session,url):
+ """Fetch a complete bounded snapshot; callers retain prior state on failure."""
+ attrs=[]
+ for page in range(1,101):
+  r=session.post(url+'/attributes/restSearch',json={'returnFormat':'json','type':['ip-src','ip-dst','ip-src|port','ip-dst|port'],'includeContext':True,'deleted':False,'enforceWarninglist':True,'timestamp':'30d','limit':1000,'page':page},timeout=30)
+  r.raise_for_status();v=r.json()
+  if not isinstance(v,dict) or 'response' not in v:raise ValueError('Unexpected MISP response')
+  part=v['response'].get('Attribute') if isinstance(v['response'],dict) else v['response']
+  if not isinstance(part,list) or len(part)>1000:raise ValueError('Unexpected MISP response')
+  if any(not isinstance(a,dict) or not isinstance(a.get('value'),str) or not isinstance(a.get('Event',{}),dict) for a in part):raise ValueError('Unexpected MISP attribute')
+  for a in part:
+   item={'value':a.get('value'),'id':a.get('id'),'timestamp':a.get('timestamp'),'to_ids':a.get('to_ids'),'source':a.get('Event',{}).get('info','MISP indicator'),'event_id':a.get('event_id')}
+   if not isinstance(item['source'],str):raise ValueError('Unexpected MISP source')
+   if item['source'].endswith(' [local managed IP context]'):
+    comment=a.get('comment','');prefix='Local managed IP context; expires='
+    if item['to_ids'] not in (False,0,'0') or not isinstance(comment,str) or not comment.startswith(prefix):raise ValueError('Managed MISP context policy mismatch')
+    expiry=dt.datetime.fromisoformat(comment[len(prefix):].split(';',1)[0])
+    if expiry.tzinfo is None:raise ValueError('Managed MISP context expiry requires timezone')
+    item['expires']=expiry.astimezone(UTC).isoformat(timespec='seconds')
+    if item['expires']<=now():continue
+   attrs.append(item)
+  if len(part)<1000:return attrs
+ raise ValueError('MISP volume guard: snapshot must contain fewer than 100,000 attributes')
 def strength(source,detector):
  d=detector.lower()
  if source=='crowdsec' and d.startswith('crowdsec-ban:'):return ('ssh' if 'ssh' in d else 'http'),75
@@ -209,14 +232,10 @@ def enrich(s,cfg):
      def init_poolmanager(self,*args,**kwargs):
       if cfg.get('misp_sha256'):kwargs.update(assert_hostname=False,assert_fingerprint=cfg['misp_sha256'])
       return super().init_poolmanager(*args,**kwargs)
-    ms=requests.Session();ms.mount(cfg['misp_url'],PinnedMISP());ms.verify=cfg['misp_ca'];ms.headers.update({'Authorization':keys['misp'],'Accept':'application/json'});attrs=[]
-    for page in range(1,51):
-     r=ms.post(cfg['misp_url']+'/attributes/restSearch',json={'returnFormat':'json','type':['ip-src','ip-dst','ip-src|port','ip-dst|port'],'includeContext':True,'deleted':False,'enforceWarninglist':True,'timestamp':'30d','limit':1000,'page':page},timeout=30);r.raise_for_status();v=r.json();part=v.get('response',{}).get('Attribute',[]) if isinstance(v.get('response'),dict) else v.get('response',[])
-     if not isinstance(part,list):raise ValueError('Unexpected MISP response')
-     attrs.extend({'value':a.get('value'),'id':a.get('id'),'timestamp':a.get('timestamp'),'to_ids':a.get('to_ids'),'source':a.get('Event',{}).get('info','MISP indicator'),'event_id':a.get('event_id')} for a in part)
-     if len(part)<1000:break
-    else:raise ValueError('MISP volume guard: more than 50,000 attributes')
-    snapshot={'fetched':now(),'expires':(dt.datetime.now(UTC)+dt.timedelta(hours=6)).isoformat(timespec='seconds'),'generation':hashlib.sha256(json.dumps(attrs,sort_keys=True).encode()).hexdigest(),'attributes':attrs};s.state('misp_snapshot',snapshot)
+    ms=requests.Session();ms.mount(cfg['misp_url'],PinnedMISP());ms.verify=cfg['misp_ca'];ms.headers.update({'Authorization':keys['misp'],'Accept':'application/json'})
+    attrs=misp_attributes(ms,cfg['misp_url'])
+    expiry=min([(dt.datetime.now(UTC)+dt.timedelta(hours=6)).isoformat(timespec='seconds')]+[a['expires'] for a in attrs if a.get('expires')])
+    snapshot={'fetched':now(),'expires':expiry,'generation':hashlib.sha256(json.dumps(attrs,sort_keys=True).encode()).hexdigest(),'attributes':attrs};s.state('misp_snapshot',snapshot)
    except (requests.RequestException,ValueError,KeyError) as e:providers['misp']='sync failed; prior snapshot retained: '+type(e).__name__
   networks=[];exact={}
   for a in snapshot.get('attributes',[]):
@@ -233,13 +252,14 @@ def enrich(s,cfg):
   for row in rows:
    address=row['ip']
    cached=s.cached(address,'misp')
-   if cached and json.loads(cached['payload']).get('snapshot_generation')==snapshot.get('generation'):continue
+   if cached and snapshot.get('expires','')>now() and json.loads(cached['payload']).get('snapshot_generation')==snapshot.get('generation'):continue
    if snapshot.get('expires','')<=now():pending_misp.append((address,'misp',{'error':'Local indicator snapshot is unavailable or stale'},'failed',1))
    else:
     a=ipaddress.ip_address(address);hits=list(exact.get(address,[]))
     for mask,entries in prefix_index[a.version]:hits.extend(entries.get(int(a)&mask,[]))
     actionable=[h for h in hits if h.get('to_ids',True) in (True,1,'1')]
-    pending_misp.append((address,'misp',{'matches':len(actionable),'context_matches':len(hits)-len(actionable),'attribute_ids':[h['id'] for h in hits[:20]],'sources':sorted({h.get('source','MISP indicator') for h in hits})[:8],'snapshot_generation':snapshot.get('generation'),'snapshot_fetched':snapshot['fetched'],'fresh_to_ids_and_warninglists_enforced':True,'score_contribution':25 if actionable else 0,'note':'Only fresh actionable intelligence adds points; context-only indicators add none; whitelist and crawler protection remain in force'},'ok',24));checks+=1
+    hours=max(0,(dt.datetime.fromisoformat(snapshot['expires'])-dt.datetime.now(UTC)).total_seconds()-1)/3600
+    pending_misp.append((address,'misp',{'matches':len(actionable),'context_matches':len(hits)-len(actionable),'attribute_ids':[h['id'] for h in hits[:20]],'sources':sorted({h.get('source','MISP indicator') for h in hits})[:8],'snapshot_generation':snapshot.get('generation'),'snapshot_fetched':snapshot['fetched'],'fresh_to_ids_and_warninglists_enforced':True,'score_contribution':25 if actionable else 0,'note':'Only fresh actionable intelligence adds points; context-only indicators add none; whitelist and crawler protection remain in force'},'ok',hours));checks+=1
    if len(pending_misp)>=256:s.cache_many(pending_misp);pending_misp=[]
   if pending_misp:s.cache_many(pending_misp)
   keys.pop('misp',None)
