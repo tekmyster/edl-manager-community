@@ -61,7 +61,9 @@ def collect(s,cfg,include_palo=True,palo_only=False):
  while not palo_only:
   comp={'size':500,'sources':[{'ip':{'terms':{'field':'data.srcip'}}},{'source':{'terms':{'field':'data.edl_source'}}},{'detector':{'terms':{'field':'data.edl_detector'}}}]}
   if after:comp['after']=after
-  q={'size':0,'query':{'bool':{'filter':native_filters}},'aggs':{'items':{'composite':comp,'aggs':{'last':{'top_hits':{'size':1,'sort':[{'data.edl_seen_utc':'desc'},{'timestamp':'desc'}],'_source':['data','timestamp','agent']}}}}}}
+  # Older indexes may lack this keyword mapping; retain native UTC string order
+  # and the same cross-index scope rather than skipping indexes or event times.
+  q={'size':0,'query':{'bool':{'filter':native_filters}},'aggs':{'items':{'composite':comp,'aggs':{'last':{'top_hits':{'size':1,'sort':[{'data.edl_seen_utc':{'order':'desc','unmapped_type':'keyword'}},{'timestamp':'desc'}],'_source':['data','timestamp','agent']}}}}}}
   if getattr(s,'_worker_connection',None) is not None:s._worker_connection.commit()
   r=sess.post(cfg['index_url']+'/wazuh-alerts-*/_search',json=q,timeout=90);r.raise_for_status();v=r.json()
   if v.get('timed_out') or v.get('_shards',{}).get('failed'):raise RuntimeError('Incomplete index query; prior evidence retained')
