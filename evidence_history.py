@@ -87,12 +87,22 @@ def fetch(cfg,address):
  if general:sources.append({'bool':{'filter':[{'range':{'rule.level':{'gte':8}}}]+([] if general=='*' else [{'term':{'agent.name':general}}]),'must_not':[{'exists':{'field':'data.edl_source'}}]}})
  if not sources:return [],{'status':'not_configured'}
  q={'size':500,'track_total_hits':True,'sort':[{'timestamp':'desc'}],'_source':['timestamp','agent.name','rule.id','rule.description','data.edl_source','data.edl_detector','data.edl_seen_utc','data.edl_activity_json','data.dstip','data.dstport'],'query':{'bool':{'filter':filters,'should':sources,'minimum_should_match':1}}}
- context=ssl.create_default_context(cafile=cfg['index_ca']);context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+ # Requests' normal verified transport supports system trust without a cafile.
+ # False/empty values never turn certificate or hostname verification off.
+ trust=cfg.get('index_ca',True)
+ if trust is not True and not (isinstance(trust,str) and trust.strip()):raise ValueError('A trusted CA file or system trust is required')
+ context=None
+ if isinstance(trust,str):
+  context=ssl.create_default_context(cafile=trust)
+  # Preserve the existing index collectors' legacy-CA extension compatibility.
+  # Chain trust (CERT_REQUIRED) and hostname verification remain mandatory.
+  context.verify_flags &= ~ssl.VERIFY_X509_STRICT
  class TLS(HTTPAdapter):
   def init_poolmanager(self,*a,**kw):kw['ssl_context']=context;return super().init_poolmanager(*a,**kw)
   def build_connection_pool_key_attributes(self,r,v,c=None):h,k=super().build_connection_pool_key_attributes(r,v,c);k['ssl_context']=context;return h,k
  with requests.Session() as session:
-  session.auth=(cfg['index_user'],cfg['index_password']);session.verify=cfg['index_ca'];session.mount(cfg['index_url'],TLS())
+  session.auth=(cfg['index_user'],cfg['index_password']);session.verify=trust
+  if context is not None:session.mount(cfg['index_url'],TLS())
   response=session.post(cfg['index_url']+'/wazuh-alerts-*/_search',json=q,timeout=(5,40));response.raise_for_status();result=response.json()
  if result.get('timed_out') or result.get('_shards',{}).get('failed'):raise RuntimeError('Incomplete history query')
  records=[]

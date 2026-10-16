@@ -212,3 +212,18 @@ provenance come from the actual configured index hit, not claims inside an event
 A later indexed copy can fill missing provenance without adding an observation or
 changing its first local receipt. Changing the configured firewall source also
 isolates the cached history scope.
+
+
+History index queries accept the existing Requests `index_ca: true` system-trust
+mode or a nonempty custom CA file path. Disabled/empty verification settings are
+rejected. Custom CA files retain the existing index collectors' legacy certificate
+extension compatibility (`VERIFY_X509_STRICT` off); trusted-chain verification
+(`CERT_REQUIRED`) and hostname checks remain enabled. There is no retry that
+disables verification after a certificate failure. System trust uses the standard
+Requests verified transport, without treating `true` as a filesystem path.
+
+IP details show the current applied AI contribution and effective score. The
+separate, collapsed **Score simulation** uses the native score saved at analysis;
+it does not determine the effective score. Cached history keeps counts, partial
+coverage and collection status visible, with privacy/fingerprint details behind
+keyboard-accessible help. Its event table scrolls horizontally on narrow screens.

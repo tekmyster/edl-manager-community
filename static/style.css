@@ -53,3 +53,6 @@ html{overflow-x:clip}
 
 .scroll:has(.date-filter[open]){min-height:360px}
 .date-filter summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Keep event columns readable inside the keyboard-accessible mobile scroller. */
+.history-events{min-width:900px}.history-events td:first-child,.history-events td:nth-child(2){white-space:nowrap}.history-table:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
