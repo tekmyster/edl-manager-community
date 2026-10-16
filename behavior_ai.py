@@ -275,8 +275,8 @@ def validate_result(value,packet,candidates,registry):
     candidate=next((c for c in candidates if c['candidate_id']==item['candidate_id']),{})
     peer={e['id'] for e in candidate.get('historical_events',[])};allowed=references|peer
     supporting_current={e['id'] for e in candidate.get('current_events',packet['events'])}
-    if not set(item['evidence_ids'])&supporting_current:raise ValueError('Correlation requires a supporting current observation')
     if not set(item['evidence_ids'])&native or not set(item['evidence_ids'])&peer:raise ValueError('Correlation requires current and historical observations')
+    if not set(item['evidence_ids'])&supporting_current:raise ValueError('Correlation requires a supporting current observation')
    if not set(item['evidence_ids'])<=allowed:raise ValueError('Unknown evidence reference')
    if field in ('attack_techniques','d3fend_context'):
     kind='attack' if field=='attack_techniques' else 'd3fend'
