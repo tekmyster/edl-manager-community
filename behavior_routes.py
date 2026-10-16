@@ -66,6 +66,16 @@ def register(app,store,cfg,login_required):
   except ValueError as exc:flash(str(exc),'error')
   else:flash('Relationship review saved. No policy was changed.','success')
   return redirect(url_for('behavior_overview'))
+ @app.post('/behavior/observations/<ident>/retain')
+ @login_required
+ def behavior_retain(ident):
+  from behavior_retention import hold
+  try:hold(service,'packet',ident,request.form.get('reason',''))
+  except ValueError as exc:flash(str(exc),'error')
+  else:
+   store.audit(session['user'],'behavior.investigation.retain',{'packet_id':ident})
+   flash('Observation and its assessments retained for investigation.','success')
+  return redirect(url_for('behavior_observation',ident=ident))
  app.jinja_env.globals['behavior_view']=service.view
  app.jinja_env.globals['behavior_groups']=lambda address:groups(service,address=address)
  from source_settings import SOURCES

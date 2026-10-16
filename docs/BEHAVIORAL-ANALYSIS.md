@@ -232,3 +232,7 @@ separate, collapsed **Score simulation** uses the native score saved at analysis
 it does not determine the effective score. Cached history keeps counts, partial
 coverage and collection status visible, with privacy/fingerprint details behind
 keyboard-accessible help. Its event table scrolls horizontally on narrow screens.
+
+
+Configurable derived retention, investigation holds, scheduling bounds and honest
+benchmark definitions are documented in [AI retention and performance](AI-RETENTION-PERFORMANCE.md).
