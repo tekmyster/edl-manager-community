@@ -94,11 +94,14 @@ def stage(config,destination,previous=None,fetcher=fetch,at=None):
    if old and (old/'source.json').exists():
     prior=json.loads((old/'source.json').read_text());record['last_success']=prior.get('last_success');record['expires']=prior.get('expires')
     same_source=prior.get('source_url')==source['url']
-    if same_source and prior.get('expires','')>stamp(at) and (old/'event.json').exists():
+    # A never-successful source has no last-good TTL. It stays unavailable;
+    # nullable legacy health fields must not abort other source refreshes.
+    expiry=prior.get('expires') or ''
+    if same_source and prior.get('last_success') and isinstance(expiry,str) and expiry>stamp(at) and (old/'event.json').exists():
      for name in ['event.json','manifest.json','values.json']:shutil.copy2(old/name,folder/name)
      record.update(status='held_last_good',count=prior['count'])
      for key in ('raw_sha256','canonical_sha256','comment_rows','transport'):record[key]=prior.get(key)
-    else:record['status']='expired_revoke'
+    elif prior.get('last_success'):record['status']='expired_revoke'
    if record['status'] in ('unavailable','expired_revoke'):
     event=make_event(source,[],at);(folder/'event.json').write_text(json.dumps(event));(folder/'manifest.json').write_text(json.dumps({event['Event']['uuid']:{'timestamp':int(at.timestamp())}}));(folder/'values.json').write_text('[]')
    if not source.get('optional',False):summary['required_failures']+=1

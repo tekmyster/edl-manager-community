@@ -104,6 +104,55 @@ def test_optional_unavailable_and_healthy_empty_have_distinct_honest_states(tmp_
     assert failed['sources'][0]['count'] == empty['sources'][0]['count'] == 0
 
 
+@pytest.mark.parametrize('legacy_null_state', [False, True])
+def test_repeated_never_successful_source_preserves_unavailable_health_and_other_refreshes(tmp_path, legacy_null_state):
+    import urllib.error
+    cfg = config(optional=True)
+    cfg['sources'].append(dict(cfg['sources'][0], id='healthy', url='https://example.org/healthy', optional=False))
+    def fetcher(source):
+        if source['id'] == 'example': raise urllib.error.HTTPError(source['url'], 403, 'Forbidden', None, None)
+        return b'9.9.9.9', {'http_status': 200, 'content_type': 'text/plain'}
+    previous = tmp_path/'first'
+    sync.stage(cfg, previous, fetcher=fetcher, at=AT)
+    if legacy_null_state:
+        path = previous/'example/source.json'; record = json.loads(path.read_text())
+        record.update(status='expired_revoke', last_success=None, expires=None)
+        path.write_text(json.dumps(record))
+    for cycle in range(1, 4):
+        current = tmp_path/str(cycle)
+        result = sync.stage(cfg, current, previous, fetcher, AT+dt.timedelta(hours=cycle))
+        failed, healthy = result['sources']
+        assert result['required_failures'] == 0
+        assert failed['status'] == 'unavailable' and failed['http_status'] == 403 and failed['count'] == 0
+        assert failed.get('last_success') is None and failed.get('expires') is None
+        assert json.loads((current/'example/event.json').read_text())['Event']['Attribute'] == []
+        assert healthy['status'] == 'ok' and healthy['count'] == 1
+        assert healthy['last_success'] == sync.stamp(AT+dt.timedelta(hours=cycle))
+        previous = current
+
+
+def test_repeated_required_unavailable_source_reports_failure_without_aborting_batch(tmp_path):
+    previous = tmp_path/'first'
+    sync.stage(config(), previous, fetcher=unavailable, at=AT)
+    for cycle in range(1, 4):
+        current = tmp_path/str(cycle)
+        result = sync.stage(config(), current, previous, unavailable, AT+dt.timedelta(hours=cycle))
+        assert result['required_failures'] == 1 and result['sources'][0]['status'] == 'unavailable'
+        previous = current
+
+
+def test_never_successful_source_can_recover_then_hold_its_real_last_good_snapshot(tmp_path):
+    cfg = config(optional=True)
+    sync.stage(cfg, tmp_path/'failed', fetcher=unavailable, at=AT)
+    recovered = sync.stage(cfg, tmp_path/'recovered', tmp_path/'failed', fetched(b'8.8.8.8'), AT+dt.timedelta(hours=1))
+    held = sync.stage(cfg, tmp_path/'held', tmp_path/'recovered', unavailable, AT+dt.timedelta(hours=2))
+    assert recovered['sources'][0]['status'] == 'ok' and recovered['sources'][0]['count'] == 1
+    assert held['sources'][0]['status'] == 'held_last_good'
+    assert held['sources'][0]['last_success'] == recovered['sources'][0]['last_success']
+    assert held['sources'][0]['expires'] == recovered['sources'][0]['expires']
+    assert (tmp_path/'held/example/event.json').read_bytes() == (tmp_path/'recovered/example/event.json').read_bytes()
+
+
 def test_byte_and_indicator_limits_are_enforced(monkeypatch):
     monkeypatch.setattr(sync, 'MAX_BYTES', 3)
     with pytest.raises(ValueError, match='byte guard'): sync.parse_feed(b'8.8.8.8')
