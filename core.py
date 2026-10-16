@@ -1,6 +1,6 @@
 """Local policy, evidence, cache and reproducible EDL snapshots."""
 import datetime as dt,hashlib,ipaddress,json,os,pathlib,sqlite3,uuid,contextlib,bisect,time
-from filelock import FileLock
+from filelock import FileLock,Timeout
 UTC=dt.timezone.utc
 BLOCK_THRESHOLD=75
 HONEYPOT_FLOOR=50
@@ -374,11 +374,37 @@ class Store:
    for r in d.execute('SELECT * FROM evidence WHERE seen>=?',(cut,)):ev.setdefault(r['ip'],[]).append(dict(r))
    for r in d.execute('SELECT cache.* FROM cache JOIN ips ON cache.ip=ips.ip WHERE ips.last_seen>=? OR EXISTS (SELECT 1 FROM block_retention b WHERE b.ip=ips.ip AND b.expires>?)',(cut,now())):ca.setdefault(r['ip'],[]).append(dict(r))
    return [self.score(r['ip'],json.loads(r['metadata']),ev.get(r['ip'],[]),ca.get(r['ip'],[]),retained.get(r['ip']),returns.get(r['ip'])) for r in d.execute('SELECT * FROM ips WHERE (last_seen>=? AND EXISTS (SELECT 1 FROM evidence WHERE evidence.ip=ips.ip AND evidence.seen>=?)) OR EXISTS (SELECT 1 FROM block_retention b WHERE b.ip=ips.ip AND b.expires>?) OR EXISTS (SELECT 1 FROM offender_returns h WHERE h.ip=ips.ip AND h.policy_event=1 AND h.seen>=?)',(cut,cut,now(),cut))]
- def build(self,output,actor='System'):
-  from offenders import maintain
-  maintain(self)
+ def build(self,output,actor='System',*,defer_if_busy=False):
+  # Commit collected evidence/cursors before waiting for another publisher.
+  # Never hold SQLite's writer lock while acquiring the filesystem lock.
+  anchor=getattr(self,'_worker_connection',None)
+  if anchor is not None:anchor.commit()
+  requested=now()
+  with self.connect() as d:
+   d.execute('BEGIN IMMEDIATE')
+   previous=d.execute("SELECT value FROM state WHERE key='publication_request'").fetchone()
+   completed=d.execute("SELECT value FROM state WHERE key='publication_completed'").fetchone()
+   previous=json.loads(previous[0]) if previous else {}
+   completed=json.loads(completed[0]) if completed else {}
+   pending=previous.get('id') and previous.get('id')!=completed.get('request_id')
+   request={'id':uuid.uuid4().hex,'requested':previous['requested'] if pending else requested,'latest_requested':requested,'actor':actor}
+   d.execute('INSERT OR REPLACE INTO state VALUES(?,?)',('publication_request',json.dumps(request)))
   pathlib.Path(output).mkdir(parents=True,exist_ok=True)
-  with FileLock(str(pathlib.Path(output)/'build.lock'),timeout=30):return self._build(output,actor)
+  lock=FileLock(str(pathlib.Path(output)/'build.lock'),timeout=0 if defer_if_busy else 30)
+  try:lock.acquire()
+  except Timeout:
+   if defer_if_busy:return None
+   raise
+  try:
+   # Only a lock owner maintains/builds. A contending background cycle leaves
+   # a durable request, reports publication pending and retries next interval.
+   request=self.state('publication_request')
+   from offenders import maintain
+   maintain(self)
+   manifest=self._build(output,actor)
+   self.state('publication_completed',{'request_id':request['id'],'created':manifest['created']})
+   return manifest
+  finally:lock.release()
  def _build(self,output,actor='System'):
   from event_history import baseline,expirations,list_changes
   baseline(self,output);expirations(self,now())

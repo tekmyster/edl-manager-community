@@ -318,15 +318,18 @@ def main():
     s.state('ingest_status',{'status':'running','started':started,'phase':'collecting and publishing'})
     count=collect(s,cfg,include_palo=False)
     from source_types import refresh
-    refresh(s);m=s.build(cfg['output'])
-    s.state('ingest_status',{'status':'ok','started':started,'completed':now(),'evidence_buckets':count,'generation':m['created']})
+    refresh(s);m=s.build(cfg['output'],defer_if_busy=True)
+    if m is None:logging.warning('Publication deferred: ingestion committed; another publisher is active. Retrying next cycle.')
+    s.state('ingest_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'ingestion_committed':True,'publication':'published' if m else 'pending','generation':m['created'] if m else None})
     return
    s.state('worker_status',{'status':'running','phase':'collecting evidence','started':started,'mode':'production'})
    count=collect(s,cfg,palo_only=enrich_only);s.state('worker_status',{'status':'running','phase':'cached enrichment','started':started,'evidence_buckets':count,'mode':'production'})
    checks=enrich(s,cfg)
    from source_types import refresh
    refresh(s);s.state('worker_status',{'status':'running','phase':'building lists','started':started,'evidence_buckets':count,'enrichment_checks':checks,'mode':'production'})
-   m=s.build(cfg['output']);s.state('worker_status',{'status':'ok','started':started,'completed':now(),'evidence_buckets':count,'enrichment_checks':checks,'mode':'production'})
+   m=s.build(cfg['output'],defer_if_busy=True)
+   if m is None:logging.warning('Publication deferred: enrichment committed; another publisher is active. Retrying next cycle.')
+   s.state('worker_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'enrichment_checks':checks,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'mode':'production'})
   except Exception as e:
    s.state('ingest_status' if fast else 'worker_status',{'status':'error','started':started,'completed':now(),'error':type(e).__name__+': '+str(e)[:240]});raise
   finally:s._worker_connection=None;anchor.close()
