@@ -1,0 +1,14 @@
+{
+  "attack": {
+    "url": "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/c2494b29dd268c46a5d0ea0990553e4327cd2253/enterprise-attack/enterprise-attack-20.0.json",
+    "sha256": "81113ba98afa2928f3dcff62022539f7ce30c315c32e14422f11ff95ce534352",
+    "bytes": 55271014,
+    "version": "20.0"
+  },
+  "d3fend": {
+    "url": "https://d3fend.mitre.org/ontologies/d3fend/1.6.0/d3fend.json",
+    "sha256": "e1546d432c6aa64d45b62dd9e9484b0774ae84de7ff3605ff9dd4e20278957bf",
+    "bytes": 4833645,
+    "version": "1.6.0"
+  }
+}

@@ -1,0 +1,15 @@
+{% set metadata = analysis.assessment.get('metadata', {}) %}
+<section aria-label="Behavior mappings">
+<h4>Behavior mappings</h4>
+<p class="muted">{{ metadata.get('taxonomy_version', 'Dataset version unavailable for this saved assessment') }}. Candidate interpretations of saved observations; execution, compromise and maliciousness remain unconfirmed.</p>
+{% for kind, label in [('attack', 'ATT&CK'), ('d3fend', 'D3FEND')] %}{% set coverage = metadata.get('taxonomy_coverage', {}).get(kind, {}) %}{% if coverage and coverage.eligible > coverage.supplied %}<p class="muted">{{ label }}: {{ coverage.supplied }} of {{ coverage.eligible }} eligible candidates supplied to keep inspection bounded.</p>{% endif %}{% endfor %}
+{% for field, heading in [('attack_techniques', 'ATT&CK behavior'), ('d3fend_context', 'D3FEND defensive context')] %}
+<p><strong>{{ heading }}</strong></p>
+{% for item in analysis.assessment[field] %}
+{% set names = metadata.get('taxonomy_mappings', {}).get(field, []) | selectattr('technique_id', 'equalto', item.technique_id) | list %}
+<p><strong>{{ names[0].name if names else item.technique_id }}</strong>{% if names %} <span class="muted">({{ item.technique_id }})</span>{% endif %} · {{ item.explanation }}</p>
+<p class="muted">Supporting observations: {% for reference in item.evidence_ids %}<a href="#behavior-{{ reference }}">Observation {{ loop.index }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+{% else %}<p class="muted">No supported mapping recorded.</p>{% endfor %}
+{% endfor %}
+<p class="muted">D3FEND describes relevant defensive analysis. It does not establish that a control is deployed, that prevention succeeded, or that activity is malicious. Detector descriptions may be incomplete or wrong. Missing mappings may reflect limited telemetry or a bounded candidate list.</p>
+</section>

@@ -40,6 +40,11 @@ The gateway supplies an 8,192-token context, deterministic sampling and an 1,800
 
 ## Taxonomy import
 
+See [Evidence-supported MITRE mappings](MITRE-COVERAGE.md) for current hash-pinned
+versions, required legacy-registry reimport, supported telemetry, candidate bounds
+and uncertainty. This section is the original release runbook; current scoring
+configuration and code remain authoritative.
+
 Download versioned datasets from [MITRE ATT&CK](https://github.com/mitre-attack/attack-stix-data) and [MITRE D3FEND](https://d3fend.mitre.org/resources/ontology/), subject to their respective terms. Import into the application's private data directory:
 
 ```sh
