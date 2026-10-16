@@ -217,9 +217,11 @@ def test_authenticated_detail_renders_mapping_and_preserves_native_policy(catalo
  store.evidence('8.8.8.8','tpot','cowrie',now(),'ssh',50,details={'activity':{'events':[{'id':'synthetic','seen':now(),'action':'powershell execution'}]}})
  brain=Brain(store);ident,packet,features=brain.packet(store.describe('8.8.8.8'));before=store.describe('8.8.8.8')
  (tmp_path/'behavior-taxonomy.json').write_text(json.dumps(catalog))
- cfg={**DEFAULTS,'model_enabled':True,'endpoint':'https://127.0.0.1','model':'fixture'}
+ cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://127.0.0.1','model':'fixture'}
+ store.state('behavior_settings',cfg)
  def fake(*args):
-  r=result(packet);r.update(classification='inconclusive',analysis_summary='Synthetic UI fixture; no production model verdict or accuracy claim.')
+  r=result(packet);r.update(classification='inconclusive',maliciousness_confidence=0,automation={'classification':'unknown','confidence':0},intent={'classification':'unknown','confidence':0},analysis_summary='Synthetic UI fixture; no production model verdict or accuracy claim.')
+  r['findings']=[{'summary':'Synthetic detector description; execution unconfirmed.','evidence_ids':[packet['events'][0]['id']]}]
   r['attack_techniques']=[{'technique_id':'T1059.001','evidence_ids':[packet['events'][0]['id']],'explanation':'Synthetic detector description; execution unconfirmed.'}]
   class Response:
    status_code=200
@@ -237,7 +239,7 @@ def test_authenticated_detail_renders_mapping_and_preserves_native_policy(catalo
  assert 'T1059.001 example label' in body and 'D3FEND defensive context' in body and '#behavior-'+packet['events'][0]['id'] in body
  assert 'control is deployed' in body and 'compromise and maliciousness remain unconfirmed' in body
  assert store.describe('8.8.8.8')['score']==before['score'] and store.describe('8.8.8.8')['retention']==before['retention']
- assert not store.active_rules() and store.state('behavior_settings') is None
+ assert not store.active_rules() and store.state('behavior_settings')==cfg
  export=os.environ.get('MITRE_UI_DIR')
  if export:
   root=pathlib.Path(export);root.mkdir(exist_ok=True)
