@@ -879,7 +879,19 @@ def create_app(config=None):
 
   def event_url(table,**changes):return url_for('detail',address=r['ip'],**{**state,**{table['prefix']+k:v for k,v in changes.items()}},_anchor='policy-history')
 
-  return render_template('detail.html',row=r,time_labels=[(k,label.replace("UTC",display_timezone())) for k,label in TIME_LABELS],repeat_history=h,repeat_text=offender_text(h),repeat_report=reports.snapshot(),policy_notes=related,events=events,event_state=state,event_url=event_url,event_tracking=saved['tracking'],**investigation)
+  from permanent_policy import view as permanent_view
+  return render_template('detail.html',row=r,permanent_policy=permanent_view(store,r['ip']),time_labels=[(k,label.replace("UTC",display_timezone())) for k,label in TIME_LABELS],repeat_history=h,repeat_text=offender_text(h),repeat_report=reports.snapshot(),policy_notes=related,events=events,event_state=state,event_url=event_url,event_tracking=saved['tracking'],**investigation)
+
+ @app.post('/ip/<path:address>/permanent-reversal')
+ @login_required
+ def permanent_reversal(address):
+  from permanent_policy import reverse
+  try:
+   address=store.describe(address)['ip']
+   reverse(store,address,request.form.get('reason',''),session['user'])
+   flash('Permanent policy reversed. Other native and manual blocks still apply. Lists update on the next publication.','success')
+  except ValueError as error:flash(str(error),'error')
+  return redirect(url_for('detail',address=address,_anchor='permanent-policy'))
 
  @app.post('/ip/<path:address>/policy')
 

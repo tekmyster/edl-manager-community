@@ -7,7 +7,7 @@ CREATE INDEX IF NOT EXISTS policy_events_target ON policy_events(kind,target,at)
 CREATE INDEX IF NOT EXISTS policy_events_time ON policy_events(at);
 CREATE INDEX IF NOT EXISTS policy_events_bounds ON policy_events(family,lo,hi);
 '''
-LABELS={'intelligence.reviewed':'Intelligence reviewed','whitelist.added':'Whitelist added','blacklist.added':'Blacklist added','whitelist.disabled':'Whitelist disabled','blacklist.disabled':'Blacklist disabled','whitelist.expired':'Whitelist expired','blacklist.expired':'Blacklist expired','block.expired':'Block retention expired','list.added':'Added to list','list.removed':'Removed from list','enrichment.queued':'Enrichment requested'}
+LABELS={'permanent.reversed':'Permanent block reversed','intelligence.reviewed':'Intelligence reviewed','whitelist.added':'Whitelist added','blacklist.added':'Blacklist added','whitelist.disabled':'Whitelist disabled','blacklist.disabled':'Blacklist disabled','whitelist.expired':'Whitelist expired','blacklist.expired':'Blacklist expired','block.expired':'Block retention expired','list.added':'Added to list','list.removed':'Removed from list','enrichment.queued':'Enrichment requested'}
 
 def insert(d,key,at,actor,action,kind,target,details):
  from core import now

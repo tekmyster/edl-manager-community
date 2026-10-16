@@ -24,6 +24,8 @@ def layout(saved,available):
 def policy_rows(store,rows,rules):
 
  from core import selector
+ from permanent_policy import active
+ permanent=active(store)
 
  compiled=[]
 
@@ -74,6 +76,8 @@ def policy_rows(store,rows,rules):
   elif row.get('verified_crawler'):policy,reason='Allowed','Verified crawler protection'
 
   elif blocked:policy,reason='Denied','Blacklist: '+blocked['reason']
+
+  elif row['ip'] in permanent:policy,reason='Denied','Permanent repeat-offender block earned '+permanent[row['ip']]
 
   elif row.get('auto_candidate'):policy,reason='Denied','Automatic block threshold reached'
 

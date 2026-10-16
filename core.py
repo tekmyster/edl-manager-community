@@ -109,6 +109,8 @@ class Store:
   with self.connect() as d:d.executescript(SCHEMA)
   from event_history import recover_audit
   recover_audit(self)
+  from permanent_policy import SCHEMA as permanent_schema
+  with self.connect() as d:d.executescript(permanent_schema)
  @contextlib.contextmanager
  def connect(self,commit=True):
   persistent=getattr(self,'_worker_connection',None)
@@ -204,6 +206,8 @@ class Store:
    from offenders import returned
    returned(d,address,source,sensor,seen)
    inserted=d.execute('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET details=excluded.details WHERE evidence.details!=excluded.details',(id,address,source,sensor,seen,family,max(0,min(int(strength),100)),url,json.dumps(details or {})))
+   from permanent_policy import observe
+   observe(d,address,source,sensor,seen,id,'evidence')
    if source!='palo':
     d.execute('UPDATE block_retention SET last_seen=?,expires=?,last_source=? WHERE ip=? AND last_seen<? AND expires>=?',(seen,(t+dt.timedelta(days=30)).isoformat(timespec='seconds'),source,address,seen,seen))
    if inserted.rowcount:d.execute("INSERT INTO ips(ip,first_seen,last_seen) VALUES(?,?,?) ON CONFLICT(ip) DO UPDATE SET first_seen=min(first_seen,excluded.first_seen),last_seen=max(last_seen,excluded.last_seen)",(address,seen,seen))
@@ -233,6 +237,9 @@ class Store:
    record(d,address,t.isoformat(timespec='seconds'))
    from offenders import returned
    returned(d,address,source,sensor,t.isoformat(timespec='seconds'))
+   from permanent_policy import observe,activity_id
+   event_time=t.isoformat(timespec='seconds')
+   observe(d,address,source,sensor,event_time,activity_id(address,source,sensor,event_time),'source_activity')
    d.execute('INSERT INTO source_activity VALUES(?,?,?,?,?) ON CONFLICT(ip,source,sensor) DO UPDATE SET seen=excluded.seen,details=excluded.details WHERE excluded.seen>=source_activity.seen',(address,source,sensor,t.isoformat(timespec='seconds'),json.dumps(details)))
  def score(self,address,meta,evidence,caches,retention=None,prior_return=None):
   configuration=getattr(self,'_source_configuration',None)
@@ -373,7 +380,11 @@ class Store:
    for r in d.execute('SELECT * FROM offender_returns WHERE policy_event=1 AND seen>=? ORDER BY seen',(cut,)):returns[r['ip']]=dict(r)
    for r in d.execute('SELECT * FROM evidence WHERE seen>=?',(cut,)):ev.setdefault(r['ip'],[]).append(dict(r))
    for r in d.execute('SELECT cache.* FROM cache JOIN ips ON cache.ip=ips.ip WHERE ips.last_seen>=? OR EXISTS (SELECT 1 FROM block_retention b WHERE b.ip=ips.ip AND b.expires>?)',(cut,now())):ca.setdefault(r['ip'],[]).append(dict(r))
-   return [self.score(r['ip'],json.loads(r['metadata']),ev.get(r['ip'],[]),ca.get(r['ip'],[]),retained.get(r['ip']),returns.get(r['ip'])) for r in d.execute('SELECT * FROM ips WHERE (last_seen>=? AND EXISTS (SELECT 1 FROM evidence WHERE evidence.ip=ips.ip AND evidence.seen>=?)) OR EXISTS (SELECT 1 FROM block_retention b WHERE b.ip=ips.ip AND b.expires>?) OR EXISTS (SELECT 1 FROM offender_returns h WHERE h.ip=ips.ip AND h.policy_event=1 AND h.seen>=?)',(cut,cut,now(),cut))]
+   rows=[self.score(r['ip'],json.loads(r['metadata']),ev.get(r['ip'],[]),ca.get(r['ip'],[]),retained.get(r['ip']),returns.get(r['ip'])) for r in d.execute('SELECT * FROM ips WHERE (last_seen>=? AND EXISTS (SELECT 1 FROM evidence WHERE evidence.ip=ips.ip AND evidence.seen>=?)) OR EXISTS (SELECT 1 FROM block_retention b WHERE b.ip=ips.ip AND b.expires>?) OR EXISTS (SELECT 1 FROM offender_returns h WHERE h.ip=ips.ip AND h.policy_event=1 AND h.seen>=?)',(cut,cut,now(),cut))]
+  from permanent_policy import active
+  known={r['ip'] for r in rows}
+  rows.extend(self.describe(a) for a in active(self) if a not in known)
+  return rows
  def build(self,output,actor='System',*,defer_if_busy=False):
   # Commit collected evidence/cursors before waiting for another publisher.
   # Never hold SQLite's writer lock while acquiring the filesystem lock.
@@ -428,13 +439,18 @@ class Store:
    else:nets=selector(rule['value'])[2]
    (emergency if rule['emergency'] else allow if rule['action']=='allow' else manual).extend(nets)
   protected=[ipaddress.ip_network(r['ip']) for r in scores if r['verified_crawler']]
+  from permanent_policy import active as permanent_active
+  permanent=permanent_active(self)
+  from offenders import contains as policy_contains
+  permanent_protected=policy_contains(allow+protected)
+  permanent_nets=[ipaddress.ip_network(a) for a in permanent if not permanent_protected(a)]
   lists={'manual-block':subtract(manual,allow+protected),'manual-allow':allow,'scored-block':subtract([ipaddress.ip_network(r['ip']) for r in scores if r['auto_candidate']],allow+protected),'review-hold':[ipaddress.ip_network(r['ip']) for r in scores if not r['auto_candidate']]}
   lists['protected-crawlers']=protected
   lists['palo-drops-review']=[ipaddress.ip_network(r['ip']) for r in scores if r['palo_context_records']>0]
   for source in ['tpot','owapot','nginx','waf','crowdsec','wazuh']:
    candidates=[ipaddress.ip_network(r['ip']) for r in scores if source in r['sources'] or (source=='tpot' and 'owapot' in r['sources'])]
    lists[source+'-review']=subtract(candidates,allow+protected)
-  lists['combined-block']=subtract(lists['manual-block']+lists['scored-block'],allow)+emergency
+  lists['combined-block']=subtract(lists['manual-block']+lists['scored-block'],allow)+permanent_nets+emergency
   lists['manual-block']+=emergency
   out=pathlib.Path(output);out.mkdir(parents=True,exist_ok=True);gen=out/('generation-'+uuid.uuid4().hex);gen.mkdir()
   counts={}
@@ -443,7 +459,8 @@ class Store:
    if len(vals)>50000:raise ValueError('Publication guard: list exceeds 50,000 entries')
    (gen/(name+'.txt')).write_text(''.join(v+'\n' for v in vals),encoding='utf8');counts[name]=len(vals)
   manifest={'created':now(),'counts':counts,'mode':'production','palo_policy_managed':False,'window_days':30,'asn_rule_scope':'observed IPs only','rule_count':len(rules),'scoring_policy':{'block_threshold':BLOCK_THRESHOLD,'honeypot_minimum_score':HONEYPOT_FLOOR,'honeypot_repeat_bonus':HONEYPOT_REPEAT_BONUS,'honeypot_repeat_unit':'distinct sessions/authentication attempts per source IP; first observation per honeypot/port +50; repeats +25; newest rolling counters; behavioral subsets excluded','honeypot_sources':sorted(HONEYPOT_SOURCES),'malicious_enrichment_bonus_cap':25,'palo_drop_score':0,'retention_days':30,'retention_policy':'30 days from latest qualifying native observation; Palo block hits only renew existing blocks using native firewall timestamps','enrichment_required_for_block':False,'whitelist_and_verified_crawler_protection':True,'previous_block_history_days':365,'previous_block_return_minimum':75,'previous_block_aged_bonus':25,'previous_block_aged_after_days':30}}
-  manifest['ai_scoring']={'enabled':bool((self.state('behavior_settings') or {}).get('scoring_enabled')),'maximum':10,'applied_points':round(sum(r.get('ai_bump',0) for r in scores),2),'adjusted_ips':sum(bool(r.get('ai_bump')) for r in scores),'ai_only_ips':[r['ip'] for r in scores if r.get('ai_bump') and r['auto_candidate'] and r.get('native_score',0)<75 and any(ipaddress.ip_address(r['ip']) in n for n in lists['combined-block'])]}
+  manifest['ai_scoring']={'enabled':bool((self.state('behavior_settings') or {}).get('scoring_enabled')),'maximum':10,'applied_points':round(sum(r.get('ai_bump',0) for r in scores),2),'adjusted_ips':sum(bool(r.get('ai_bump')) for r in scores),'ai_only_ips':[r['ip'] for r in scores if r['ip'] not in permanent and r.get('ai_bump') and r['auto_candidate'] and r.get('native_score',0)<75 and any(ipaddress.ip_address(r['ip']) in n for n in lists['combined-block'])]}
+  manifest['permanent_policy']={'version':1,'period_days':30,'required_consecutive_periods':3,'baseline':'Confirmed native publication; no retrospective recovery','palo_qualifies':False,'active_exact_ips':len(permanent),'published_exact_ips':len(permanent_nets)}
   # The display snapshot and EDLs share one atomic generation. Never score on a cache hit.
   display=[display_row(row) for row in scores]
   (gen/'dashboard.json').write_text(json.dumps({'created':manifest['created'],'rows':display},separators=(',',':')),encoding='utf-8')
@@ -456,5 +473,7 @@ class Store:
   from offenders import mark_blocks
   native_combined=subtract(lists['manual-block']+subtract([ipaddress.ip_network(r['ip']) for r in native_scores if r['auto_candidate']],allow+protected),allow)+emergency
   mark_blocks(self,native_scores,native_combined,manifest['created'])
+  from permanent_policy import confirm
+  confirm(self,native_scores,native_combined,manifest['created'],gen.name,manifest['sha256']['combined-block'])
   list_changes(self,lists,manifest['created'],gen.name,actor)
   return manifest
