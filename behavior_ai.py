@@ -274,6 +274,8 @@ def validate_result(value,packet,candidates,registry):
    if field=='actor_correlation':
     candidate=next((c for c in candidates if c['candidate_id']==item['candidate_id']),{})
     peer={e['id'] for e in candidate.get('historical_events',[])};allowed=references|peer
+    supporting_current={e['id'] for e in candidate.get('current_events',packet['events'])}
+    if not set(item['evidence_ids'])&supporting_current:raise ValueError('Correlation requires a supporting current observation')
     if not set(item['evidence_ids'])&native or not set(item['evidence_ids'])&peer:raise ValueError('Correlation requires current and historical observations')
    if not set(item['evidence_ids'])<=allowed:raise ValueError('Unknown evidence reference')
    if field in ('attack_techniques','d3fend_context'):
@@ -326,7 +328,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
   fields=properties['actor_correlation']['items']['properties']
   del fields['evidence_ids']
   fields['current_evidence_ids']=array(text(80),1,1)
-  fields['current_evidence_ids']['items']['enum']=[e['id'] for e in packet['events']]
+  fields['current_evidence_ids']['items']['enum']=[e['id'] for e in candidates[0].get('current_events',packet['events'])]
   fields['historical_evidence_ids']=array(text(80),1,1)
   fields['historical_evidence_ids']['items']['enum']=[e['id'] for c in candidates for e in c.get('historical_events',[])]
   properties['actor_correlation']['items']['required']=list(fields)

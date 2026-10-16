@@ -69,7 +69,7 @@ def retrieve(db,ident,limit=3,at=None):
   supported=common&{'path:'+e.get('path','') for e in packet.get('events',[])}&{'path:'+e.get('path','') for e in historical.get('events',[])}
   current_events=citations(packet,supported);historical_events=citations(historical,supported)
   if len(current_events)<2 or len(historical_events)<2:continue
-  result.append({'candidate_id':peer,'candidate_ip':row['ip'],'similarity':round(score,3),'shared_features':sorted(common,key=lambda v:(not v.startswith('path:'),v))[:8],'current_events':current_events,'historical_events':historical_events,'coverage':historical.get('coverage','unknown'),'indexed':row['created'],'retrieval_version':VERSION,'uncertainty':UNCERTAINTY,'interpretation':'Similar observed behavior; shared tooling remains an alternative, not actor attribution or inherited enforcement'})
+  result.append({'candidate_id':peer,'candidate_ip':row['ip'],'similarity':round(score,3),'shared_features':sorted((v for v in common if weight(v)>0),key=lambda v:(not v.startswith('path:'),v))[:8],'current_events':current_events,'historical_events':historical_events,'coverage':historical.get('coverage','unknown'),'indexed':row['created'],'retrieval_version':VERSION,'uncertainty':UNCERTAINTY,'interpretation':'Similar observed behavior; shared tooling remains an alternative, not actor attribution or inherited enforcement'})
  unique=[];seen=set()
  for candidate in sorted(result,key=lambda c:(-c['similarity'],c['candidate_id'])):
   if candidate['candidate_ip'] in seen:continue

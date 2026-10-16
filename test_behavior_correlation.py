@@ -35,7 +35,8 @@ def test_synthetic_scenarios(tmp_path,name,peer_paths,extra,days,events,expected
  packet(b,'peer','192.0.2.2',peer_paths,extra,days,events)
  result,details=fetch(b,'current');assert bool(result)==expected,name
  if expected:
-  candidate=result[0];assert candidate['candidate_id']=='peer' and len(candidate['current_events'])==2 and len(candidate['historical_events'])==2
+  candidate=result[0];assert not any(v.startswith(('sensor:','method:','sequence:','asn:')) for v in candidate['shared_features'])
+  assert candidate['candidate_id']=='peer' and len(candidate['current_events'])==2 and len(candidate['historical_events'])==2
   assert 'uncalibrated' in ' '.join(candidate['uncertainty']) and 'NAT' in ' '.join(candidate['uncertainty'])
   # Timing/ownership are not features which contribute positive similarity.
   assert candidate['similarity']==pytest.approx(2/2.7,abs=.001) if name=='clock_distortion' else candidate['similarity']>0
@@ -168,3 +169,14 @@ def test_reviewed_correlation_does_not_transfer_permanent_or_ai_status(timeline)
  assert set(active(store))=={'8.8.8.8'}
  peer=apply(store,[store.describe('1.1.1.1')])[0]
  assert peer['score']==0 and peer.get('ai_bump',0)==0
+
+
+def test_model_match_requires_supporting_current_citation(evidence):
+ from test_behavior_ai import result
+ from behavior_ai import validate_result
+ b=Brain(evidence);_,current,_=b.packet(evidence.describe('8.8.8.8'))
+ candidate={'candidate_id':'synthetic-peer','current_events':[current['events'][0]],'historical_events':[{'id':'synthetic-historical'}]}
+ verdict=result(current);verdict['actor_correlation']=[{'candidate_id':'synthetic-peer','confidence':.5,'evidence_ids':[current['events'][1]['id'],'synthetic-historical'],'explanation':'Synthetic comparison','alternative_explanations':['Shared scanner']}]
+ with pytest.raises(ValueError,match='supporting current'):validate_result(verdict,current,[candidate],{})
+ verdict['actor_correlation'][0]['evidence_ids'][0]=current['events'][0]['id']
+ assert validate_result(verdict,current,[candidate],{})==verdict
