@@ -24,17 +24,38 @@ For example, days 42, 73 and 108 qualify; days 42, 95 and 125 do not. A missing
 period resets the run: after that gap, three new consecutive periods can qualify.
 The baseline stays fixed; missing periods are never silently bridged.
 
-Qualifying inputs are native evidence and native source activity from T-Pot,
-OWAPot, NGINX, WAF, CrowdSec and Wazuh for the same previously blocked exact IP.
-As in the existing native return policy, a new native visit can be a repeat even
-when it is ordinary NGINX activity. This is an administrator policy about repeated
-native observations after a block, not a new maliciousness or actor attribution
-claim. Existing native scoring and retention calculations are unchanged.
+Permanent milestones require positively qualified **offenses**, not ordinary
+visits or the existing broad native return floor. Source activity alone never
+qualifies, even if marked `deterministic_qualifying=True`. The ledger re-reads the
+persisted evidence row and requires positive strength, explicit source
+qualification, a native record ID, pipeline identity and supported detector
+semantics. Missing/ambiguous metadata, explicit nonqualification and arbitrary
+source labels abstain. These fields are copied from the worker's existing native
+source records; no source routing or source detector behavior is changed.
 
-The ledger retains one earliest representative event per period, its normalized
-identifier, source, sensor, event time and record type. It audits replacement by
-earlier evidence and earned-date corrections. Source activity IDs deterministically
-identify IP/source/sensor/native time; collection refresh metadata is excluded.
+Supported offense evidence is deliberately conservative:
+
+- Sensor-qualified NGINX sensitive-path probes, WAF interruptions and nonmanual
+  CrowdSec ban alerts, with the sensor pipeline and explicit qualifying flag.
+- T-Pot Cowrie command/file-transfer behavior or the sensor's failed-login
+  detector. Generic Cowrie aggregates qualify only through identified native
+  session-connect, authentication-attempt, command or file-transfer samples at
+  their own native times. Session bookkeeping, rolling counters and aggregate
+  last-seen refreshes do not qualify. Other honeypot formats without supported
+  positive attempt semantics abstain; ordinary native scoring remains intact.
+- Selected native Wazuh attack/IDS/authentication alerts, retaining their actual
+  alert ID, rule ID/level/groups and the existing worker's selection criteria.
+
+Baseline creation requires an actual native publication with qualified offense
+evidence too. A previous-block return floor alone, generic evidence or manual
+membership cannot establish a permanent-policy baseline. The earliest qualifying
+native event per period is retained with its normalized evidence ID, native
+record/attempt identity, detector, source, sensor and qualification provenance.
+Reused native attempt IDs cannot be moved into later periods by a timestamp or
+counter refresh. Earlier representative replacements and earned-date corrections
+are audited. No new scoring points or maliciousness inference are introduced.
+The original broad native return, score and retention calculations are unchanged.
+
 Out-of-order and late events use their original times and can fill a previously
 missing period. Native ingestion still rejects data outside its existing 30-day
 horizon; the new policy does not bypass that guard or invent missing history.
@@ -61,10 +82,12 @@ Other native retention or manual blocks may still publish the IP. A whitelist is
 the existing way to allow an IP across those independent decisions. No implicit
 restart or silent clearing of the administrator's reversal is provided.
 
-`permanent_cases`, `permanent_milestones` and `permanent_audit` live in the native
+`permanent_cases`, `permanent_milestones`, `permanent_event_ids` and `permanent_audit` live in the native
 SQLite database and survive routine cleanup. Include that database in normal
-backups. Monthly representatives bound storage by IP and elapsed monthly period,
-rather than by packet count. Native ingestion writes milestones in its existing
+backups. Monthly representatives are stored per IP and period; native offense identities
+are retained separately to prevent replay from becoming a later milestone.
+This durable identity ledger grows with identified qualifying offenses; it is
+not a raw packet or credential store and is not deleted by one-year report cleanup. Native ingestion writes milestones in its existing
 transaction; a failed transaction rolls back both. The existing publication
 request/completion IDs, owner-only maintenance and pending retry are unchanged.
 As with other policy changes, the next normal publication updates the served

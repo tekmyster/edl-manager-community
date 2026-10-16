@@ -237,9 +237,6 @@ class Store:
    record(d,address,t.isoformat(timespec='seconds'))
    from offenders import returned
    returned(d,address,source,sensor,t.isoformat(timespec='seconds'))
-   from permanent_policy import observe,activity_id
-   event_time=t.isoformat(timespec='seconds')
-   observe(d,address,source,sensor,event_time,activity_id(address,source,sensor,event_time),'source_activity')
    d.execute('INSERT INTO source_activity VALUES(?,?,?,?,?) ON CONFLICT(ip,source,sensor) DO UPDATE SET seen=excluded.seen,details=excluded.details WHERE excluded.seen>=source_activity.seen',(address,source,sensor,t.isoformat(timespec='seconds'),json.dumps(details)))
  def score(self,address,meta,evidence,caches,retention=None,prior_return=None):
   configuration=getattr(self,'_source_configuration',None)

@@ -61,9 +61,11 @@ def ingest_source(s,k,d,updated,records):
   try:s.source_activity(k['ip'],k['source'],k['detector'].split(':')[0],d['edl_seen_utc'],{'activity':d['edl_activity_json'],'deterministic_qualifying':d.get('edl_qualifying')!='no',**({'native_event_count':int(d['edl_native_event_count'])} if 'edl_native_event_count' in d else {}),**({'native_attempt_count':int(d['edl_native_attempt_count'])} if 'edl_native_attempt_count' in d else {}),**({'destination_ports':d['edl_dst_ports'].split(',')} if 'edl_dst_ports' in d else {})})
   except ValueError:return False
  if d.get('edl_qualifying')=='no':return False
+ from permanent_policy import source_provenance
+ proof=source_provenance(d,k['source'],k['detector'])
  family,points=strength(k['source'],k['detector'])
  for path in d.get('edl_path_hashes','').split(',')[:30] or ['']:
-  try:s.evidence(k['ip'],k['source'],k['detector'].split(':')[0],d['edl_seen_utc'],family,points,path,{'detector':k['detector'],'records':records,'native_event_count':int(d.get('edl_native_event_count',0)),'native_counter_updated_at':updated,**({'native_attempt_count':int(d['edl_native_attempt_count'])} if 'edl_native_attempt_count' in d else {}),**({'destination_ports':d['edl_dst_ports'].split(',')} if 'edl_dst_ports' in d else {})})
+  try:s.evidence(k['ip'],k['source'],k['detector'].split(':')[0],d['edl_seen_utc'],family,points,path,{**proof,'detector':k['detector'],'records':records,'native_event_count':int(d.get('edl_native_event_count',0)),'native_counter_updated_at':updated,**({'native_attempt_count':int(d['edl_native_attempt_count'])} if 'edl_native_attempt_count' in d else {}),**({'destination_ports':d['edl_dst_ports'].split(',')} if 'edl_dst_ports' in d else {})})
   except ValueError:continue
  return True
 
@@ -130,7 +132,7 @@ def collect(s,cfg,include_palo=True,palo_only=False):
    ids=any(g in ['ids','suricata'] for g in groups) and int(rule.get('level',0))>=12
    if any(t in desc for t in ['success','404','not found','400 error','edl','flow event']):continue
    if not (attack or ids or (auth and b['doc_count']>=5)):continue
-   try:s.evidence(b['key']['ip'],'wazuh','rule:'+str(rule['id']),d['timestamp'],'authentication' if auth else 'exploit',55 if auth else 75,details={'description':rule.get('description'),'records':b['doc_count']})
+   try:s.evidence(b['key']['ip'],'wazuh','rule:'+str(rule['id']),d['timestamp'],'authentication' if auth else 'exploit',55 if auth else 75,details={'description':rule.get('description'),'records':b['doc_count'],'native_pipeline':'wazuh-qualified-alert-v1','native_qualifying':True,'native_record_id':b['last']['hits']['hits'][0].get('_id',''),'native_rule':{'id':rule['id'],'level':int(rule.get('level',0)),'groups':groups}})
    except ValueError:continue
   after=a.get('after_key')
   if not after or not a['buckets']:break
