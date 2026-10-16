@@ -118,7 +118,13 @@ class Store:
   try:
    yield d
    if commit:d.commit()
-  except Exception:d.rollback();raise
+  except Exception:
+   # A rollback may remove earlier successful calls on the shared worker
+   # transaction. Discard the entire diagnostic cohort, not native data or
+   # transaction behavior; later caught failures/successes cannot revive it.
+   receipts=getattr(self,'_pipeline_receipts',None)
+   if isinstance(receipts,dict):receipts.clear();receipts['invalidated']=True
+   d.rollback();raise
   finally:
    if persistent is None:d.close()
  def audit(self,actor,action,details):
@@ -194,7 +200,8 @@ class Store:
     returned(d,address,'palo','block hit',seen)
    return bool(updated.rowcount)
  def evidence(self,address,source,sensor,seen,family,strength,url='',details=None):
-  receipt=(dt.datetime.now(UTC).isoformat(timespec='microseconds'),time.monotonic()) if getattr(self,'_pipeline_receipts',None) is not None and source!='palo' else None
+  tracking=getattr(self,'_pipeline_receipts',None)
+  receipt=(dt.datetime.now(UTC).isoformat(timespec='microseconds'),time.monotonic()) if tracking is not None and not tracking.get('invalidated') and source!='palo' else None
   address=str(ip(address));t=dt.datetime.fromisoformat(seen.replace('Z','+00:00'))
   if t.tzinfo is None:raise ValueError('Native event time must include timezone')
   t=t.astimezone(UTC)

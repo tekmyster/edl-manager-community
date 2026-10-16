@@ -312,6 +312,7 @@ def pipeline_timing(store,build_started,build_finished,manifest):
  queries, receipt ledger, model calls or scoring inputs are introduced.
  """
  receipts=getattr(store,'_pipeline_receipts',{})
+ if receipts.get('invalidated'):return {'status':'unmeasurable','reason':'transaction_rollback'}
  if not receipts:return {'status':'no_changed_native_evidence'}
  first,last=receipts['first'],receipts['last']
  out={'status':'published' if manifest else 'publication_pending','changed_native_upserts':receipts['changed_rows'],'first_normalized_input_received_utc':first[0],'last_normalized_input_received_utc':last[0],'boundary':'Manager Store.evidence input receipt through local atomic EDL generation; batch cohort, not individual block or source detector/network arrival','clock':'Same-process monotonic intervals; UTC receipt timestamps for correlation only'}

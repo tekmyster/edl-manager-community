@@ -138,6 +138,15 @@ non-Palo upserts in that cycle. Exact duplicate replays do not increment them.
 Successful worker status reports bounds from those receipts to the real atomic
 local EDL publication (bounded by build start/return). Deferred builds and cycles
 without changed native evidence report availability explicitly without latency.
+While a cycle is tracked, any native Store transaction rollback invalidates the
+entire diagnostic cohort, including earlier buffered calls on a shared worker
+transaction. The report becomes `unmeasurable` with reason
+`transaction_rollback`; it contains no cohort count, input timestamps or published
+latency. Later caught failures, successful inputs or a successful build do not
+revive that cycle. Earlier committed inputs are conservatively omitted too.
+Invalidation changes no native transaction, commit, rollback, scoring or
+publication behavior. Only a newly initialized worker cycle starts a new cohort.
+
 This measures Manager-normalized-input-to-local-publication for a batch cohort,
 not source detector/network arrival, per-address threshold crossing, origin sync,
 firewall acceptance or dropped traffic. Source event time never replaces receipt.
