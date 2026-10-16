@@ -74,6 +74,14 @@ failed sync. Per-IP results cannot outlive snapshot freshness. Snapshot refresh 
 up to six hours, so allow that propagation delay after a source changes or is
 revoked. Verify the fresh Manager generation before removing direct protections.
 
+Native MISP filters warninglist matches after database pagination. Manager keeps
+reading through short and fully filtered pages and requires a terminal empty
+page with native `X-Result-Count` and `X-Skipped-Elements-Count` metadata. Native
+versions can report zero or one for this empty-page counter because of their
+look-ahead sentinel. Missing, malformed or inconsistent headers fail the refresh;
+proxies must preserve them. The reader allows 100 data pages plus one terminal
+probe, retains the attribute bound, and never disables warninglists as a fallback.
+
 The optional operator setting `redis_no_password=true` applies only to this Cake
 process for an existing passwordless Redis deployment. It does not change Redis
 credentials or MISP's saved configuration; leave it absent for other deployments.

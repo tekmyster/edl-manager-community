@@ -6,14 +6,28 @@ from source_settings import effective
 UTC=dt.timezone.utc
 def misp_attributes(session,url):
  """Fetch a complete bounded snapshot; callers retain prior state on failure."""
- attrs=[]
- for page in range(1,101):
+ attrs=[];received=0
+ # Native MISP applies warninglists after database pagination. A short or even
+ # empty filtered page can precede later data. Probe through a terminal empty
+ # page; native MISP versions report zero or one (the look-ahead sentinel).
+ for page in range(1,102):
   r=session.post(url+'/attributes/restSearch',json={'returnFormat':'json','type':['ip-src','ip-dst','ip-src|port','ip-dst|port'],'includeContext':True,'deleted':False,'enforceWarninglist':True,'timestamp':'30d','limit':1000,'page':page},timeout=30)
   r.raise_for_status();v=r.json()
   if not isinstance(v,dict) or 'response' not in v:raise ValueError('Unexpected MISP response')
   part=v['response'].get('Attribute') if isinstance(v['response'],dict) else v['response']
   if not isinstance(part,list) or len(part)>1000:raise ValueError('Unexpected MISP response')
   if any(not isinstance(a,dict) or not isinstance(a.get('value'),str) or not isinstance(a.get('Event',{}),dict) for a in part):raise ValueError('Unexpected MISP attribute')
+  headers=getattr(r,'headers',{})
+  counts=[]
+  for name in ('X-Result-Count','X-Skipped-Elements-Count'):
+   value=headers.get(name)
+   if not isinstance(value,str) or not value.isascii() or not value.isdigit():raise ValueError('MISP pagination metadata is missing or invalid')
+   counts.append(int(value))
+  raw,skipped=counts
+  if raw>1001 or skipped>1000 or raw<len(part)+skipped:raise ValueError('Inconsistent MISP pagination metadata')
+  if not part and skipped==0 and raw<=1:return attrs
+  received+=len(part)
+  if page>100 or received>=100000:break
   for a in part:
    item={'value':a.get('value'),'id':a.get('id'),'timestamp':a.get('timestamp'),'to_ids':a.get('to_ids'),'source':a.get('Event',{}).get('info','MISP indicator'),'event_id':a.get('event_id')}
    if not isinstance(item['source'],str):raise ValueError('Unexpected MISP source')
@@ -25,8 +39,7 @@ def misp_attributes(session,url):
     item['expires']=expiry.astimezone(UTC).isoformat(timespec='seconds')
     if item['expires']<=now():continue
    attrs.append(item)
-  if len(part)<1000:return attrs
- raise ValueError('MISP volume guard: snapshot must contain fewer than 100,000 attributes')
+ raise ValueError('MISP volume guard: fewer than 100,000 attributes and at most 100 data pages required')
 def strength(source,detector):
  d=detector.lower()
  if source=='crowdsec' and d.startswith('crowdsec-ban:'):return ('ssh' if 'ssh' in d else 'http'),75
