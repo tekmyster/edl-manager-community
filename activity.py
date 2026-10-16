@@ -69,9 +69,10 @@ def fetch(cfg,target):
 
 def claim_activity(store,key,quota_key=None,budget=None):
  """Coordinate UI and background readers using one durable per-IP lease."""
- current=dt.datetime.now(UTC)
  with store.connect() as db:
   db.execute('BEGIN IMMEDIATE')
+  # Waiters must compare and persist one clock sample taken after the writer lock.
+  current=dt.datetime.now(UTC)
   row=db.execute('SELECT value FROM state WHERE key=?',(key,)).fetchone();saved=json.loads(row[0]) if row else {};fetched=timestamp(saved.get('fetched'))
   if fetched and 0<=(current-fetched).total_seconds()<300:return 'cached'
   row=db.execute('SELECT value FROM state WHERE key=?',('ip_activity_pending:'+key,)).fetchone();pending=json.loads(row[0]) if row else {};started=timestamp(pending.get('started'))
@@ -80,16 +81,16 @@ def claim_activity(store,key,quota_key=None,budget=None):
    row=db.execute('SELECT value FROM state WHERE key=?',(quota_key,)).fetchone();used=json.loads(row[0]) if row else 0
    if used>=budget:return 'budget'
    db.execute('INSERT OR REPLACE INTO state VALUES(?,?)',(quota_key,json.dumps(used+1)))
-  db.execute('INSERT OR REPLACE INTO state VALUES(?,?)',('ip_activity_pending:'+key,json.dumps({'started':now()})))
+  db.execute('INSERT OR REPLACE INTO state VALUES(?,?)',('ip_activity_pending:'+key,json.dumps({'started':current.isoformat()})))
  return 'claimed'
 
 class ActivityCache:
  def __init__(self,store,cfg):self.store=store;self.cfg=cfg;self.pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='ip-investigation');self.lock=threading.Lock();self.pending=set()
  def get(self,target):
   target=str(ip(target));cfg=dict(self.cfg);scope=hashlib.sha256((cfg.get('index_url','')+'|'+cfg.get('palo_location','')).encode()).hexdigest()[:16];key='ip_activity:'+scope+':'+target;data=self.store.state(key) or {}
-  fetched=timestamp(data.get('fetched'));fresh=fetched and (dt.datetime.now(UTC)-fetched).total_seconds()<300
+  fetched=timestamp(data.get('fetched'));fresh=fetched and 0<=(dt.datetime.now(UTC)-fetched).total_seconds()<300
   pending=self.store.state('ip_activity_pending:'+key) or {}
-  active=timestamp(pending.get('started'));active=active and (dt.datetime.now(UTC)-active).total_seconds()<90
+  active=timestamp(pending.get('started'));active=active and 0<=(dt.datetime.now(UTC)-active).total_seconds()<90
   if not fresh and not active and (self.cfg.get('index_url') and self.cfg.get('palo_location')):
    with self.lock:
     if key not in self.pending and len(self.pending)<8:
