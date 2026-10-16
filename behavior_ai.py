@@ -368,6 +368,14 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
    value=envelope.get(name)
    return value if type(value) is int and 0<=value<=10000000 else None
   metadata={'input_tokens':count('prompt_eval_count'),'output_tokens':count('eval_count'),'model':cfg['model'],'prompt_version':PROMPT_VERSION,'taxonomy_version':registry.get('version','unconfigured'),'taxonomy_registry_sha256':registry.get('registry_sha256'),'taxonomy_rule_version':registry.get('rule_version'),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy unavailable'),'taxonomy_coverage':registry.get('coverage',{}),'historical_windows_supplied':len(candidates),'coverage':packet['coverage']}
+  # Preserve actual backend measurements separately from complete request wall
+  # time. Missing/invalid fields stay unknown; evaluation is not device/kernel or
+  # standalone tokenizer timing. This does not issue an additional model call.
+  def duration(name):
+   value=envelope.get(name)
+   return value if type(value) is int and 0<=value<=3600000000000 else None
+  metadata['backend_timings']={name:duration(name) for name in ('total_duration','load_duration','prompt_eval_duration','eval_duration')}
+  metadata['backend_timings_unit']='nanoseconds'
   if envelope.get('done') is not True or envelope.get('model')!=cfg['model']:raise ModelOutputError('incomplete_response',metadata)
   if envelope.get('done_reason')=='length':raise ModelOutputError('output_limit',metadata)
   try:

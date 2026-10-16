@@ -194,6 +194,7 @@ class Store:
     returned(d,address,'palo','block hit',seen)
    return bool(updated.rowcount)
  def evidence(self,address,source,sensor,seen,family,strength,url='',details=None):
+  receipt=(dt.datetime.now(UTC).isoformat(timespec='microseconds'),time.monotonic()) if getattr(self,'_pipeline_receipts',None) is not None and source!='palo' else None
   address=str(ip(address));t=dt.datetime.fromisoformat(seen.replace('Z','+00:00'))
   if t.tzinfo is None:raise ValueError('Native event time must include timezone')
   t=t.astimezone(UTC)
@@ -206,6 +207,8 @@ class Store:
    from offenders import returned
    returned(d,address,source,sensor,seen)
    inserted=d.execute('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET details=excluded.details WHERE evidence.details!=excluded.details',(id,address,source,sensor,seen,family,max(0,min(int(strength),100)),url,json.dumps(details or {})))
+   if receipt and inserted.rowcount:
+    self._pipeline_receipts.setdefault('first',receipt);self._pipeline_receipts['last']=receipt;self._pipeline_receipts['changed_rows']=self._pipeline_receipts.get('changed_rows',0)+1
    from permanent_policy import observe
    observe(d,address,source,sensor,seen,id,'evidence')
    if source!='palo':

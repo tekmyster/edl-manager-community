@@ -305,6 +305,20 @@ def enrich(s,cfg):
    except (requests.RequestException,ValueError,KeyError) as e:s.cache(address,provider,{'error':type(e).__name__},status='failed',hours=1)
    done+=1;checks+=1
  s.state('provider_status',providers);return checks
+def pipeline_timing(store,build_started,build_finished,manifest):
+ """Measured batch input/publication bounds; no event-time or upstream-arrival proxy.
+
+ Only changed non-Palo native upserts are counted. No IDs, paths, IPs, additional
+ queries, receipt ledger, model calls or scoring inputs are introduced.
+ """
+ receipts=getattr(store,'_pipeline_receipts',{})
+ if not receipts:return {'status':'no_changed_native_evidence'}
+ first,last=receipts['first'],receipts['last']
+ out={'status':'published' if manifest else 'publication_pending','changed_native_upserts':receipts['changed_rows'],'first_normalized_input_received_utc':first[0],'last_normalized_input_received_utc':last[0],'boundary':'Manager Store.evidence input receipt through local atomic EDL generation; batch cohort, not individual block or source detector/network arrival','clock':'Same-process monotonic intervals; UTC receipt timestamps for correlation only'}
+ if manifest:
+  out.update(generation_created=manifest['created'],publication_return_observed_utc=dt.datetime.now(UTC).isoformat(timespec='microseconds'),build_seconds=round(build_finished-build_started,6),first_input_to_publication_seconds={'lower':round(max(0,build_started-first[1]),6),'upper':round(max(0,build_finished-first[1]),6)},last_input_to_publication_seconds={'lower':round(max(0,build_started-last[1]),6),'upper':round(max(0,build_finished-last[1]),6)})
+ return out
+
 def main():
  import sys
  fast='--ingest-only' in sys.argv;enrich_only='--enrich-only' in sys.argv
@@ -313,6 +327,7 @@ def main():
   try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
   except BlockingIOError:return
   started=now()
+  s._pipeline_receipts={}
   anchor=sqlite3.connect(cfg['database']);anchor.execute('SELECT name FROM sqlite_master LIMIT 1').fetchall()
   s._worker_connection=anchor;s._batch_evidence=True
   try:
@@ -320,18 +335,18 @@ def main():
     s.state('ingest_status',{'status':'running','started':started,'phase':'collecting and publishing'})
     count=collect(s,cfg,include_palo=False)
     from source_types import refresh
-    refresh(s);m=s.build(cfg['output'],defer_if_busy=True)
+    refresh(s);build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
     if m is None:logging.warning('Publication deferred: ingestion committed; another publisher is active. Retrying next cycle.')
-    s.state('ingest_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'ingestion_committed':True,'publication':'published' if m else 'pending','generation':m['created'] if m else None})
+    s.state('ingest_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'ingestion_committed':True,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
     return
    s.state('worker_status',{'status':'running','phase':'collecting evidence','started':started,'mode':'production'})
    count=collect(s,cfg,palo_only=enrich_only);s.state('worker_status',{'status':'running','phase':'cached enrichment','started':started,'evidence_buckets':count,'mode':'production'})
    checks=enrich(s,cfg)
    from source_types import refresh
    refresh(s);s.state('worker_status',{'status':'running','phase':'building lists','started':started,'evidence_buckets':count,'enrichment_checks':checks,'mode':'production'})
-   m=s.build(cfg['output'],defer_if_busy=True)
+   build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
    if m is None:logging.warning('Publication deferred: enrichment committed; another publisher is active. Retrying next cycle.')
-   s.state('worker_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'enrichment_checks':checks,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'mode':'production'})
+   s.state('worker_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'enrichment_checks':checks,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'mode':'production','pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
   except Exception as e:
    s.state('ingest_status' if fast else 'worker_status',{'status':'error','started':started,'completed':now(),'error':type(e).__name__+': '+str(e)[:240]});raise
   finally:s._worker_connection=None;anchor.close()

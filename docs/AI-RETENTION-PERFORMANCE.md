@@ -96,3 +96,34 @@ or override it or manufacture telemetry, verdicts, threshold crossings or labels
 Current-prompt sustained GPU/tokenization/memory/reliability measurement remains
 an explicit dependency. Browser visual/focus/narrow-screen redesign debt remains
 separate; server-rendered controls alone do not establish visual acceptance.
+
+
+## Measurement diagnostics awaiting separate deployment approval
+
+The follow-up diagnostics patch retains the backend response fields
+`total_duration`, `load_duration`, `prompt_eval_duration` and `eval_duration` as
+validated integer nanoseconds in assessment metadata, alongside existing actual
+token counts. Missing/invalid values remain unknown. Backend evaluation timing
+is not device kernel timing, and prompt evaluation is not standalone tokenizer
+time. No extra inference request, gateway route, model option, quota or prompt
+change is introduced. Existing assessments are not rewritten.
+
+For native pipeline observation, the worker records first/last normalized
+`Store.evidence` input receipt timestamps and monotonic times only for changed
+non-Palo upserts in that cycle. Exact duplicate replays do not increment them.
+Successful worker status reports bounds from those receipts to the real atomic
+local EDL publication (bounded by build start/return). Deferred builds and cycles
+without changed native evidence report availability explicitly without latency.
+This measures Manager-normalized-input-to-local-publication for a batch cohort,
+not source detector/network arrival, per-address threshold crossing, origin sync,
+firewall acceptance or dropped traffic. Source event time never replaces receipt.
+
+These aggregate diagnostics extend existing worker status only: no receipt table,
+new database dependency, per-event ledger, extra query, raw traffic field, IP/path
+or scoring/retention change. Source/sensor detection-to-Manager transport timing
+and independent source clock bounds still require authentic upstream evidence.
+The patch must pass independent QA before deployment; code alone supplies no
+production timing evidence. Device observations must separate the independent
+Receptionist and desktop workload from the EDL model's own allocation.
+
+Backend field definitions follow the [Ollama chat response documentation](https://docs.ollama.com/api/chat). That format reference does not establish that the installed backend emitted any measured value; only genuine retained responses can do so.
