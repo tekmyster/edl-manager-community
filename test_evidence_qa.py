@@ -60,7 +60,8 @@ def scored_app(tmp_path):
  from test_behavior_ai import result
  from app import create_app
  store,brain,packet,assessment,expiry=fixture(tmp_path)
- value=result(packet);value.update(maliciousness_confidence=.95,metadata=assessment['metadata'])
+ # Deliberate stored-score display fixture, independent of model acceptance.
+ value=result(packet);value.update(classification='malicious',maliciousness_confidence=.95,metadata=assessment['metadata'])
  value['findings']=[{'summary':'Distinct request observations','evidence_ids':assessment['findings'][0]['evidence_ids']}]
  with brain.connect() as db:db.execute('UPDATE assessments SET result=?',(json.dumps(value),))
  app=create_app({'database':str(tmp_path/'manager.sqlite3'),'output':str(tmp_path/'out'),'providers_file':str(tmp_path/'keys'),'session_secret':'fixture','hosts':['localhost']});app.testing=True;client=app.test_client()

@@ -35,7 +35,10 @@ def contract(packet,registry):
  eligible=select(registry,packet);facts=[];positive=[];strong=[]
  events=list(packet.get('events',[]))
  # Prefer actual explicit failures/commands to generic connection summaries.
- events=sorted(events,key=lambda e:(not bool(re.fullmatch(FAILURE,e.get('action','').casefold())),e.get('id','')))
+ def priority(e):
+  action=e.get('action','').casefold()
+  return (0 if re.fullmatch(FAILURE,action) else 1 if action in ('cowrie.command.input','cowrie.session.file_download') else 2,e.get('id',''))
+ events=sorted(events,key=priority)
  for e in events:
   if not e.get('id'):continue
   action=safe_text(e.get('action'),60);source=safe_text(e.get('source'),20);sensor=safe_text(e.get('sensor'),30)
@@ -43,9 +46,9 @@ def contract(packet,registry):
   if e.get('method') and e.get('path') and not re.fullmatch(FAILURE,action.casefold()):
    statement=f'Saved request: {safe_text(e["method"],8)} {safe_text(e["path"],70)}; status {safe_text(e.get("status"),3) or "unavailable"}; source {source}.'
   facts.append({'summary':statement,'evidence_ids':[e['id']]})
-  if e.get('provenance',{}).get('detail')!='summary' and e.get('source')=='tpot' and e.get('sensor','').casefold()=='cowrie' and action in ('cowrie.command.input','cowrie.session.file_download'):strong.append(e['id'])
+  if (e.get('provenance') or {}).get('detail')=='sample' and e.get('source')=='tpot' and e.get('sensor','').casefold()=='cowrie' and action in ('cowrie.command.input','cowrie.session.file_download'):strong.append(e['id'])
  for c in packet.get('context',[]):
-  expiry=timestamp(c.get('expires'));fresh=c.get('cache_fresh') is True and expiry is not None and expiry>timestamp(now())
+  expiry=timestamp(c.get('expires'));fresh=c.get('status')=='ok' and c.get('cache_fresh') is True and expiry is not None and expiry>timestamp(now())
   if c.get('kind')!='intelligence' or not fresh or not c.get('id'):continue
   if c.get('provider')=='crawler' and c.get('verified') is True:
    positive.append({'summary':'Fresh cached crawler verification is positive context; historical ownership and request authorization are unverified.','evidence_ids':[c['id']]})
@@ -54,13 +57,14 @@ def contract(packet,registry):
  # Leave space for up to two positive references, with explicit bounded coverage.
  offered=(positive[:2]+facts)[:MAX_FACTS]
  strong=[ident for ident in strong if any(f['evidence_ids']==[ident] for f in offered)]
- detailed=any(e.get('provenance',{}).get('detail')!='summary' for e in events)
+ detailed=any((e.get('provenance') or {}).get('detail')=='sample' for e in events)
  classes=['inconclusive']+(['benign'] if positive and detailed else [])+(['malicious'] if strong else [])
  automation=['unknown'];intent=['unknown']
  if 'T1110' in eligible.get('attack',{}):automation.append('credential_attack_automation');intent.append('credential_attack')
  if any(i.startswith('T1595') for i in eligible.get('attack',{})):automation+=['vulnerability_scanner','suspicious_bot'];intent.append('reconnaissance')
- if strong:intent.append('exploitation')
- if positive:automation.append('legitimate_automation');intent.append('ordinary_browsing')
+ if 'T1190' in eligible.get('attack',{}):intent.append('exploitation')
+ if positive:automation.append('legitimate_automation')
+ if positive and any(e.get('method') in ('GET','HEAD') and e.get('path') for e in events):intent.append('ordinary_browsing')
  return {'version':VERSION,'facts':offered,'positive_ids':[r['evidence_ids'][0] for r in positive[:2]],'strong_ids':strong,
          'classifications':classes,'automation':automation,'intent':intent,'available_facts':len(positive)+len(facts),'offered_facts':len(offered),
          'summaries':SUMMARIES,'limitations':LIMITS}

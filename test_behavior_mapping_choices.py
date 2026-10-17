@@ -12,7 +12,7 @@ def mixed():
  return {'packet_id':'mixed','coverage':'saved_samples','events':[
   event('ps','powershell execution'),event('net','network service discovery'),
   event('f1','authentication failure'),event('f2','cowrie.login.failed'),
-  event('http','HTTP request',path='/login',method='POST'),event('cmd','cowrie.command.input',source='tpot',sensor='Cowrie')],
+  event('http','HTTP request',path='/login',method='POST'),event('cmd','cowrie.command.input',source='tpot',sensor='Cowrie',provenance={'detail':'sample'})],
   'context':[{'id':'context-only','classification':'malicious'}]}
 
 def send_result(packet,catalog,value,candidates=None):

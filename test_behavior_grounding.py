@@ -112,17 +112,19 @@ def test_absent_tool_and_history_features_cannot_be_invented_in_top_level_hypoth
  with pytest.raises(ai.ModelOutputError):transport(p,bad)
 
 def test_fresh_positive_context_required_for_benign_and_not_replaced_by_absence():
- context={'id':'ctx-positive','kind':'intelligence','provider':'crawler','verified':True,'cache_fresh':True,'expires':'2099-01-01T00:00:00+00:00'}
- p=packet(event(action='connection observed'),context=[context]);value=example(p)
+ context={'id':'ctx-positive','kind':'intelligence','provider':'crawler','status':'ok','verified':True,'cache_fresh':True,'expires':'2099-01-01T00:00:00+00:00'}
+ p=packet(event(action='connection observed',provenance={'detail':'sample'}),context=[context]);value=example(p)
  value.update(classification='benign',maliciousness_confidence=0,analysis_summary=SUMMARIES['benign'])
  assert transport(p,value)[0][0]['maliciousness_confidence']==0
+ assert 'ordinary_browsing' not in contract(p,{})['intent']
  context['cache_fresh']=False
  with pytest.raises(ai.ModelOutputError):transport(p,value)
  context['cache_fresh']=True;p['events']=[]
  with pytest.raises(ai.ModelOutputError):transport(p,value)
 
 def test_reported_command_behavior_can_support_a_malicious_interpretation_not_execution_success():
- p=packet(event(action='cowrie.command.input',source='tpot',sensor='Cowrie'));value=example(p)
+ p=packet(event(action='cowrie.command.input',source='tpot',sensor='Cowrie',provenance={'detail':'sample'}));value=example(p)
+ assert contract(p,{})['intent']==['unknown']
  value.update(classification='malicious',maliciousness_confidence=.91,analysis_summary=SUMMARIES['malicious'])
  assert transport(p,value)[0][0]['classification']=='malicious'
  value['findings']=[]
