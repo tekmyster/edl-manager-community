@@ -65,6 +65,74 @@ def test_cache_counts_unique_ips_outbound_and_negative_reads(tmp_path):
     assert misp['counts']['imports']==100 and misp['unique_local']==1 and not misp['outbound_started']
 
 
+@pytest.mark.parametrize('provider',['greynoise','misp'])
+@pytest.mark.parametrize('final_miss',[False,True])
+def test_provider_aggregate_reconciles_multiple_hours_and_empty_final_bucket(tmp_path,provider,final_miss):
+    b=Brain(Store(tmp_path/'manager'))
+    records=[(6,'hit',3),(5,'negative_hit',2),(3,'hit',1),
+             (4,'miss',2),(2,'stale',1),(1,'cached_error',1)]
+    if final_miss:records.append((0,'miss',1))
+    for hours,kind,count in records:
+        event(b.store,provider,kind,'8.8.8.8',AT-dt.timedelta(hours=hours,minutes=5),n=count)
+    p=next(p for p in summary(b,at=AT)['providers'] if p['name']==provider)
+    assert p['hits']==6 and p['reads']==10+final_miss
+    assert p['hit_ratio']==round(600/(10+final_miss),1)
+    assert p['hits']==sum(b['hits'] for b in p['timeline'])
+    assert p['reads']==sum(b['total'] for b in p['timeline'])
+    assert p['reads']-p['hits']==sum(b['misses'] for b in p['timeline'])
+    assert p['timeline'][-1]['hits']==0
+    assert p['timeline'][-1]['total']==int(final_miss)
+
+
+def test_supervisor_three_earlier_hits_and_current_miss_are_seventy_five_percent(tmp_path):
+    b=Brain(Store(tmp_path/'manager'))
+    event(b.store,'greynoise','hit','8.8.8.8',AT-dt.timedelta(hours=2),n=3)
+    event(b.store,'greynoise','miss','8.8.8.8',AT-dt.timedelta(minutes=5))
+    p=summary(b,at=AT)['providers'][0]
+    assert (p['hits'],p['reads'],p['hit_ratio'])==(3,4,75)
+    assert sum(b['hits'] for b in p['timeline'])==3
+
+
+@pytest.mark.parametrize('terminator',[b'',b'\n',b'\r\n'])
+@pytest.mark.parametrize('byte_chunks',[False,True])
+def test_complete_nonstreaming_fallback_never_becomes_first_content_timing(tmp_path,terminator,byte_chunks):
+    from test_behavior_ai import result
+    packet,_,_=request_fixture(tmp_path,{})
+    body=json.dumps({'model':'test','done':True,'message':{'content':json.dumps(result(packet))},
+                     'prompt_eval_count':123,'eval_count':45}).encode()+terminator
+    closed=[]
+    class Response:
+        status_code=200
+        def iter_content(self,n):
+            if byte_chunks:
+                for i in range(len(body)):yield body[i:i+1]
+            else:yield body
+        def close(self):closed.append(True)
+    b=Brain(Store(tmp_path/'manager'));tracker=Attempt(b.store,packet['packet_id'])
+    value,meta=infer({**DEFAULTS,'endpoint':'https://127.0.0.1','model':'test'},packet,[],{},'',lambda *a,**kw:Response(),tracker)
+    assert value['classification']=='inconclusive' and closed==[True]
+    assert meta['first_content_seconds'] is None and meta['request_seconds']>=0
+    assert (meta['input_tokens'],meta['output_tokens'])==(123,45)
+    with connect(b.store) as d:
+        row=d.execute('SELECT * FROM requests').fetchone()
+        assert row['state']=='accepted' and row['first_seconds'] is None
+        assert (row['input_tokens'],row['output_tokens'])==(123,45)
+
+
+def test_empty_interim_frame_then_final_only_content_has_unknown_first_content_time(tmp_path):
+    from test_behavior_ai import result
+    packet,_,_=request_fixture(tmp_path,{})
+    frames=[{'model':'test','done':False,'message':{'content':''}},
+            {'model':'test','done':True,'message':{'content':json.dumps(result(packet))}}]
+    class Response:
+        status_code=200
+        def iter_content(self,n):
+            for frame in frames:yield (json.dumps(frame)+'\n').encode()
+        def close(self):pass
+    value,meta=infer({**DEFAULTS,'endpoint':'https://127.0.0.1','model':'test'},packet,[],{},'',lambda *a,**kw:Response())
+    assert value['classification']=='inconclusive' and meta['first_content_seconds'] is None
+
+
 def test_stream_measures_first_content_and_validates_final_output(tmp_path):
     from test_behavior_ai import result
     packet,_,_=request_fixture(tmp_path,{})

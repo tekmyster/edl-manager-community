@@ -17,7 +17,9 @@ provider key, prompt or response body is exposed through this endpoint.
   connection failure is a failed attempt. Preparation and cache reuse are separate.
   Pending records can represent running or interrupted work; they are not success.
 - First content is monotonic elapsed time from HTTP dispatch to receipt of the
-  first complete streamed NDJSON message with nonempty `message.content`. It
+  first complete nonfinal (`done: false`) streamed NDJSON message with nonempty
+  `message.content`. A final-only response remains unmeasured, even with a
+  trailing newline or preceding empty frames. It
   includes gateway/network transit and prompt processing. Headers, thinking-only
   frames, backend prompt time and final completion duration do not substitute for
   it. Nonstreaming gateway fallback remains unmeasured. Charts preserve gaps.

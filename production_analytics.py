@@ -99,16 +99,16 @@ def summary(brain, timezone='UTC', at=None):
         kinds=Counter()
         for r in own:kinds[r['kind']]+=r['n']
         reads=sum(kinds[k] for k in ('hit','negative_hit','miss','stale','cached_error'))
-        hits=kinds['hit']+kinds['negative_hit']
+        aggregate_hits=kinds['hit']+kinds['negative_hit']
         timeline=[]
         for b in bins:
             hour_counts=Counter()
             for r in own:
                 if parse(b['start'])<=parse(r['hour'])<parse(b['end']):hour_counts[r['kind']]+=r['n']
-            hits=hour_counts['hit']+hour_counts['negative_hit'];misses=hour_counts['miss']+hour_counts['stale']+hour_counts['cached_error']
-            timeline.append(dict(start=b['start'],label=b['label'],hits=hits,misses=misses,total=hits+misses,outbound=hour_counts['outbound']))
+            bucket_hits=hour_counts['hit']+hour_counts['negative_hit'];bucket_misses=hour_counts['miss']+hour_counts['stale']+hour_counts['cached_error']
+            timeline.append(dict(start=b['start'],label=b['label'],hits=bucket_hits,misses=bucket_misses,total=bucket_hits+bucket_misses,outbound=hour_counts['outbound']))
         unique=lambda kind:unique_ips.get(provider,{}).get(kind,0)
-        providers.append(dict(name=provider,started=coverage.get(provider),outbound_started=coverage.get(provider+':outbound'),local_started=coverage.get(provider+':local_query'),outcome_started=any(coverage.get(provider+':'+k) for k in ('usable','no_data','error','rate_limited')),counts=dict(kinds),reads=reads,hits=hits,hit_ratio=round(100*hits/reads,1) if reads else None,unique_ips=unique('touched'),unique_outbound=unique('outbound'),unique_usable=unique('usable'),unique_local=unique('local_query'),last=max((r['last'] for r in own),default=None),timeline=timeline))
+        providers.append(dict(name=provider,started=coverage.get(provider),outbound_started=coverage.get(provider+':outbound'),local_started=coverage.get(provider+':local_query'),outcome_started=any(coverage.get(provider+':'+k) for k in ('usable','no_data','error','rate_limited')),counts=dict(kinds),reads=reads,hits=aggregate_hits,hit_ratio=round(100*aggregate_hits/reads,1) if reads else None,unique_ips=unique('touched'),unique_outbound=unique('outbound'),unique_usable=unique('usable'),unique_local=unique('local_query'),last=max((r['last'] for r in own),default=None),timeline=timeline))
     def ceiling(v):
         if not v:return 2
         step=max(1,10**math.floor(math.log10(v)))

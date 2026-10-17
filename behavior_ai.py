@@ -436,7 +436,10 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
    if content:
     content_size+=len(content.encode('utf-8'))
     if content_size>131072:raise ValueError('Model content exceeds size limit')
-    if first_content is None:first_content=time.monotonic()-transport_start
+    # A complete buffered response can also end with a newline. Only content
+    # observed in an explicitly nonfinal frame establishes streamed timing.
+    # Final-only content stays unknown, including after empty interim frames.
+    if first_content is None and item.get('done') is False:first_content=time.monotonic()-transport_start
     parts.append(content)
    streamed=True
    if item.get('done') is True:envelope=item;finished=True
@@ -465,7 +468,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
    value=envelope.get(name)
    return value if type(value) is int and 0<=value<=10000000 else None
   metadata={'input_tokens':count('prompt_eval_count'),'output_tokens':count('eval_count'),'model':cfg['model'],'prompt_version':PROMPT_VERSION,'generation_schema_version':GENERATION_SCHEMA_VERSION,'taxonomy_version':registry.get('version','unconfigured'),'taxonomy_registry_sha256':registry.get('registry_sha256'),'taxonomy_rule_version':registry.get('rule_version'),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy unavailable'),'taxonomy_coverage':registry.get('coverage',{}),'historical_windows_supplied':len(candidates),'coverage':packet['coverage']}
-  metadata.update(first_content_seconds=first_content if streamed else None,request_seconds=round(time.monotonic()-transport_start,6),first_content_definition='request dispatch to receipt of first nonempty streamed message.content; seconds')
+  metadata.update(first_content_seconds=first_content if streamed else None,request_seconds=round(time.monotonic()-transport_start,6),first_content_definition='request dispatch to receipt of first nonempty nonfinal (done:false) streamed message.content; final-only content unmeasured; seconds')
   # Preserve actual backend measurements separately from complete request wall
   # time. Missing/invalid fields stay unknown; evaluation is not device/kernel or
   # standalone tokenizer timing. This does not issue an additional model call.
