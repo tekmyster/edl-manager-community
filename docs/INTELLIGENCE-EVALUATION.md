@@ -54,13 +54,19 @@ cases is shown; report truncation is explicit. No inference occurs in these page
 
 ## Queue timeliness
 
-Scheduling retains an oldest-first fairness slot and then favors distinct
-fingerprints, recent events and richer evidence within the oldest 100 queued
-addresses. Changed windows keep the original queue time. The existing two-call
-cap, daily budget, provider backoff, leases, cache and per-job attempt limits still
-apply. No item is removed merely because it shares a fingerprint. Saturated
-workloads remain partially inspected; this policy cannot make 96 daily requests
-cover thousands of pending IPs. It makes no fleet-wide timeliness guarantee.
+Scheduling combines bounded indexed pools: oldest 100 queued IPs, richest 64
+queued packets, and most-recent 64 queued packets, at most 228 distinct candidate
+IPs. Selection alternates age and evidence priority slots. A newer distinctive
+nonempty packet beyond the oldest 100 can receive the second slot; the next age
+slot remains available if the oldest job is leased or cached. Queue metadata
+follows current packet changes. Deleted queue items and packets release metadata.
+Legacy metadata backfills in restartable rowid pages of at most 200 per pass;
+partial backfill is exposed in worker state. Selection returns at most 100
+candidates, not 100 requests. The existing two-call cap, daily budget, provider
+backoff, leases, cache and per-job attempt limits remain authoritative. No item
+is dequeued merely because it shares a fingerprint. This does not make 96 daily
+requests cover thousands of pending IPs; candidate scheduling is not a measured
+live latency or coverage improvement.
 
 The overview separates pending ages from consumed wait samples and reports
 current-prompt unexpired packet coverage. That count does not certify current
@@ -114,28 +120,82 @@ misses, named-operator accuracy and calibrated reliability remain unmeasured.
 
 ## Reviewed tool/CVE references
 
-The worker reads `behavior-references.json` beside the derived database, with a
-128 KiB file cap and 32-rule cap. No public feed is sent private inventory. Schema
-1 has a `rules` array. Every rule requires `id`, `version`, `label`, `kind` (`tool`
-or `cve`), `reviewed_by`, `rationale`, `match` and `references`. A CVE label must be
-a CVE identifier. `match` contains exact `path` and `method` plus `action` and/or
-`client_type`. All fields must match one cited sampled event. Generic scans, a
-model's recollection, a familiar endpoint or a claimed client alone are insufficient.
+`behavior-reference-starter.json` supplies two small reviewed primary-source
+associations. They are context, never scores or enforcement instructions:
 
-Each reference supplies an HTTPS `url`, `primary: true`, `publisher`, source
-`version`, timezone-aware `retrieved_at` and the SHA-256 of the reviewed primary
-source bytes. An administrator must verify the source, its applicability and the
-indicator rationale before installing it. These fields are provenance assertions,
-not cryptographic proof that a publisher endorses the detection. The local catalog
-hash and source version should accompany independent QA. The loader does not fetch
-or execute reference content. Version changes create a separately reviewable alert.
+* A POST to a CGI path containing parent traversal and ending at `/bin/sh`,
+  `/bin/bash` or `/etc/passwd` is a traversal probe compatible with Apache
+  CVE-2021-41773 / CVE-2021-42013 context. Other CGI weaknesses and broad probing
+  can look alike. Decoded paths cannot distinguish those CVEs or prove an affected
+  Apache version, configuration, payload execution or success.
+* A POST to the recognized PHPUnit `eval-stdin.php` endpoint is targeting-only
+  context for CVE-2017-9841. The maintainer's article and immutable upstream source
+  revision support the endpoint context. No PHP payload or target version is
+  collected. It does not identify Androxgh0st or any other operator/tool family.
 
-Use vendor advisories or upstream project disclosures and archived immutable
-revisions. Do not install a rule if the discriminating payload, request parameter,
-affected version or response evidence was stripped by privacy normalization.
-Such a gap must remain unknown. A signature association does not prove that the
-target runs an affected version, that a request exploited it, or that exploitation
-succeeded. A conjunction can still be a false positive; review it independently.
+The existing general identifier redactor can hide the long PHPUnit path. A fixed
+`endpoint_hint` category is now derived from the original already-saved path
+before redaction, without keeping raw tokens, query values, payloads or new
+observation identities. This category is the same request evidence, not a third
+independent corroboration. Already-redacted history cannot be reconstructed.
+An indexed history allowance retrieves at most two observations per recognized
+pattern (four total), within the configured IP, collection scope, enabled source
+and evidence-time window. These observations are selected before ordinary source
+sampling, still within the same 11,200-byte packet budget. They remain ineligible
+for pilot points. This addresses retained probes falling outside the ordinary
+latest-200 sample; it is not full history coverage. Legacy history indexes backfill
+in restartable pages of at most 200 per pass, with partial state exposed. History
+cleanup also releases index entries.
+
+Schema 2 explicitly represents targeting-only or traversal-probe evidence and
+uses two request fields, without a fabricated third signal. Schema 1 custom
+catalogs remain readable for compatibility.
+
+PaperCut CVE-2023-27350 / CVE-2023-27351 remains an unavailable association: current
+samples omit distinguishing query values, application debug events and process
+ancestry. A generic `/app` request cannot trigger it. Direct CISA AA24-016A and
+AA23-131A requests returned 403; those full documents were not reviewed or
+archived as successful primary-source fetches. No access restrictions were
+bypassed. KEV membership is not treated as a request signature.
+
+Open **Advisory context** to inspect rule strength, limitations, source versions,
+retrieval times, hashes, pending source changes and recent review history. Source
+snapshots are dated context, not a claim of complete coverage of new disclosures.
+Only a reviewed supported matcher can be added; advisory text cannot generate or
+activate a new mapping automatically.
+
+An administrator stages a refresh with:
+
+```sh
+python behavior_references.py refresh --directory /path/to/private-data
+```
+
+This command is explicit; it installs no timer. It reads four fixed HTTPS primary
+URLs, sends no local IPs/evidence/inventory/authentication, allows no redirects,
+reads at most 3 MB per source with an eight-second request timeout, and permits
+one refresh attempt per 24 hours including failures. The total source count and
+read sizes are bounded. It checks expected advisory markers, preserves exact
+bytes in a hash-named source store, records retrieval/HTTP provenance, and stages
+a candidate containing changed source hashes. Existing match logic stays fixed. Retrieval timestamps alone do not change rule
+versions or generate new pattern alerts; changed source bytes affect only the
+corresponding rule versions.
+
+Review changed bytes and rule applicability before accepting or rejecting the
+exact pending hash in the authenticated UI. Acceptance checks source byte hashes,
+preserves the prior active catalog as last-good, atomically replaces the active
+catalog and records reviewer/outcome/notes. Refresh failures retain active
+context; invalid active data falls back to last-good or becomes unavailable.
+Rejection retains active context. Catalog review grants no scoring authority.
+Historical alert details retain their source versions and citations.
+
+Current, last-good and pending source blobs stay protected; older unprotected
+blobs beyond the latest sixteen expire incrementally. Review hashes persist in
+the ledger. Packaged starter source bytes are preserved in the private QA bundle,
+not copied as entire vendor documents into Community. A previous-byte download
+can be unavailable when that snapshot was never imported or has expired; its hash
+and original primary URL remain visible. The starter source manifest hashes are
+shared public metadata only. The ordinary web UI downloads source bytes as
+attachments with content sniffing disabled.
 
 ## Demonstrated collector gaps and scoped next collection design
 

@@ -1,0 +1,104 @@
+{
+  "schema": 2,
+  "version": "starter-20261017-1",
+  "rules": [
+    {
+      "version": "starter-20261017-1",
+      "reviewed_by": "Implementation primary-source review; staged for Supervisor QA",
+      "reviewed_at": "2026-10-17T02:55:20+00:00",
+      "kind": "cve",
+      "id": "apache-cgi-traversal-context",
+      "label": "CVE-2021-41773",
+      "related_cves": [
+        "CVE-2021-42013"
+      ],
+      "published": "2021-10-04T00:00:00+00:00",
+      "title": "CGI traversal probe compatible with Apache advisory context",
+      "evidence_level": "traversal_probe",
+      "match": {
+        "pattern": "apache_cgi_traversal",
+        "method": "POST"
+      },
+      "rationale": "A CGI URL containing parent-directory traversal and ending at a shell or password-file path is a traversal probe. The Apache advisory supplies compatible vulnerability context, not a unique CVE signature.",
+      "limitations": [
+        "Other CGI traversal weaknesses and broad automated probing can look alike.",
+        "Encoded request details, server version, Alias/CGI configuration, payload and successful execution are unverified.",
+        "A detector action and HTTP method are fields of the same request, not independent corroboration."
+      ],
+      "references": [
+        {
+          "source_id": "apache",
+          "url": "https://httpd.apache.org/security/vulnerabilities_24.html",
+          "primary": true,
+          "publisher": "Apache HTTP Server Project",
+          "version": "2.4.50 / 2.4.51 advisory entries; snapshot 2026-10-17",
+          "retrieved_at": "2026-10-17T02:55:17.402976+00:00",
+          "sha256": "37725ee5b22a958138c8f99fc7fd7b117eafef9e8ac19d8059e4780f12da44e3"
+        }
+      ]
+    },
+    {
+      "version": "starter-20261017-1",
+      "reviewed_by": "Implementation primary-source review; staged for Supervisor QA",
+      "reviewed_at": "2026-10-17T02:55:20+00:00",
+      "kind": "cve",
+      "id": "phpunit-eval-stdin-targeting",
+      "label": "CVE-2017-9841",
+      "related_cves": [],
+      "published": "2017-06-27T00:00:00+00:00",
+      "title": "PHPUnit eval-stdin endpoint targeting",
+      "evidence_level": "targeting_only",
+      "match": {
+        "pattern": "phpunit_eval_stdin",
+        "method": "POST"
+      },
+      "rationale": "The maintainer describes this exposed endpoint and POST attack vector. The endpoint and method support targeting context only; the saved request does not include the PHP payload.",
+      "limitations": [
+        "No vulnerable PHPUnit version, malicious payload, exploit success or named malware/tool/operator is established.",
+        "Androxgh0st cannot be attributed from this shared endpoint.",
+        "A missing endpoint after path redaction cannot be reconstructed or guessed."
+      ],
+      "references": [
+        {
+          "source_id": "phpunit-maintainer",
+          "url": "https://phpunit.expert/articles/phpunit-a-security-risk.html",
+          "primary": true,
+          "publisher": "Sebastian Bergmann, PHPUnit creator",
+          "version": "Article 2020-02-21; retrieved source snapshot",
+          "retrieved_at": "2026-10-17T02:55:17.560982+00:00",
+          "sha256": "79e866dc9ccb6259b81367fcf03895bbbcbb4cfb19d9f13a18658b48dcfb3a43"
+        },
+        {
+          "source_id": "phpunit-fix",
+          "url": "https://raw.githubusercontent.com/sebastianbergmann/phpunit/284a69fb88a2d0845d23f42974a583d8f59bf5a5/src/Util/PHP/eval-stdin.php",
+          "primary": true,
+          "publisher": "PHPUnit upstream",
+          "version": "Commit 284a69fb88a2d0845d23f42974a583d8f59bf5a5; historical stream change, not complete mitigation",
+          "retrieved_at": "2026-10-17T02:55:18.060648+00:00",
+          "sha256": "37a7e4fae0d4dd40e004725043c0f328846eb0e5277472c3225b0fdc40c93067"
+        }
+      ]
+    }
+  ],
+  "unavailable_associations": [
+    {
+      "label": "PaperCut CVE-2023-27350 / CVE-2023-27351",
+      "reason": "Current normalized samples do not preserve the distinguishing query values, PaperCut application debug events or endpoint process ancestry. A generic /app request is insufficient. No PaperCut rule is enabled.",
+      "references": [
+        {
+          "source_id": "papercut",
+          "url": "https://www.papercut.com/kb/Main/PO-1216-and-PO-1219",
+          "primary": true,
+          "publisher": "PaperCut",
+          "version": "PO-1216 / PO-1219; source snapshot 2026-10-17",
+          "retrieved_at": "2026-10-17T02:55:18.176437+00:00",
+          "sha256": "b3fcb6ee7ab84fb8af0ff2ef9a1164e6e96d7f0823965ecd85c19322a567b750"
+        }
+      ]
+    }
+  ],
+  "source_access_limits": [
+    "Direct CISA AA24-016A and AA23-131A requests returned HTTP 403. Full CISA content was not reviewed or archived as primary bytes. Accessible vendor/maintainer sources are used; no access restriction was bypassed.",
+    "KEV membership alone is not an HTTP signature and is not used as one."
+  ]
+}

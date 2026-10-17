@@ -61,6 +61,7 @@ def save_alert(db,kind,own,peer,details,key=None):
  current_times=[timestamp(e['seen']) for e in details.get('current_events',[])];historical_times=[timestamp(e['seen']) for e in details.get('historical_events',[])]
  details['gap_seconds']=(min(current_times)-max(historical_times)).total_seconds() if current_times and historical_times else None
  details['temporal_relation']='current citations follow historical citations' if details['gap_seconds'] is not None and details['gap_seconds']>0 else 'saved windows overlap or current citations precede comparison; return ordering unproven'
+ if not current_times or not historical_times:details['temporal_relation']='No paired historical observations; return ordering is unavailable.'
  details['taxonomy_context']=[]
  for row in ([own,peer] if peer else [own]):
   assessment=db.execute("SELECT id,result,created FROM assessments WHERE packet_id=? AND status='completed' ORDER BY created DESC,rowid DESC LIMIT 1",(row['id'],)).fetchone()
@@ -111,30 +112,17 @@ def inspect(brain,ident,candidates=(),catalog=None):
    left,right=sorted((own['id'],peer['id']));detail['relationship_id']='rel_'+digest([left,right])[:24]
    alerts.append(save_alert(db,'similar_activity',own,peer,detail,key=[p['fingerprint'],*sorted([own['ip'],peer['ip']])]))
   for rule in (catalog or {}).get('rules',[])[:32]:
-   matched=[e for e in p['events'] if all(e.get(k)==v for k,v in rule['match'].items())]
+   from behavior_references import matches
+   matched=[e for e in p['events'] if matches(rule,e)]
    if matched:
-    detail=comparison(current,{'events':[]});detail.update(current_events=matched[:8],association=rule,interpretation='Observed signature associated with a reviewed reference. Target vulnerability, successful exploitation and operator identity are unverified.')
+    detail=comparison(current,{'events':[]});detail.update(current_events=matched[:8],association=rule,catalog_version=(catalog or {}).get('version','legacy'),catalog_hash=(catalog or {}).get('sha256'),interpretation=('Observed '+rule.get('evidence_level','unverified signature').replace('_',' ')+' associated with reviewed advisory context. Target vulnerability, exploitation success, named malware and operator identity are unverified.'))
     alerts.append(save_alert(db,'reference_pattern',own,None,detail,key=[p['fingerprint'],own['ip'],rule['id'],rule['version']]))
  return {'status':'inspected','same_ip_windows_read':len(peers),'same_ip_bound':32,'history_may_be_truncated':len(peers)==32,'alerts':len(set(a for a in alerts if a)),'catalog_status':(catalog or {}).get('status','not_configured')}
 
 def load_catalog(path):
- """No network. Administrator-reviewed, versioned exact indicators; generic scans abstain."""
- try:
-  if pathlib.Path(path).stat().st_size>131072:raise ValueError()
-  data=json.loads(pathlib.Path(path).read_text());assert data['schema']==1 and len(data['rules'])<=32
-  for rule in data['rules']:
-   assert all(isinstance(rule.get(k),str) and 0<len(rule[k])<=500 for k in ('id','version','label','reviewed_by','rationale'))
-   assert rule['kind'] in ('tool','cve')
-   if rule['kind']=='cve':assert re.fullmatch(r'CVE-\d{4}-\d{4,}',rule['label'])
-   match=rule['match'];assert isinstance(match,dict) and 3<=len(match)<=4 and set(match)<=set(('path','method','action','client_type'))
-   assert match.get('path','').startswith('/') and match.get('method') in ('GET','POST','PUT','PATCH','DELETE','HEAD')
-   assert all(isinstance(v,str) and 0<len(v)<=200 for v in match.values())
-   assert rule['rationale'] and 1<=len(rule['references'])<=4
-   for ref in rule['references']:
-    assert ref['url'].startswith('https://') and ref['primary'] is True and timestamp(ref['retrieved_at'])
-    assert re.fullmatch('[a-f0-9]{64}',ref['sha256']) and ref['publisher'] and ref['version']
-  return {**data,'status':'reviewed_local','sha256':digest(data)}
- except (OSError,ValueError,KeyError,TypeError,AssertionError,AttributeError):return {'status':'missing_or_invalid','rules':[]}
+ from behavior_references import active,load
+ path=pathlib.Path(path)
+ return active(path.parent) if path.name=='behavior-references.json' else load(path)
 
 def alerts(brain,ident=None,limit=50):
  with brain.connect() as db:
@@ -156,21 +144,5 @@ def review(brain,ident,outcome,notes,actor):
  brain.store.audit(actor,'behavior.alert.review',{'id':ident,'outcome':outcome})
 
 def schedule(db,limit=100):
- """One oldest item then diverse recent evidence within a bounded oldest-100 pool.
-
- No skipping, dequeue, quotas, leases or retries here. Every oldest item remains
- first, preventing starvation even when all rich examples share one pattern.
- """
- rows=db.execute('SELECT q.ip,q.queued,q.packet_id original_packet_id,p.id packet_id,p.content,p.features FROM analysis_queue q LEFT JOIN current_packets c ON c.ip=q.ip JOIN packets p ON p.id=coalesce(c.packet_id,q.packet_id) ORDER BY q.queued,q.ip LIMIT 100').fetchall()
- if not rows:return []
- first,*rest=rows;seen={profile(json.loads(first['content']))['fingerprint']};ranked=[]
- for row in rest:
-  p=profile(json.loads(row['content']));rich=min(4,len(p['paths']))+min(2,len(p['actions']))
-  latest=max((timestamp(e['seen']) for e in p['events']),default=None)
-  recent=bool(latest and latest>=dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=24))
-  ranked.append((row,p['fingerprint'],rich,recent))
- result=[first]
- while ranked and len(result)<min(100,limit):
-  best=max(range(len(ranked)),key=lambda i:(ranked[i][1] not in seen,ranked[i][3],ranked[i][2],-i))
-  row,fingerprint,_,_=ranked.pop(best);seen.add(fingerprint);result.append(row)
- return result
+ from behavior_scheduling import schedule as select
+ return select(db,limit)

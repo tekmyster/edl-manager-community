@@ -35,6 +35,11 @@ def normalize(address,source,sensor,sample,received):
  from web_client import BOTS
  clients={operator+' / '+token for token,operator,role in BOTS}|{'Headless Chrome','Playwright','Puppeteer','Selenium','Python requests','Python urllib','aiohttp','httpx','Go HTTP client','curl','Wget','OkHttp','PowerShell','Node fetch','Apache HTTP client'}
  if sample.get('client') in clients:value['client_claim']={'label':sample['client'],'basis':'spoofable user-agent label; not verified tool, operator or maliciousness'}
+ # Fixed endpoint categories preserve public targeting syntax that the general
+ # identifier redactor may remove. No payload, query values or new event identity.
+ from behavior_references import endpoint_hint
+ hint=endpoint_hint(sample.get('path',''))
+ if hint:value['endpoint_hint']=hint
  value['id']='hist_'+digest([address,value['source'],value['sensor'],origin,value['seen'],path,value['method'],value['status'],value['destination'],value['port'],value['action']])[:24]
  return value
 
@@ -44,6 +49,8 @@ def save(brain,address,source,sensor,samples,received,scope=""):
    event=normalize(address,source,sensor,sample,received)
    if event:
     db.execute('INSERT OR IGNORE INTO event_history VALUES(?,?,?,?,?,?,?,?)',(event['id'],address,event['source'],event['sensor'],event['seen'],received,scope,json.dumps(event)))
+    from behavior_references import index_event
+    index_event(db,address,event,scope)
     if event['provenance']['record_id']:
      prior=json.loads(db.execute('SELECT content FROM event_history WHERE id=? AND scope=?',(event['id'],scope)).fetchone()[0])
      if not prior['provenance'].get('record_id'):

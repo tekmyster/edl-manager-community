@@ -102,7 +102,9 @@ class Brain:
   with self.connect() as db:retention_initialize(db)
   from behavior_intelligence import SCHEMA as INTELLIGENCE_SCHEMA
   from behavior_evaluation import SCHEMA as EVALUATION_SCHEMA
-  with self.connect() as db:db.executescript(INTELLIGENCE_SCHEMA+EVALUATION_SCHEMA)
+  from behavior_scheduling import SCHEMA as SCHEDULING_SCHEMA
+  from behavior_references import SCHEMA as REFERENCES_SCHEMA
+  with self.connect() as db:db.executescript(INTELLIGENCE_SCHEMA+EVALUATION_SCHEMA+SCHEDULING_SCHEMA+REFERENCES_SCHEMA)
  @contextlib.contextmanager
  def connect(self):
   db=sqlite3.connect(str(self.path),timeout=15);db.row_factory=sqlite3.Row
@@ -113,6 +115,8 @@ class Brain:
   cfg=cfg or settings(self.store);at=at or dt.datetime.now(dt.timezone.utc);cut=at-dt.timedelta(days=cfg['window_days'])
   from evidence_history import cache_rows,cache_palo,query,normalize,active_sources,representative
   cache_rows(self,row,at,source_cfg);cache_palo(self,row['ip'],source_cfg,at);history=query(self,row['ip'],at,source_cfg=source_cfg)
+  from behavior_references import representative_events
+  priority_events=representative_events(self,row['ip'],source_cfg,at,cfg['window_days']) if cfg.get('correlation_enabled') else []
   history['collection']={k:v for k,v in history['collection'].items() if k!='fetched'}
   raw=row.get('evidence',[])+row.get('activity',[]);counted={(e['source'],e['sensor']) for e in row.get('evidence',[]) if e['source']!='palo'};events={};total=0;source_counts={};features=set();missing=set()
   allowed_sources=active_sources(self,source_cfg)
@@ -144,6 +148,7 @@ class Brain:
     if not normalized:continue
     eid=normalized['id'];event.update({k:normalized[k] for k in ('id','seen','destination','provenance','parameter_names','parameter_count')});event['http_metadata']=normalized.get('http_metadata',{})
     if normalized.get('client_claim'):event['client_claim']=normalized['client_claim']
+    if normalized.get('endpoint_hint'):event['endpoint_hint']=normalized['endpoint_hint']
     if eid in events:
      events[eid]['independent_evidence']=events[eid]['independent_evidence'] and event['independent_evidence']
      for counter in ('native_attempts','native_records'):events[eid][counter]=max(events[eid][counter],event[counter])
@@ -154,7 +159,8 @@ class Brain:
     if event['method']:features.add('method:'+event['method'])
     if parameters:features.add('params:'+','.join(parameters))
     if sensor:features.add('sensor:'+sensor)
-  for cached in history['events']:
+  for cached in priority_events+history['events']:
+   if not timestamp(cached.get('seen')) or not cut<=timestamp(cached['seen'])<=at+dt.timedelta(minutes=5):continue
    if cached['id'] not in events:
     events[cached['id']]=cached
     if cached['path']:features.add('path:'+cached['path'])
@@ -162,13 +168,14 @@ class Brain:
     source_counts[cached['source']]=source_counts.get(cached['source'],0)+1;total+=1
   ordered=sorted(events.values(),key=lambda e:(e['seen'],e['id']))
   # Bound packet size deterministically and preserve source coverage.
-  selected=[]
+  priority_ids={e['id'] for e in priority_events}
+  selected=[e for e in ordered if e['id'] in priority_ids]
   for left,right in zip(ordered,ordered[1:]):
    if left['path'] and right['path'] and left['source']==right['source'] and left['sensor']==right['sensor'] and 0<(timestamp(right['seen'])-timestamp(left['seen'])).total_seconds()<=900:features.add('sequence:'+left['path']+' -> '+right['path'])
   groups={source:representative([e for e in ordered if e['source']==source]) for source in sorted(source_counts)}
   for index in range(40):
    for group in groups.values():
-    if index<len(group):
+    if index<len(group) and group[index]['id'] not in priority_ids:
      selected.append(group[index])
   selected=selected[:160]
   if total>len(selected):missing.add('Only a bounded subset of saved samples was included')
@@ -179,7 +186,7 @@ class Brain:
    if 'Input limited to a bounded evidence subset' not in content['limitations']:content['limitations'].append('Input limited to a bounded evidence subset')
   content['events']=sorted(content['events'],key=lambda e:(e['seen'],e['id']))
   chosen_events=content['events']
-  content['sequence']={'available':total,'cached_total':history['total'],'cached_read':len(history['events']),'included':len(chosen_events),'partial':True,'selection':'time endpoints then spaced positions per source, round robin, bounded by bytes','first':chosen_events[0]['seen'] if chosen_events else None,'last':chosen_events[-1]['seen'] if chosen_events else None}
+  content['sequence']={'available':total,'cached_total':history['total'],'cached_read':len(history['events']),'included':len(chosen_events),'partial':True,'selection':'up to four indexed advisory-pattern events, then source time endpoints and spaced positions, bounded by bytes','first':chosen_events[0]['seen'] if chosen_events else None,'last':chosen_events[-1]['seen'] if chosen_events else None}
   ident='pkt_'+digest([row['ip'],content])
   content['packet_id']=ident;content['prepared_at']=at.isoformat(timespec='seconds')
   with self.connect() as db:
@@ -190,6 +197,8 @@ class Brain:
   # Retrieval and inference must use precisely the features stored with this packet.
   return ident,content,set(sorted(features)[:500])
  def index_features(self,db,ident,features):
+  from behavior_scheduling import index as index_schedule
+  index_schedule(db,ident)
   from behavior_correlation import index
   index(db,ident,features)
   if db.execute('SELECT 1 FROM packet_feature_ready WHERE packet_id=?',(ident,)).fetchone():return
@@ -502,6 +511,10 @@ def run(store,index_only=False,source_cfg=None):
  cfg=settings(store)
  if not cfg['enabled']:return {'status':'disabled'}
  brain=Brain(store);backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
+ from behavior_scheduling import backfill as backfill_schedule
+ schedule_backfill=backfill_schedule(brain)
+ from behavior_references import backfill as backfill_references
+ reference_backfill=backfill_references(brain)
  # Round-robin all known addresses; new and updated windows are revisited without starving older IPs.
  rows=sorted(rows,key=lambda r:r['ip']);offset=cursor['offset'] if cursor['offset']<len(rows) else 0
  with brain.connect() as db:indexed={r['ip']:r['created'] for r in db.execute('SELECT c.ip,p.created FROM current_packets c JOIN packets p ON p.id=c.packet_id')}
@@ -536,9 +549,11 @@ def run(store,index_only=False,source_cfg=None):
  # An oldest-first fairness slot plus diverse evidence candidates within the oldest 100
  # decouples indexing from the unchanged two-call and daily-budget caps.
  # Changed windows replace pending content without losing their original place.
+ scheduled_candidates=0
  if cfg['model_enabled'] and not index_only:
-  from behavior_intelligence import schedule
+  from behavior_scheduling import schedule
   with brain.connect() as db:pending=schedule(db)
+  scheduled_candidates=len(pending)
   for queued in pending:
    packet=json.loads(queued['content']);clock=dt.datetime.now(dt.timezone.utc)
    waiting=max(0,(clock-timestamp(queued['queued'])).total_seconds())
@@ -552,7 +567,7 @@ def run(store,index_only=False,source_cfg=None):
    if status not in ('cached','leased_or_exhausted','stale_evidence'):calls+=1
    if calls>=2:break
  store.state('behavior_cursor',{'offset':offset+len(fair)})
- status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'retention':retention,'fingerprints_backfilled':backfilled,'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  store.state('behavior_worker',status);return status
 
 

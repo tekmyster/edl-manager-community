@@ -80,7 +80,7 @@ def test_queue_fairness_diversity_budget_neutral_and_bounded(tmp_path):
  with b.connect() as db:
   before=list(db.iterdump());result=schedule(db);assert list(db.iterdump())==before
  assert len(result)==100 and result[0]['packet_id']=='p0' and result[1]['packet_id']=='p95'
- assert 'p100' not in {r['packet_id'] for r in result}
+ assert 'p100' in {r['packet_id'] for r in result}
 
 def catalog_rule():
  return {'id':'synthetic-rule','version':'test-1','label':'CVE-2099-12345','kind':'cve','reviewed_by':'fixture','rationale':'Synthetic conjunction for matcher mechanics; no actual advisory.',

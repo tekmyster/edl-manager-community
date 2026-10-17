@@ -15,6 +15,31 @@ def register(app,store,cfg,login_required):
  def behavior_activity():
   from behavior_intelligence import alerts
   return render_template('behavior_activity.html',alerts=alerts(service))
+ @app.get('/behavior/references')
+ @login_required
+ def behavior_reference_overview():
+  from behavior_references import state
+  return render_template('behavior_references.html',references=state(service))
+ @app.post('/behavior/references/review')
+ @login_required
+ def behavior_reference_review():
+  from behavior_references import review
+  from filelock import Timeout
+  try:review(service,request.form.get('candidate_hash',''),request.form.get('outcome',''),request.form.get('notes',''),session['user'])
+  except (ValueError,OSError) as exc:flash(str(exc) if isinstance(exc,ValueError) else 'Reference review could not be saved. The active catalog is retained.','error')
+  except Timeout:flash('Reference refresh or review is already running. Try again after it finishes.','error')
+  else:flash('Reference review saved. No scoring or enforcement policy changed.','success')
+  return redirect(url_for('behavior_reference_overview'))
+ @app.get('/behavior/references/sources/<sha>')
+ @login_required
+ def behavior_reference_source(sha):
+  import re,hashlib
+  from flask import send_file
+  if not re.fullmatch('[a-f0-9]{64}',sha):abort(404)
+  path=pathlib.Path(store.path).parent/'reference-sources'/(sha+'.source')
+  if not path.is_file() or path.stat().st_size>3000000:abort(404)
+  if hashlib.sha256(path.read_bytes()).hexdigest()!=sha:abort(409)
+  response=send_file(path,mimetype='application/octet-stream',as_attachment=True,download_name=sha+'.source');response.headers['X-Content-Type-Options']='nosniff';return response
  @app.get('/behavior/activity/<ident>')
  @login_required
  def behavior_activity_detail(ident):
