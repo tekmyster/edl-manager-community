@@ -114,6 +114,8 @@ def test_failed_logins_not_subtypes_and_context_cannot_support_mapping(catalog):
 
 def test_real_collector_actions_and_http_scan_boundaries(catalog):
  packet={'events':[event('cmd','cowrie.command.input',source='tpot',sensor='cowrie'),event('download','cowrie.session.file_download',source='tpot',sensor='cowrie')]}
+ assert not select(catalog,packet)['attack']
+ for e,semantic in zip(packet['events'],('shell_input','network_fetch')):e['source_observation']={'semantic':semantic}
  assert set(select(catalog,packet)['attack'])=={'T1059','T1105'}
  assert 'T1059.004' not in select(catalog,packet)['attack']
  for e in packet['events']:e['source']='nginx'

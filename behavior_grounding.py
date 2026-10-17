@@ -5,7 +5,7 @@ source fields remain untrusted reports. Older stored assessments are not rewritt
 """
 import re
 
-VERSION='grounded-observations-2'
+VERSION='grounded-observations-3'
 MAX_FACTS=12
 MAX_SIGNAL_EVENTS=24
 MAX_SUPPORT_BUNDLES=6
@@ -17,6 +17,14 @@ SUMMARIES={
  'malicious':'Malicious interpretation of cited reported behavior; authorization, successful exploitation and operator identity remain unverified.'}
 ALTERNATIVE='Shared tooling, NAT, proxies or address reassignment; operator identity is unknown.'
 RELATION='Cited current and historical samples share observable request or client-label features. This is an uncertain behavioral similarity, not collaboration or identity.'
+
+class GroundingError(ValueError):
+ def __init__(self,message,reason,field,index=None):
+  super().__init__(message);self.reason=reason;self.field=field;self.index=index
+ def diagnostic(self):
+  value={'category':'grounding_contract','reason':self.reason,'field':self.field}
+  if self.index is not None:value['index']=self.index
+  return value
 
 def mapping_text(kind,ident,name):
  name=str(name)[:50]
@@ -41,6 +49,8 @@ are required. Copies, repeated labels, paths alone and generic failures abstain.
  from behavior_ai import timestamp
  from behavior_mapping import DETECTORS
  from behavior_references import endpoint_hint
+ from source_observations import connections
+ linked=connections(events)
  signals=[]
  for event in events:
   provenance=event.get('provenance') or {};origin=provenance.get('upstream_id') or provenance.get('record_id')
@@ -50,15 +60,17 @@ are required. Copies, repeated labels, paths alone and generic failures abstain.
   for ident,pattern,_ in DETECTORS:
    if re.fullmatch(pattern+r'(?: detected)?',action):features.add('reported:'+ident)
   # Machine event semantics are recognized independently of collector branding.
-  if action=='cowrie.command.input':features.add('reported:T1059')
-  if action=='cowrie.session.file_download':features.add('reported:T1105')
+  semantic=(event.get('source_observation') or {}).get('semantic')
+  syntax=(event.get('source_observation') or {}).get('syntax_categories',[])
+  if action=='cowrie.command.input' and semantic=='shell_input' and any(v in syntax for v in ('permission_change','interpreter_input','relative_execution')):features.add('reported:shell_staging_input')
+  if action=='cowrie.session.file_download' and semantic in ('file_capture','network_fetch'):features.add('reported:'+semantic)
   method=event.get('method');path=event.get('path','');status=str(event.get('status',''))
   if method=='POST' and path and status.isdigit() and 100<=int(status)<=599:
    category=endpoint_hint(path)
    if '[identifier]' in path and event.get('endpoint_hint') in ('phpunit_eval_stdin','apache_cgi_traversal'):category=event['endpoint_hint']
    if category:features.add('targeting:'+category)
   if not features:continue
-  destination=event.get('destination') or {};target=destination.get('asset_id') or destination.get('address')
+  destination=(linked.get(event['id']) or event).get('destination') or {};target=destination.get('asset_id') or destination.get('address')
   signals.append({'event':event,'origin':origin,'seen':seen,'features':features,'target':target})
  # Bound pair comparisons and explicitly expose partial support coverage.
  signals=sorted(signals,key=lambda x:x['event']['id']);available=len(signals);signals=signals[:MAX_SIGNAL_EVENTS];bundles=[]
@@ -76,7 +88,12 @@ are required. Copies, repeated labels, paths alone and generic failures abstain.
    pa=a.get('provenance') or {};pb=b.get('provenance') or {};port=str(a.get('port',''))
    stream_match=bool(pa.get('collector_agent') and pa.get('collector_agent')==pb.get('collector_agent') and (a['source'],a['sensor'])==(b['source'],b['sensor']) and port==str(b.get('port','')) and port.isdigit() and 1<=int(port)<=65535)
    if not target_match and not stream_match:continue
-   bundles.append({'evidence_ids':[a['id'],b['id']],'basis':'Distinct sampled reports within 15 minutes; '+('matching observed target' if target_match else 'matching recorded collector stream and port')+'; different supported behavior features. Authorization and successful compromise remain unknown.'})
+   link_a=linked.get(a['id']);link_b=linked.get(b['id'])
+   # Session-bearing reports must resolve through the same original connection.
+   if a.get('source_observation') or b.get('source_observation'):
+    if not link_a or not link_b or link_a['id']!=link_b['id']:continue
+   refs=list(dict.fromkeys([a['id'],b['id']]+([link_a['id']] if link_a else [])))
+   bundles.append({'evidence_ids':refs,'basis':'Distinct sampled reports within 15 minutes; '+('matching observed target' if target_match else 'matching recorded collector stream and port')+'; different supported behavior features. Authorization and successful compromise remain unknown.'})
    if len(bundles)==MAX_SUPPORT_BUNDLES:break
   if len(bundles)==MAX_SUPPORT_BUNDLES:break
  return bundles,{'available_signal_events':available,'examined_signal_events':len(signals),'signal_bound':MAX_SIGNAL_EVENTS,'support_bundle_bound':MAX_SUPPORT_BUNDLES,'pair_bound':276}
@@ -85,6 +102,8 @@ def contract(packet,registry):
  from behavior_ai import safe_text,timestamp,now
  from behavior_mapping import select,FAILURE
  eligible=select(registry,packet);facts=[];positive=[]
+ from source_observations import connections
+ linked=connections(packet.get('events',[]))
  events=list(packet.get('events',[]))
  bundles,support_coverage=sufficiency(events)
  support_ids=list(dict.fromkeys(i for b in bundles for i in b['evidence_ids']))
@@ -97,9 +116,15 @@ def contract(packet,registry):
   if not e.get('id'):continue
   action=safe_text(e.get('action'),60);source=safe_text(e.get('source'),20);sensor=safe_text(e.get('sensor'),30)
   statement=f'Saved {source} / {sensor} sample reports {action or "unspecified activity"}.'
+  semantic=(e.get('source_observation') or {}).get('semantic')
+  if action=='cowrie.session.file_download' and semantic=='file_capture':statement=f'Saved {source} / {sensor} sample reports file capture; network transfer is unverified.'
+  if action=='cowrie.session.file_download' and semantic=='network_fetch':statement=f'Saved {source} / {sensor} sample reports a network file fetch; intent and execution are unverified.'
+  if action=='cowrie.command.input' and semantic in ('shell_input','interactive_input'):statement=f'Saved {source} / {sensor} sample reports '+('shell input; execution is unverified.' if semantic=='shell_input' else 'interactive input; command execution is unverified.')
   if e.get('method') and e.get('path') and not re.fullmatch(FAILURE,action.casefold()):
    statement=f'Saved request: {safe_text(e["method"],8)} {safe_text(e["path"],70)}; status {safe_text(e.get("status"),3) or "unavailable"}; source {source}.'
-  facts.append({'summary':statement,'evidence_ids':[e['id']]})
+  connection=linked.get(e['id'])
+  refs=list(dict.fromkeys([e['id']]+([connection['id']] if connection else [])))
+  facts.append({'summary':statement,'evidence_ids':refs})
  for c in packet.get('context',[]):
   expiry=timestamp(c.get('expires'));fresh=c.get('status')=='ok' and c.get('cache_fresh') is True and expiry is not None and expiry>timestamp(now())
   if c.get('kind')!='intelligence' or not fresh or not c.get('id'):continue
@@ -125,28 +150,38 @@ def contract(packet,registry):
 
 def validate(value,packet,candidates,registry):
  c=contract(packet,registry)
+ def reject(message,reason,field,index=None):raise GroundingError(message,reason,field,index)
  for field in ('findings','contradictory_evidence'):
-  for claim in value[field]:
-   if claim not in c['facts']:raise ValueError('Unsupported observation statement')
-  if len({tuple(v['evidence_ids']) for v in value[field]})!=len(value[field]):raise ValueError('Duplicate observation statement')
- if value['classification'] not in c['classifications']:raise ValueError('Unsupported decisive interpretation')
+  seen=set()
+  for index,claim in enumerate(value[field]):
+   if claim not in c['facts']:
+    known=any(f['summary']==claim['summary'] for f in c['facts'])
+    reject('Unsupported observation statement','citation_binding' if known else 'summary_not_offered',field+('.evidence_ids' if known else '.summary'),index)
+   refs=tuple(claim['evidence_ids'])
+   if refs in seen:reject('Duplicate observation statement','duplicate_observation',field,index)
+   seen.add(refs)
+ if value['classification'] not in c['classifications']:reject('Unsupported decisive interpretation','classification_not_supported','classification')
  cited={i for v in value['findings']+value['contradictory_evidence'] for i in v['evidence_ids']}
- if value['classification']=='benign' and not cited.intersection(c['positive_ids']):raise ValueError('Benign interpretation requires positive context')
+ if value['classification']=='benign' and not cited.intersection(c['positive_ids']):reject('Benign interpretation requires positive context','positive_context_not_cited','findings')
  finding_ids={i for v in value['findings'] for i in v['evidence_ids']}
- if value['classification']=='malicious' and not any(set(b['evidence_ids'])<=finding_ids for b in c['malicious_support']):raise ValueError('Malicious interpretation requires reported behavior')
+ if value['classification']=='malicious' and not any(set(b['evidence_ids'])<=finding_ids for b in c['malicious_support']):reject('Malicious interpretation requires reported behavior','support_bundle_not_cited','findings')
  for key in ('automation','intent'):
-  if value[key]['classification'] not in c[key]:raise ValueError('Unsupported interpretation label')
-  if value[key]['classification']=='unknown' and value[key]['confidence']!=0:raise ValueError('Unknown interpretation requires zero confidence')
- if value['analysis_summary']!=SUMMARIES[value['classification']] or value['limitations']!=LIMITS:raise ValueError('Unsupported assessment narrative')
+  if value[key]['classification'] not in c[key]:reject('Unsupported interpretation label','label_not_supported',key+'.classification')
+  if value[key]['classification']=='unknown' and value[key]['confidence']!=0:reject('Unknown interpretation requires zero confidence','unknown_confidence_nonzero',key+'.confidence')
+ if value['analysis_summary']!=SUMMARIES[value['classification']]:reject('Unsupported assessment narrative','assessment_summary_mismatch','analysis_summary')
+ if value['limitations']!=LIMITS:
+  index=next((i for i,(a,b) in enumerate(zip(value['limitations'],LIMITS)) if a!=b),min(len(value['limitations']),len(LIMITS)))
+  reject('Unsupported assessment narrative','limitations_mismatch','limitations',index)
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
-  for claim in value[field]:
-   if claim['explanation']!=mapping_text(kind,claim['technique_id'],registry[kind][claim['technique_id']]):raise ValueError('Unsupported mapping narrative')
+  for index,claim in enumerate(value[field]):
+   if claim['explanation']!=mapping_text(kind,claim['technique_id'],registry[kind][claim['technique_id']]):reject('Unsupported mapping narrative','mapping_explanation_mismatch',field+'.explanation',index)
  own={e['id']:e for e in packet['events']}
- for claim in value['actor_correlation']:
+ for index,claim in enumerate(value['actor_correlation']):
   candidate=next(v for v in candidates if v['candidate_id']==claim['candidate_id']);refs=set(claim['evidence_ids'])
   peers=[e for e in candidate.get('historical_events',[]) if e.get('id') in refs]
-  if not any(shared(e,p) for ident,e in own.items() if ident in refs for p in peers):raise ValueError('Unsupported historical similarity')
-  if claim['explanation']!=RELATION or claim['alternative_explanations']!=[ALTERNATIVE]:raise ValueError('Unsupported correlation narrative')
+  if not any(shared(e,p) for ident,e in own.items() if ident in refs for p in peers):reject('Unsupported historical similarity','historical_similarity_not_supported','actor_correlation.evidence_ids',index)
+  if claim['explanation']!=RELATION:reject('Unsupported correlation narrative','correlation_explanation_mismatch','actor_correlation.explanation',index)
+  if claim['alternative_explanations']!=[ALTERNATIVE]:reject('Unsupported correlation narrative','correlation_alternatives_mismatch','actor_correlation.alternative_explanations',index)
 
 def constrain(schema,packet,candidates,registry,choices):
  """Enum constraints aid decoding; validate() enforces citation/text binding."""

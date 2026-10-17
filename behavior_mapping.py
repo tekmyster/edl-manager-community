@@ -2,7 +2,7 @@
 import datetime as dt
 import re
 
-RULE_VERSION='telemetry-1'
+RULE_VERSION='telemetry-2'
 MAX_ATTACK=12
 MAX_DEFEND=6
 # Explicit observed detector descriptions only. Paths, ports, feed labels,
@@ -51,9 +51,9 @@ def select(registry,packet):
    if re.fullmatch(pattern+r'(?: detected)?',action):
     offer('attack',ident,[event['id']]);offer('d3fend',defense,[event['id']])
   if event.get('source')=='tpot' and event.get('sensor','').casefold()=='cowrie':
-   if action=='cowrie.command.input':
+   if action=='cowrie.command.input' and (event.get('source_observation') or {}).get('semantic')=='shell_input':
     offer('attack','T1059',[event['id']]);offer('d3fend','D3-SEA',[event['id']])
-   if action=='cowrie.session.file_download':
+   if action=='cowrie.session.file_download' and (event.get('source_observation') or {}).get('semantic')=='network_fetch':
     offer('attack','T1105',[event['id']]);offer('d3fend','D3-UDTA',[event['id']])
   if event.get('source') in ('tpot','owapot'):offer('d3fend','D3-DE',[event['id']])
   if event.get('path') and event.get('method'):

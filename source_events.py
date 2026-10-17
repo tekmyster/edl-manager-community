@@ -28,7 +28,7 @@ def activity_event(v,seen=None,event_id=''):
     port=v.get('dest_port') or v.get('dst_port') or v.get('host_port') or v.get('server_port')
     try:port=str(int(port)) if 1<=int(port)<=65535 else ''
     except (ValueError,TypeError):port=''
-    path=v.get('uri_path') or v.get('request_uri') or v.get('url') or ''
+    path=v.get('uri_path') or v.get('request_uri') or ('' if str(v.get('eventid','')).startswith('cowrie.') else v.get('url')) or ''
     try:path=urllib.parse.urlsplit(str(path)).path[:200]
     except ValueError:path=''
     return {'id':str(event_id)[:120],'seen':t.isoformat(),'destination':dest,'port':port,'action':str(v.get('eventid') or v.get('event_type') or v.get('action') or v.get('status_code') or v.get('status') or 'connection observed')[:120],'path':path,**http_details(v)}

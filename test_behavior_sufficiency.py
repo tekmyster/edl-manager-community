@@ -15,12 +15,12 @@ def families():
   'http_waf':packet(sample('http','HTTP request',source='nginx',sensor='web-request',method='POST',path='/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php',status='404'),sample('waf','public-facing application exploit attempt',source='waf',sensor='application-rule',method='POST',path='/upload',status='403',seen=second)),
   'wazuh':packet(sample('dump','os credential dumping',sensor='credential-event'),sample('ps','powershell execution',sensor='process-event',seen=second)),
   'waf':packet(sample('upload','web shell upload attempt',source='waf',sensor='application-rule'),sample('exploit','public-facing application exploit attempt',source='waf',sensor='application-rule',seen=second)),
-  'honeypot':packet(sample('cmd','cowrie.command.input',source='tpot',sensor='Cowrie',port='22'),sample('file','cowrie.session.file_download',source='tpot',sensor='Cowrie',port='22',seen=second)),
+  'honeypot':__import__('test_source_observations').linked_packet(),
  }
 
 def malicious_value(p):
  c=contract(p,{});value=example(p);refs=set(c['malicious_support'][0]['evidence_ids'])
- value['findings']=[f for f in c['facts'] if set(f['evidence_ids'])<=refs]
+ value['findings']=[f for f in c['facts'] if set(f['evidence_ids'])<=refs and (len(refs)==2 or len(f['evidence_ids'])==2)]
  value.update(classification='malicious',maliciousness_confidence=.9,analysis_summary=SUMMARIES['malicious']);return value
 
 @pytest.mark.parametrize('family',list(families()))
@@ -76,8 +76,8 @@ def test_collector_branding_is_not_an_eligibility_privilege():
  assert transport(p,malicious_value(p))[0][0]['classification']=='malicious'
 
 def test_explicit_collection_scope_can_correlate_unknown_targets_without_claiming_target_identity():
- p=families()['honeypot']
- for e in p['events']:e['destination']={'scope':'unknown'};e['provenance']['collector_agent']='fixture-agent'
+ p=families()['wazuh']
+ for e in p['events']:e['destination']={'scope':'unknown'};e['sensor']='fixture-stream';e['provenance']['collector_agent']='fixture-agent'
  c=contract(p,{});assert 'malicious' in c['classifications'] and 'collector stream' in c['malicious_support'][0]['basis']
  p['events'][1]['provenance']['collector_agent']='other-agent'
  assert 'malicious' not in contract(p,{})['classifications']

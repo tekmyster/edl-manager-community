@@ -2,8 +2,8 @@
 import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.8'
-GENERATION_SCHEMA_VERSION='grounded-observations-2'
+PROMPT_VERSION='behavior-3.9'
+GENERATION_SCHEMA_VERSION='grounded-observations-3'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -155,6 +155,7 @@ class Brain:
     eid=normalized['id'];event.update({k:normalized[k] for k in ('id','seen','destination','provenance','parameter_names','parameter_count')});event['http_metadata']=normalized.get('http_metadata',{})
     if normalized.get('client_claim'):event['client_claim']=normalized['client_claim']
     if normalized.get('endpoint_hint'):event['endpoint_hint']=normalized['endpoint_hint']
+    if normalized.get('source_observation'):event['source_observation']=normalized['source_observation']
     if eid in events:
      events[eid]['independent_evidence']=events[eid]['independent_evidence'] and event['independent_evidence']
      for counter in ('native_attempts','native_records'):events[eid][counter]=max(events[eid][counter],event[counter])
@@ -175,7 +176,10 @@ class Brain:
   ordered=sorted(events.values(),key=lambda e:(e['seen'],e['id']))
   # Bound packet size deterministically and preserve source coverage.
   priority_ids={e['id'] for e in priority_events}
-  selected=[e for e in ordered if e['id'] in priority_ids]
+  from source_observations import prioritize
+  linked=prioritize([e for e in ordered if e.get('source_observation')],24)
+  priority_ids.update(e['id'] for e in linked)
+  selected=linked+[e for e in ordered if e['id'] in priority_ids and e['id'] not in {v['id'] for v in linked}]
   for left,right in zip(ordered,ordered[1:]):
    if left['path'] and right['path'] and left['source']==right['source'] and left['sensor']==right['sensor'] and 0<(timestamp(right['seen'])-timestamp(left['seen'])).total_seconds()<=900:features.add('sequence:'+left['path']+' -> '+right['path'])
   groups={source:representative([e for e in ordered if e['source']==source]) for source in sorted(source_counts)}
@@ -188,11 +192,14 @@ class Brain:
   from behavior_context import context as build_context
   content={'version':VERSION,'window_days':cfg['window_days'],'events':selected,'context':build_context(self.store,row,source_cfg,at),'source_counts':source_counts,'coverage':'saved_samples','history_coverage':{k:v for k,v in history.items() if k!='events'},'sequence':{},'limitations':sorted(missing|{'Saved source summaries are not a complete raw event history','Intelligence and history are bounded, field-allowlisted context','Native attempt/record counters summarize parent buckets; do not sum repeated bucket counts across samples','TLS and header-order fingerprints are not collected by this packet builder'})}
   while len(json.dumps(content,ensure_ascii=True).encode())>11200 and content['events']:
-   content['events'].pop()
+   removed=content['events'].pop()
+   if removed.get('action')=='cowrie.session.connect':
+    origin=(removed.get('provenance') or {}).get('upstream_id')
+    content['events']=[e for e in content['events'] if not origin or (e.get('source_observation') or {}).get('connection_id')!=origin]
    if 'Input limited to a bounded evidence subset' not in content['limitations']:content['limitations'].append('Input limited to a bounded evidence subset')
   content['events']=sorted(content['events'],key=lambda e:(e['seen'],e['id']))
   chosen_events=content['events']
-  content['sequence']={'available':total,'cached_total':history['total'],'cached_read':len(history['events']),'included':len(chosen_events),'partial':True,'selection':'up to four indexed advisory-pattern events, then source time endpoints and spaced positions, bounded by bytes','first':chosen_events[0]['seen'] if chosen_events else None,'last':chosen_events[-1]['seen'] if chosen_events else None}
+  content['sequence']={'available':total,'cached_total':history['total'],'cached_read':len(history['events']),'included':len(chosen_events),'partial':True,'selection':'complete source session groups and indexed advisory-pattern events, then source time endpoints and spaced positions, bounded by bytes','first':chosen_events[0]['seen'] if chosen_events else None,'last':chosen_events[-1]['seen'] if chosen_events else None}
   ident='pkt_'+digest([row['ip'],content])
   content['packet_id']=ident;content['prepared_at']=at.isoformat(timespec='seconds')
   with self.connect() as db:
@@ -420,7 +427,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
  metadata={};transport_start=None;transport_state='failed'
  try:
   call=requester or session.post
-  grounding_instruction='Copy findings/contradictions exactly from grounded_observations.facts, including their bound evidence_ids. Copy the exact summary for the selected classification and both limitations in order. Copy the enum explanation for each mapping and historical match. Never add narrative facts or turn defensive context into an observed attack, test or control. Choose inconclusive for sparse/ambiguous reports. A malicious interpretation is optional only when findings cite both members of one malicious_support bundle; offered support never forces a verdict. Detector labels or paths alone do not prove maliciousness. Automation/intent are bounded hypotheses, not facts. Unknown automation/intent confidence must be zero. '
+  grounding_instruction='Copy findings/contradictions exactly from grounded_observations.facts, including their bound evidence_ids. Copy the exact summary for the selected classification and both limitations in order. Copy the enum explanation for each mapping and historical match. Never add narrative facts or turn defensive context into an observed attack, test or control. Choose inconclusive for sparse/ambiguous reports. A malicious interpretation is optional only when findings cite every evidence ID in one malicious_support bundle; offered support never forces a verdict. Detector labels or paths alone do not prove maliciousness. Automation/intent are bounded hypotheses, not facts. Unknown automation/intent confidence must be zero. '
   if attempt:attempt.start()
   transport_start=time.monotonic()
   response=call(cfg['endpoint']+'/api/chat',headers={'Authorization':'Bearer '+key},json={'model':cfg['model'],'messages':[{'role':'system','content':grounding_instruction+SYSTEM},{'role':'user','content':json.dumps(prompt,ensure_ascii=True)}],'stream':True,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}},verify=cfg['ca_file'] or True,timeout=(5,cfg['timeout']),allow_redirects=False,stream=True)
@@ -504,7 +511,8 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
    # unexpected keys, rejected labels, citation IDs or exception messages.
    reasons={'Incorrect evidence packet':'packet_identity','Unknown evidence reference':'citation_not_supplied','Unknown taxonomy reference':'taxonomy_not_supplied','Unknown historical candidate':'candidate_not_supplied','Correlation requires current and historical observations':'correlation_event_sides','Correlation requires a supporting current observation':'correlation_current_support','Taxonomy mapping requires supporting observations':'taxonomy_support','Brute force mapping requires multiple sampled failures':'taxonomy_minimum_samples','Malicious assessment requires supporting events':'missing_findings','Non-finite JSON constant':'non_finite_json','Unknown taxonomy choice':'taxonomy_choice_not_supplied','Duplicate taxonomy choice':'taxonomy_choice_duplicate','Malformed taxonomy choice':'taxonomy_choice_shape'}
    diagnostic={'stage':validation_stage,'reason':'json_decode' if isinstance(exc,json.JSONDecodeError) else reasons.get(str(exc),'validation_rejected')}
-   if str(exc) in ('Unsupported observation statement','Duplicate observation statement','Unsupported decisive interpretation','Benign interpretation requires positive context','Malicious interpretation requires reported behavior','Unsupported interpretation label','Unknown interpretation requires zero confidence','Unsupported assessment narrative','Unsupported mapping narrative','Unsupported historical similarity','Unsupported correlation narrative'):diagnostic['reason']='grounding_contract'
+   from behavior_grounding import GroundingError
+   if isinstance(exc,GroundingError):diagnostic.update(exc.diagnostic())
    if isinstance(exc,AssessmentShapeError):diagnostic.update(reason=exc.reason,field=exc.field)
    metadata['validation_diagnostic']=diagnostic
    raise ModelOutputError('invalid_assessment',metadata) from None

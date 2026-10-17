@@ -64,9 +64,11 @@ The application offers a bounded subset of dataset-validated IDs:
   Many current collectors do not retain these detailed detector descriptions, so
   those mappings remain unavailable on their data. This adds eligibility for
   supplied telemetry; it does not add collectors or recover missing payloads.
-* Cowrie command-input and session file-download events from the Cowrie T-Pot
-  collector support the broad interpreter and ingress-transfer families. Missing
-  commands prevent shell subtype, command intent or successful execution claims.
+* Cowrie shell-input metadata can offer the broad interpreter family. Only an
+  explicit recorded network-fetch category can offer ingress transfer; a
+  `file_download` event alone may represent stdin or redirected-output capture.
+  Input does not establish execution or maliciousness. See
+  [portable source observations](SOURCE-OBSERVATIONS.md).
 * Two distinct authentication-failure observations from one collector within
   15 minutes permit only the broad brute-force candidate. They can have benign
   causes; absent account/password detail does not establish guessing, spraying or

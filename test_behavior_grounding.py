@@ -22,7 +22,7 @@ def test_sparse_connections_are_observations_not_auth_failure_or_decisive_verdic
  p=packet(event(action=action,source='tpot',sensor='Cowrie'));value=example(p)
  (accepted,metadata),calls=transport(p,value)
  assert accepted['classification']=='inconclusive' and action in accepted['findings'][0]['summary']
- assert metadata['grounding_contract_version']=='grounded-observations-2'
+ assert metadata['grounding_contract_version']=='grounded-observations-3'
  assert calls[0]['format']['properties']['classification']['enum']==['inconclusive']
  bad=copy.deepcopy(value);bad['findings'][0]['summary']='Multiple authentication failures observed, indicating a brute-force attack.'
  with pytest.raises(ValueError,match='Unsupported observation'):ai.validate_result(bad,p,[],{})
@@ -60,7 +60,7 @@ def test_fact_text_and_citation_must_match_even_when_both_exist_in_schema():
  failure=next(f for f in contract(p,{})['facts'] if f['evidence_ids']==['failure'])
  bad['findings']=[{**failure,'evidence_ids':['connection']}]
  with pytest.raises(ai.ModelOutputError) as error:transport(p,bad)
- assert error.value.metadata['validation_diagnostic']=={'stage':'evidence_validation','reason':'grounding_contract'}
+ assert error.value.metadata['validation_diagnostic']=={'stage':'evidence_validation','category':'grounding_contract','reason':'citation_binding','field':'findings.evidence_ids','index':0}
 
 @pytest.mark.parametrize('sentence',[
  'No clear malicious activity detected. Multiple authentication failures may indicate a brute-force attack, but without additional context, this is not conclusive.',
@@ -123,9 +123,9 @@ def test_fresh_positive_context_required_for_benign_and_not_replaced_by_absence(
  with pytest.raises(ai.ModelOutputError):transport(p,value)
 
 def test_coherent_reported_command_and_transfer_can_permit_an_interpretation_not_execution_success():
- details={'source':'tpot','sensor':'Cowrie','destination':{'asset_id':'fixture-target'},'provenance':{'detail':'sample','upstream_id':'command'}}
- p=packet(event('cmd',action='cowrie.command.input',**details),event('download',action='cowrie.session.file_download',source='tpot',sensor='Cowrie',destination={'asset_id':'fixture-target'},seen='2026-10-16T12:00:05+00:00',provenance={'detail':'sample','upstream_id':'transfer'}));value=example(p)
- value['findings']=contract(p,{})['facts'][:2]
+ from test_source_observations import linked_packet
+ p=linked_packet();value=example(p)
+ value['findings']=[f for f in contract(p,{})['facts'] if len(f['evidence_ids'])==2]
  assert contract(p,{})['intent']==['unknown']
  value.update(classification='malicious',maliciousness_confidence=.91,analysis_summary=SUMMARIES['malicious'])
  assert transport(p,value)[0][0]['classification']=='malicious'

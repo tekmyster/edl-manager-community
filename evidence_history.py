@@ -40,6 +40,9 @@ def normalize(address,source,sensor,sample,received):
  from behavior_references import endpoint_hint
  hint=endpoint_hint(sample.get('path',''))
  if hint:value['endpoint_hint']=hint
+ from source_observations import sanitize
+ observation=sanitize(sample.get('source_observation'),address)
+ if observation:value['source_observation']=observation
  value['id']='hist_'+digest([address,value['source'],value['sensor'],origin,value['seen'],path,value['method'],value['status'],value['destination'],value['port'],value['action']])[:24]
  return value
 
@@ -51,6 +54,10 @@ def save(brain,address,source,sensor,samples,received,scope=""):
     db.execute('INSERT OR IGNORE INTO event_history VALUES(?,?,?,?,?,?,?,?)',(event['id'],address,event['source'],event['sensor'],event['seen'],received,scope,json.dumps(event)))
     from behavior_references import index_event
     index_event(db,address,event,scope)
+    if event.get('source_observation'):
+     prior=json.loads(db.execute('SELECT content FROM event_history WHERE id=? AND scope=?',(event['id'],scope)).fetchone()[0])
+     if prior.get('source_observation')!=event['source_observation']:
+      prior['source_observation']=event['source_observation'];db.execute('UPDATE event_history SET content=? WHERE id=? AND scope=?',(json.dumps(prior),event['id'],scope))
     if event['provenance']['record_id']:
      prior=json.loads(db.execute('SELECT content FROM event_history WHERE id=? AND scope=?',(event['id'],scope)).fetchone()[0])
      if not prior['provenance'].get('record_id'):

@@ -236,3 +236,7 @@ keyboard-accessible help. Its event table scrolls horizontally on narrow screens
 
 Configurable derived retention, investigation holds, scheduling bounds and honest
 benchmark definitions are documented in [AI retention and performance](AI-RETENTION-PERFORMANCE.md).
+
+
+The staged additive session/source contract, capture semantics and typed rejection
+diagnostics are documented in [portable source observations](SOURCE-OBSERVATIONS.md).
