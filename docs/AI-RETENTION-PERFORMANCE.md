@@ -170,3 +170,24 @@ names, rejected values, citation IDs or exception messages. Validation, citation
 and taxonomy requirements remain unchanged. Earlier failures without these
 diagnostics cannot retrospectively identify the rejected field or validation
 stage from token/timing metadata alone; they must remain unresolved failures.
+
+Prompt `behavior-3.5` uses generation schema `taxonomy-choices-1`. Taxonomy
+entries on the provider wire contain only `support_id` and a short explanation.
+Each offered ID denotes one explicit technique plus its complete eligible event
+bundle printed in `allowed_mappings`; the bounded bundle has at most two native
+event IDs, including both sampled failures for T1110. Context-only references
+and events supporting another technique cannot be substituted. The model can
+return empty mapping arrays when the listed observations do not warrant a claim.
+Eligibility remains unconfirmed telemetry, never a maliciousness/accuracy label.
+
+The wire uses ordinary object/array/string enums, without union schema features.
+Its choices are checked against recomputed eligibility before offering them.
+After strict wire validation, a selected ID decodes to exactly its published
+technique/event bundle, then unchanged canonical result/citation/taxonomy and
+correlation validation runs. Unknown, malformed, duplicate or altered choices
+reject the whole assessment; no partial verdict is salvaged or arbitrary cited
+event relabelled. The stored canonical schema remains `behavior-3`; prompt and
+generation-schema versions participate in cache identity. Older assessments are
+retained, not reinterpreted as current-version output. These protocol tests and
+schema compilation checks do not establish decoder enforcement or model accuracy;
+actual output checks require QA-approved deployment and natural requests.

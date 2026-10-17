@@ -155,7 +155,7 @@ def test_oversized_input_fails_before_network_request(catalog):
 def test_small_gpu_budget_and_validated_display_metadata(catalog):
  packet={'packet_id':'example','coverage':'saved_samples','events':[event(action='powershell execution')],'context':[]}
  cfg={**DEFAULTS,'endpoint':'https://127.0.0.1','model':'example'};captured=[]
- r=result(packet);r['attack_techniques']=[{'technique_id':'T1059.001','evidence_ids':['one'],'explanation':'Detector reports execution; unconfirmed'}]
+ r=result(packet);r['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':'Detector reports execution; unconfirmed'}]
  class Response:
   status_code=200
   def iter_content(self,n):yield json.dumps({'done':True,'model':'example','message':{'content':json.dumps(r)}}).encode()
@@ -163,10 +163,10 @@ def test_small_gpu_budget_and_validated_display_metadata(catalog):
  def send(*args,**kwargs):captured.append(kwargs['json']);return Response()
  assessment,metadata=infer(cfg,packet,[],catalog,'unused',requester=send)
  payload=captured[0];prompt=json.loads(payload['messages'][1]['content'])
- assert len(prompt['allowed_attack'])<=MAX_ATTACK and len(prompt['allowed_d3fend'])<=MAX_DEFEND
+ assert len(prompt['allowed_mappings']['attack'])<=MAX_ATTACK and len(prompt['allowed_mappings']['d3fend'])<=MAX_DEFEND
  assert len(payload['messages'][1]['content'].encode())<=18000
  assert payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
- assert prompt['taxonomy_support']['attack']['T1059.001']==['one']
+ assert prompt['allowed_mappings']['attack']['attack:T1059.001']['evidence_ids']==['one']
  assert metadata['taxonomy_mappings']['attack_techniques'][0]['name']==catalog['attack']['T1059.001']
  assert metadata['taxonomy_registry_sha256']==catalog['registry_sha256']
  r['attack_techniques'][0]['evidence_ids']=['ctx'];packet['context']=[{'id':'ctx'}]
@@ -222,7 +222,7 @@ def test_authenticated_detail_renders_mapping_and_preserves_native_policy(catalo
  def fake(*args):
   r=result(packet);r.update(classification='inconclusive',maliciousness_confidence=0,automation={'classification':'unknown','confidence':0},intent={'classification':'unknown','confidence':0},analysis_summary='Synthetic UI fixture; no production model verdict or accuracy claim.')
   r['findings']=[{'summary':'Synthetic detector description; execution unconfirmed.','evidence_ids':[packet['events'][0]['id']]}]
-  r['attack_techniques']=[{'technique_id':'T1059.001','evidence_ids':[packet['events'][0]['id']],'explanation':'Synthetic detector description; execution unconfirmed.'}]
+  r['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':'Synthetic detector description; execution unconfirmed.'}]
   class Response:
    status_code=200
    def iter_content(self,n):yield json.dumps({'done':True,'model':'fixture','message':{'content':json.dumps(r)}}).encode()
