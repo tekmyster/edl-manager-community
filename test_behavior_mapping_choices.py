@@ -1,3 +1,4 @@
+from behavior_grounding import RELATION,ALTERNATIVE,SUMMARIES
 """Synthetic protocol regressions, never production correctness labels/inference."""
 import copy,json
 import pytest
@@ -11,10 +12,19 @@ def mixed():
  return {'packet_id':'mixed','coverage':'saved_samples','events':[
   event('ps','powershell execution'),event('net','network service discovery'),
   event('f1','authentication failure'),event('f2','cowrie.login.failed'),
-  event('http','HTTP request',path='/login',method='POST')],
+  event('http','HTTP request',path='/login',method='POST'),event('cmd','cowrie.command.input',source='tpot',sensor='Cowrie')],
   'context':[{'id':'context-only','classification':'malicious'}]}
 
 def send_result(packet,catalog,value,candidates=None):
+ # Taxonomy plumbing fixtures use exact contract text. Semantic-injection tests
+ # exercise the raw transport separately in test_behavior_grounding.py.
+ from behavior_grounding import mapping_text
+ value=copy.deepcopy(value)
+ for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
+  for entry in value[field]:
+   if set(entry)=={'support_id','explanation'} and isinstance(entry['support_id'],str) and entry['support_id'].startswith(kind+':'):
+    ident=entry['support_id'].split(':',1)[1]
+    if ident in catalog.get(kind,{}):entry['explanation']=mapping_text(kind,ident,catalog[kind][ident])
  calls=[]
  class Response:
   status_code=200
@@ -36,7 +46,7 @@ def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,c
   for claim in choices[kind].values():
    assert 'context-only' not in claim['evidence_ids'];validate_mapping(kind,claim,select(catalog,mixed),mixed)
  assert choices['attack']['attack:T1110']['evidence_ids']==['f1','f2']
- assert metadata['prompt_version']=='behavior-3.6' and metadata['generation_schema_version']=='taxonomy-choices-1'
+ assert metadata['prompt_version']=='behavior-3.7' and metadata['generation_schema_version']=='grounded-observations-1'
  assert len(payload['messages'][1]['content'].encode())<=18000 and payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
 
 @pytest.mark.parametrize('entry',[
@@ -97,9 +107,10 @@ def test_bruteforce_pair_is_not_borrowed_from_another_mapping(catalog):
  assert value['attack_techniques'][0]['evidence_ids']==['f1','f2']
 
 def test_mapping_choices_preserve_current_historical_correlation_guards(mixed,catalog):
- candidate={'candidate_id':'peer','current_events':[mixed['events'][0]],'historical_events':[{'id':'peer-event'}]}
+ mixed['events'][0].update(path='/peer-only',method='GET')
+ candidate={'candidate_id':'peer','current_events':[mixed['events'][0]],'historical_events':[{**mixed['events'][0],'id':'peer-event','path':'/peer-only','method':'GET'}]}
  wire=result(mixed);wire['attack_techniques']=[{'support_id':'attack:T1046','explanation':'Separate observation'}]
- wire['actor_correlation']=[{'candidate_id':'peer','confidence':.5,'current_evidence_ids':['ps'],'historical_evidence_ids':['peer-event'],'explanation':'Unconfirmed similarity','alternative_explanations':['Shared tooling']}]
+ wire['actor_correlation']=[{'candidate_id':'peer','confidence':.5,'current_evidence_ids':['ps'],'historical_evidence_ids':['peer-event'],'explanation':RELATION,'alternative_explanations':[ALTERNATIVE]}]
  (value,_),_=send_result(mixed,catalog,wire,[candidate]);assert value['actor_correlation'][0]['evidence_ids']==['ps','peer-event']
  wire['actor_correlation'][0]['current_evidence_ids']=['context-only']
  with pytest.raises(ai.ModelOutputError):send_result(mixed,catalog,wire,[candidate])
@@ -133,7 +144,7 @@ def test_complete_claim_normalization_still_invokes_canonical_validation(mixed,c
  assert seen==[value] and value['attack_techniques'][0]['evidence_ids']==['f1','f2']
 
 def test_malicious_verdict_missing_findings_is_not_salvaged(mixed,catalog):
- wire=result(mixed);wire['findings']=[];wire['attack_techniques']=[{'support_id':'attack:T1110','explanation':'Unconfirmed'}]
+ wire=result(mixed);wire.update(classification='malicious',analysis_summary=SUMMARIES['malicious']);wire['findings']=[];wire['attack_techniques']=[{'support_id':'attack:T1110','explanation':'Unconfirmed'}]
  with pytest.raises(ai.ModelOutputError) as e:send_result(mixed,catalog,wire)
  assert e.value.metadata['validation_diagnostic']=={'stage':'evidence_validation','reason':'missing_findings'}
 

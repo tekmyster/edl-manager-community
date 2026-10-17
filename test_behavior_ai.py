@@ -1,3 +1,4 @@
+from behavior_grounding import RELATION,ALTERNATIVE
 import copy,datetime as dt,json
 import pytest
 from core import Store,now
@@ -11,7 +12,8 @@ def evidence(tmp_path):
  return s
 
 def result(packet):
- return {'schema_version':VERSION,'packet_id':packet['packet_id'],'classification':'malicious','maliciousness_confidence':.9,'automation':{'classification':'credential_attack_automation','confidence':.9},'intent':{'classification':'credential_attack','confidence':.9},'findings':[{'summary':'Repeated authentication failures','evidence_ids':[packet['events'][0]['id']]}],'attack_techniques':[],'d3fend_context':[],'actor_correlation':[],'contradictory_evidence':[],'limitations':['Saved samples only'],'analysis_summary':'Authentication attempts require review.'}
+ from behavior_grounding import example
+ return example(packet)
 
 def test_packet_is_redacted_deduplicated_and_cached_without_native_writes(evidence):
  b=Brain(evidence);before=evidence.describe('8.8.8.8');ident,packet,features=b.packet(before)
@@ -35,7 +37,7 @@ def test_model_cache_budget_failure_and_shadow_score_invariant(evidence,monkeypa
  monkeypatch.setattr(behavior_ai,'infer',infer)
  assert model_job(b,ident,packet,features,cfg)=='completed'
  assert model_job(b,ident,packet,features,cfg)=='cached' and len(calls)==1
- view=b.view('8.8.8.8');assert view['applied_bump']==0 and not view['scoring_eligible'] and view['hypothetical_score'] is not None
+ view=b.view('8.8.8.8');assert view['applied_bump']==0 and not view['scoring_eligible'] and view['hypothetical_score'] is None
  after=evidence.describe('8.8.8.8');assert after['score']==before['score'] and after['retention']==before['retention']
  with b.connect() as d:d.execute("UPDATE assessments SET expires='2020-01-01T00:00:00+00:00'")
  assert model_job(b,ident,packet,features,cfg)=='budget'
@@ -86,7 +88,7 @@ def test_transport_pins_tls_disables_redirects_and_restricts_output(evidence):
   assert 'tools' not in kwargs['json']
   return Response()
  assessment,metadata=infer(cfg,packet,[],{},'secret',requester=send)
- assert assessment['classification']=='malicious' and calls==['closed']
+ assert assessment['classification']=='inconclusive' and calls==['closed']
 
 def test_transport_rejects_oversized_model_responses(evidence):
  from behavior_ai import infer
@@ -151,13 +153,14 @@ def test_model_failure_records_token_usage_without_storing_reply(evidence,monkey
 def test_inference_separates_current_and_historical_references(evidence):
  from behavior_ai import infer
  packet=Brain(evidence).packet(evidence.describe('8.8.8.8'))[1]
- candidate={'candidate_id':'peer','historical_events':[{'id':'remote-event'}]}
+ packet['events'][0].update(path='/shared-request',method='POST')
+ candidate={'candidate_id':'peer','historical_events':[{**packet['events'][0],'id':'remote-event'}]}
  cfg={**DEFAULTS,'endpoint':'https://127.0.0.1','model':'test'}
  class Response:
   status_code=200
   def iter_content(self,n):
    r=result(packet)
-   r['actor_correlation']=[{'candidate_id':'peer','confidence':.5,'current_evidence_ids':[packet['events'][0]['id']],'historical_evidence_ids':['remote-event'],'explanation':'Similar requests','alternative_explanations':['Shared tooling']}]
+   r['actor_correlation']=[{'candidate_id':'peer','confidence':.5,'current_evidence_ids':[packet['events'][0]['id']],'historical_evidence_ids':['remote-event'],'explanation':RELATION,'alternative_explanations':[ALTERNATIVE]}]
    yield json.dumps({'done':True,'model':'test','message':{'content':json.dumps(r)}}).encode()
   def close(self):pass
  def send(*args,**kw):

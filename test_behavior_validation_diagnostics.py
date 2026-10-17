@@ -9,7 +9,7 @@ from test_behavior_ai import result
  (lambda r:r.update(maliciousness_confidence=90),'response_schema','confidence','maliciousness_confidence'),
  (lambda r:r.update(**{'PRIVATE-UNEXPECTED-KEY':'PRIVATE-CONTENT'}),'response_schema','object_fields','$'),
  (lambda r:r['findings'][0].update(evidence_ids=['PRIVATE-CITATION']),'response_schema','label_or_enum','findings.*.evidence_ids.*'),
- (lambda r:r.update(findings=[]),'evidence_validation','missing_findings',None),
+ (lambda r:r.update(classification='malicious',findings=[]),'response_schema','label_or_enum','classification'),
 ])
 def test_rejections_record_only_fixed_codes_and_schema_paths(tmp_path,change,stage,reason,field):
  packet,unused,calls=request_fixture(tmp_path,{})

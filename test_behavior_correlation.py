@@ -1,3 +1,4 @@
+from behavior_grounding import RELATION,ALTERNATIVE
 """Explicitly synthetic correlation fixtures; expectations are not reviewer labels."""
 import copy,datetime as dt,json,time
 import pytest
@@ -175,8 +176,9 @@ def test_model_match_requires_supporting_current_citation(evidence):
  from test_behavior_ai import result
  from behavior_ai import validate_result
  b=Brain(evidence);_,current,_=b.packet(evidence.describe('8.8.8.8'))
- candidate={'candidate_id':'synthetic-peer','current_events':[current['events'][0]],'historical_events':[{'id':'synthetic-historical'}]}
- verdict=result(current);verdict['actor_correlation']=[{'candidate_id':'synthetic-peer','confidence':.5,'evidence_ids':[current['events'][1]['id'],'synthetic-historical'],'explanation':'Synthetic comparison','alternative_explanations':['Shared scanner']}]
+ current['events'][0].update(path='/shared-request',method='POST')
+ candidate={'candidate_id':'synthetic-peer','current_events':[current['events'][0]],'historical_events':[{**current['events'][0],'id':'synthetic-historical'}]}
+ verdict=result(current);verdict['actor_correlation']=[{'candidate_id':'synthetic-peer','confidence':.5,'evidence_ids':[current['events'][1]['id'],'synthetic-historical'],'explanation':RELATION,'alternative_explanations':[ALTERNATIVE]}]
  with pytest.raises(ValueError,match='supporting current'):validate_result(verdict,current,[candidate],{})
  verdict['actor_correlation'][0]['evidence_ids'][0]=current['events'][0]['id']
  assert validate_result(verdict,current,[candidate],{})==verdict

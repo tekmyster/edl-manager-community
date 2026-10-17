@@ -2,8 +2,8 @@
 import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.6'
-GENERATION_SCHEMA_VERSION='taxonomy-choices-1'
+PROMPT_VERSION='behavior-3.7'
+GENERATION_SCHEMA_VERSION='grounded-observations-1'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -316,6 +316,8 @@ def validate_result(value,packet,candidates,registry):
     validate_mapping(kind,item,registry,packet)
    if field=='actor_correlation' and item['candidate_id'] not in candidate_ids:raise ValueError('Unknown historical candidate')
  if value['classification']=='malicious' and not value['findings']:raise ValueError('Malicious assessment requires supporting events')
+ from behavior_grounding import validate as grounded_validate
+ grounded_validate(value,packet,candidates,registry)
  # The provider output cannot create an exception, a cluster or a scoring instruction.
  return value
 
@@ -344,7 +346,8 @@ def taxonomy_choices(packet,registry):
  return choices
 
 def taxonomy_prompt(packet,candidates,registry,choices):
- return {'analysis_at':now(),'generation_schema_version':GENERATION_SCHEMA_VERSION,'packet':packet,'candidates':candidates,'allowed_mappings':choices,'taxonomy_coverage':registry.get('coverage',{}),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy is unavailable'),'taxonomy_version':registry.get('version','unavailable')}
+ from behavior_grounding import contract
+ return {'analysis_at':now(),'generation_schema_version':GENERATION_SCHEMA_VERSION,'packet':packet,'candidates':candidates,'allowed_mappings':choices,'grounded_observations':contract(packet,registry),'taxonomy_coverage':registry.get('coverage',{}),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy is unavailable'),'taxonomy_version':registry.get('version','unavailable')}
 
 def decode_taxonomy_choices(value,choices):
  """Decode a declared wire representation, never salvage a partial assessment."""
@@ -403,12 +406,15 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
   fields['historical_evidence_ids']=array(text(80),1,1)
   fields['historical_evidence_ids']['items']['enum']=[e['id'] for c in candidates for e in c.get('historical_events',[])]
   properties['actor_correlation']['items']['required']=list(fields)
+ from behavior_grounding import constrain,VERSION as GROUNDING_VERSION
+ constrain(schema,packet,candidates,registry,choices)
  prompt=taxonomy_prompt(packet,candidates,registry,choices)
  if len(json.dumps(prompt).encode())>18000:raise ValueError('Analysis input exceeds size limit')
  session=requests.Session();session.trust_env=False
  try:
   call=requester or session.post
-  response=call(cfg['endpoint']+'/api/chat',headers={'Authorization':'Bearer '+key},json={'model':cfg['model'],'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':json.dumps(prompt,ensure_ascii=True)}],'stream':False,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}},verify=cfg['ca_file'] or True,timeout=(5,cfg['timeout']),allow_redirects=False,stream=True)
+  grounding_instruction='Copy findings/contradictions exactly from grounded_observations.facts, including their bound evidence_ids. Copy the exact summary for the selected classification and both limitations in order. Copy the enum explanation for each mapping and historical match. Never add narrative facts or turn defensive context into an observed attack, test or control. Choose inconclusive for sparse/ambiguous reports; decisive labels require the supplied positive support. Automation/intent are bounded hypotheses, not facts. Unknown automation/intent confidence must be zero. '
+  response=call(cfg['endpoint']+'/api/chat',headers={'Authorization':'Bearer '+key},json={'model':cfg['model'],'messages':[{'role':'system','content':grounding_instruction+SYSTEM},{'role':'user','content':json.dumps(prompt,ensure_ascii=True)}],'stream':False,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}},verify=cfg['ca_file'] or True,timeout=(5,cfg['timeout']),allow_redirects=False,stream=True)
   if response.status_code!=200:response.close();raise ValueError('Model service rejected the request')
   body=b''
   try:
@@ -430,6 +436,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
    return value if type(value) is int and 0<=value<=3600000000000 else None
   metadata['backend_timings']={name:duration(name) for name in ('total_duration','load_duration','prompt_eval_duration','eval_duration')}
   metadata['backend_timings_unit']='nanoseconds'
+  metadata['grounding_contract_version']=GROUNDING_VERSION
   # Prompt duration covers uncached evaluation under the documented protocol.
   # Missing cache counts are unknown, never an assumed zero. Preserve validated
   # raw counts on inconsistency, but do not derive a usable uncached count/rate.
@@ -456,6 +463,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
    # unexpected keys, rejected labels, citation IDs or exception messages.
    reasons={'Incorrect evidence packet':'packet_identity','Unknown evidence reference':'citation_not_supplied','Unknown taxonomy reference':'taxonomy_not_supplied','Unknown historical candidate':'candidate_not_supplied','Correlation requires current and historical observations':'correlation_event_sides','Correlation requires a supporting current observation':'correlation_current_support','Taxonomy mapping requires supporting observations':'taxonomy_support','Brute force mapping requires multiple sampled failures':'taxonomy_minimum_samples','Malicious assessment requires supporting events':'missing_findings','Non-finite JSON constant':'non_finite_json','Unknown taxonomy choice':'taxonomy_choice_not_supplied','Duplicate taxonomy choice':'taxonomy_choice_duplicate','Malformed taxonomy choice':'taxonomy_choice_shape'}
    diagnostic={'stage':validation_stage,'reason':'json_decode' if isinstance(exc,json.JSONDecodeError) else reasons.get(str(exc),'validation_rejected')}
+   if str(exc) in ('Unsupported observation statement','Duplicate observation statement','Unsupported decisive interpretation','Benign interpretation requires positive context','Malicious interpretation requires reported behavior','Unsupported interpretation label','Unknown interpretation requires zero confidence','Unsupported assessment narrative','Unsupported mapping narrative','Unsupported historical similarity','Unsupported correlation narrative'):diagnostic['reason']='grounding_contract'
    if isinstance(exc,AssessmentShapeError):diagnostic.update(reason=exc.reason,field=exc.field)
    metadata['validation_diagnostic']=diagnostic
    raise ModelOutputError('invalid_assessment',metadata) from None

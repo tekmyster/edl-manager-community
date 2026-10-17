@@ -30,7 +30,7 @@ def test_case_stays_blind_then_renders_frozen_context_despite_later_live_changes
  b.review(relationship,'accepted','CAPTURED_RELATION_REVIEW: shared behavior only','captured-reviewer')
  inspect(b,'current',candidates,catalog=active(tmp_path))
  for alert in alerts(b):review_alert(b,alert['id'],'accepted','CAPTURED_ALERT_REVIEW: synthetic evidence only','captured-reviewer')
- model=result(current);model.update(analysis_summary='CAPTURED_MODEL_SUMMARY: synthetic only',metadata={'model':'synthetic','prompt_version':'synthetic-fixture'})
+ model=result(current);model.update(classification='benign',maliciousness_confidence=0,analysis_summary='CAPTURED_MODEL_SUMMARY: synthetic only',metadata={'model':'synthetic','prompt_version':'synthetic-fixture'})
  with b.connect() as db:db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',('synthetic-assessment','current','synthetic',now(),'2099-01-01T00:00:00+00:00','completed',json.dumps(model),'',0))
  allow=app.store.add_rule('allow','8.8.8.8','Synthetic captured allowed policy',None,'fixture')
  ident=capture(b,'current');url='/behavior/evaluation/'+ident
@@ -58,6 +58,8 @@ def test_case_stays_blind_then_renders_frozen_context_despite_later_live_changes
  for later in ('LATER_LIVE_RELATION_REVIEW','LATER_LIVE_ALERT_REVIEW','LATER_LIVE_INTERPRETATION','LATER_LIVE_ADVISORY_TITLE','LATER_LIVE_POLICY'):
   assert later not in html
  assert 'value="legitimate" selected' in html and 'Synthetic independent record; mechanics only' in html
+ assert 'Maliciousness confidence 0 (0–1, uncalibrated; not confidence in the displayed class)' in html
+ assert 'Historical assessment predates the current grounding contract' in html
  assert client.post(url,data=review_form(correlation='unsupported',return_activity='unknown',tool_exploit='not_applicable')).status_code==302
  latest=cases(b,ident)[0]['labels'][0];assert latest['label']=='legitimate'
  assert json.loads(latest['quality'])['correlation']=='unsupported' and json.loads(latest['quality'])['tool_exploit']=='not_applicable'

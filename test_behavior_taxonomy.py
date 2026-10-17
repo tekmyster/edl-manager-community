@@ -1,3 +1,4 @@
+from behavior_grounding import mapping_text
 """Isolated synthetic contracts; fixtures are not production accuracy labels."""
 import copy
 import hashlib
@@ -101,7 +102,7 @@ def test_unsupported_text_paths_and_ports_do_not_prove_host_behavior(catalog,act
 def test_failed_logins_not_subtypes_and_context_cannot_support_mapping(catalog):
  packet={'packet_id':'packet','events':[event('one','authentication failure'),event('two','cowrie.login.failed')],'context':[{'id':'ctx'}]}
  allowed=select(catalog,packet);assert list(allowed['attack'])==['T1110']
- r=result(packet);r['attack_techniques']=[{'technique_id':'T1110','evidence_ids':['one','two'],'explanation':'Sampled failures; intent uncertain'}]
+ r=result(packet);r['attack_techniques']=[{'technique_id':'T1110','evidence_ids':['one','two'],'explanation':mapping_text('attack','T1110',catalog['attack']['T1110'])}]
  assert validate_result(r,packet,[],allowed)
  for refs in [['one'],['one','ctx'],['ctx']]:
   r['attack_techniques'][0]['evidence_ids']=refs
@@ -155,7 +156,7 @@ def test_oversized_input_fails_before_network_request(catalog):
 def test_small_gpu_budget_and_validated_display_metadata(catalog):
  packet={'packet_id':'example','coverage':'saved_samples','events':[event(action='powershell execution')],'context':[]}
  cfg={**DEFAULTS,'endpoint':'https://127.0.0.1','model':'example'};captured=[]
- r=result(packet);r['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':'Detector reports execution; unconfirmed'}]
+ r=result(packet);r['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':mapping_text('attack','T1059.001',catalog['attack']['T1059.001'])}]
  class Response:
   status_code=200
   def iter_content(self,n):yield json.dumps({'done':True,'model':'example','message':{'content':json.dumps(r)}}).encode()
@@ -220,9 +221,9 @@ def test_authenticated_detail_renders_mapping_and_preserves_native_policy(catalo
  cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://127.0.0.1','model':'fixture'}
  store.state('behavior_settings',cfg)
  def fake(*args):
-  r=result(packet);r.update(classification='inconclusive',maliciousness_confidence=0,automation={'classification':'unknown','confidence':0},intent={'classification':'unknown','confidence':0},analysis_summary='Synthetic UI fixture; no production model verdict or accuracy claim.')
-  r['findings']=[{'summary':'Synthetic detector description; execution unconfirmed.','evidence_ids':[packet['events'][0]['id']]}]
-  r['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':'Synthetic detector description; execution unconfirmed.'}]
+  r=result(packet);r.update(maliciousness_confidence=0)
+  # Grounded findings remain unchanged; this fixture tests display metadata.
+  r['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':mapping_text('attack','T1059.001',catalog['attack']['T1059.001'])}]
   class Response:
    status_code=200
    def iter_content(self,n):yield json.dumps({'done':True,'model':'fixture','message':{'content':json.dumps(r)}}).encode()

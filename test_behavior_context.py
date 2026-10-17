@@ -1,3 +1,4 @@
+from behavior_grounding import RELATION,ALTERNATIVE
 import copy,datetime as dt,hashlib,json
 import pytest
 from core import now
@@ -38,8 +39,8 @@ def test_cross_ip_assessment_must_cite_both_observation_windows(evidence):
  b=Brain(evidence);row=evidence.describe('8.8.8.8');ident,packet,features=b.packet(row);peer=copy.deepcopy(row);peer['ip']='1.1.1.1';other,unused,unused2=b.packet(peer);candidates=b.candidates(ident,features)
  # Identical upstream IDs on different IPs remain distinct observations.
  assert candidates
- own=packet['events'][0]['id'];remote=candidates[0]['historical_events'][0]['id'];assert own!=remote
- r=result(packet);r['actor_correlation']=[{'candidate_id':other,'confidence':.7,'evidence_ids':[remote],'explanation':'Similar sequence','alternative_explanations':['Shared tool']}]
+ own=next(e['id'] for e in packet['events'] if e.get('path')=='/owa/auth.owa');remote=next(e['id'] for e in candidates[0]['historical_events'] if e.get('path')=='/owa/auth.owa');assert own!=remote
+ r=result(packet);r['actor_correlation']=[{'candidate_id':other,'confidence':.7,'evidence_ids':[remote],'explanation':RELATION,'alternative_explanations':[ALTERNATIVE]}]
  with pytest.raises(ValueError,match='current and historical'):validate_result(r,packet,candidates,{})
  r['actor_correlation'][0]['evidence_ids']=[own,remote];assert validate_result(r,packet,candidates,{})
 
