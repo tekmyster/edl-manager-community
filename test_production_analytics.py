@@ -184,3 +184,13 @@ def test_fractional_timezone_keeps_provider_and_ai_intervals_aligned(tmp_path):
     assert data['bins'][-1]['label']=='19:45 +0545'
     assert data['providers'][1]['timeline'][-1]['hits']==1
     assert sum(r['hits'] for r in data['providers'][1]['timeline'])==data['providers'][1]['hits']
+
+
+def test_legacy_seconds_and_new_fractional_timestamps_share_exact_boundaries(tmp_path):
+    b=Brain(Store(tmp_path/'manager'));start=AT.replace(hour=0,minute=0)
+    with b.connect() as d:
+        for ident,when in [('start',start.isoformat()),('end',AT.isoformat())]:
+            d.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',(ident,'packet','cfg',when,when,'completed',json.dumps({'metadata':{'input_tokens':10,'output_tokens':5}}),'',99))
+            d.execute('INSERT INTO analysis_counters VALUES(?,?,?)',(when,'cached',1))
+    data=summary(b,at=AT)
+    assert data['day_tokens']==15 and data['historical_completions']==1 and data['cached']==1

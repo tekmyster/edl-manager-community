@@ -55,10 +55,15 @@ def summary(brain, timezone='UTC', at=None):
     # Tokens are counted once per completed transport, including rejected output.
     # Legacy assessment metadata uses its recorded completion, with no invented start.
     token_records=[];historical=0
+    cohort_start=min(start,midnight)
+    # Legacy timestamps have seconds, newer records have fractional seconds.
+    # Read an indexed superset, then compare aware datetimes exactly; ISO text
+    # '+' versus '.' ordering must not move an event across a boundary.
+    lower=stamp(cohort_start-dt.timedelta(seconds=1));upper=stamp(at+dt.timedelta(seconds=1))
     with brain.connect() as db:
-        rows=db.execute('SELECT packet_id,created,status,result FROM assessments WHERE created>=? AND created<?',(stamp(min(start,midnight)),stamp(at))).fetchall()
-        cached=db.execute("SELECT coalesce(sum(count),0) FROM analysis_counters WHERE kind='cached' AND hour>=? AND hour<?",(stamp(start),stamp(at))).fetchone()[0]
-        publications=db.execute('SELECT * FROM publication_samples WHERE created>=? AND created<? ORDER BY created',(stamp(start),stamp(at))).fetchall()
+        rows=[r for r in db.execute('SELECT packet_id,created,status,result FROM assessments WHERE created>=? AND created<?',(lower,upper)) if parse(r['created']) and cohort_start<=parse(r['created'])<at]
+        cached=sum(r['count'] for r in db.execute("SELECT hour,count FROM analysis_counters WHERE kind='cached' AND hour>=? AND hour<?",(lower,upper)) if parse(r['hour']) and start<=parse(r['hour'])<at)
+        publications=[r for r in db.execute('SELECT * FROM publication_samples WHERE created>=? AND created<? ORDER BY created',(lower,upper)) if parse(r['created']) and start<=parse(r['created'])<at]
     classifications=Counter()
     # New assessments carry request timing. They are already represented by ledger.
     ledger_ids={r['id'] for r in attempts}
@@ -130,10 +135,18 @@ def investigations(brain, start, end):
     """Saved evidence cohorts: deduplicate observation IDs across packet rebuilds."""
     start,end=parse(start),parse(end)
     kinds=Counter();states=Counter();features=Counter();seen=set();unknown=0;events=0;timeline={}
+    lower=stamp(start-dt.timedelta(seconds=1));upper=stamp(end+dt.timedelta(seconds=1))
     with brain.connect() as db:
-        alerts=[dict(r) for r in db.execute('SELECT * FROM intelligence_alerts WHERE last_seen>=? AND first_seen<? ORDER BY last_seen DESC LIMIT 101',(stamp(start),stamp(end)))]
+        alerts=[];total=0
+        for r in db.execute('SELECT * FROM intelligence_alerts WHERE last_seen>=? AND first_seen<? ORDER BY last_seen DESC',(lower,upper)):
+            if not parse(r['last_seen']) or not parse(r['first_seen']) or not (parse(r['last_seen'])>=start and parse(r['first_seen'])<end):continue
+            total+=1
+            if len(alerts)<100:alerts.append(dict(r))
         # A bounded recent cohort, prominently disclosed; never population totals.
-        packets=db.execute('SELECT id,content FROM packets WHERE created>=? AND created<? ORDER BY created DESC LIMIT 501',(stamp(start),stamp(end))).fetchall()
+        packets=[]
+        for r in db.execute('SELECT id,content,created FROM packets WHERE created>=? AND created<? ORDER BY created DESC',(lower,upper)):
+            if parse(r['created']) and start<=parse(r['created'])<end:packets.append(r)
+            if len(packets)>=501:break
         for row in packets[:500]:
             packet=json.loads(row['content'])
             for event in packet.get('events',[]):
@@ -145,7 +158,6 @@ def investigations(brain, start, end):
                 h=t.replace(minute=0,second=0,microsecond=0).isoformat()
                 timeline.setdefault(h,Counter())[value]+=1
         for r in alerts[:100]:kinds[r['kind']]+=1;states[r['state']]+=1
-        total=db.execute('SELECT count(*) FROM intelligence_alerts WHERE last_seen>=? AND first_seen<?',(stamp(start),stamp(end))).fetchone()[0]
     from behavior_evaluation import report
     activity=[];client_timeline=[]
     for i in range(24):
