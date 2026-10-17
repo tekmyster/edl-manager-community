@@ -156,7 +156,10 @@ def prioritize(events,limit=24):
   if not connection:continue
   group=[connection,event]
   commands=[e for e in events if scope(e)==scope(event) and e.get('action')=='cowrie.command.input']
-  commands.sort(key=lambda e:(not bool(set((e.get('source_observation') or {}).get('syntax_categories',[]))&{'permission_change','interpreter_input','relative_execution'}),e.get('seen',''),e['id']))
+  def staging(e):
+   values=(e.get('source_observation') or {}).get('syntax_categories')
+   return isinstance(values,list) and len(values)<=5 and all(isinstance(v,str) and v in SYNTAX for v in values) and bool(set(values)&{'permission_change','interpreter_input','relative_execution'})
+  commands.sort(key=lambda e:(not staging(e),e.get('seen',''),e['id']))
   group += commands[:4]
   group=list({e['id']:e for e in group}.values())
   fresh=[e for e in group if e['id'] not in {v['id'] for v in chosen}]

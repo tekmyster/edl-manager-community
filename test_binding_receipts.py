@@ -137,3 +137,9 @@ def test_new_incoming_conflict_is_audited_and_not_eligible_for_legacy_recovery(t
  save(b,ADDRESS,'tpot','Cowrie',[bad],(AT+dt.timedelta(minutes=1)).isoformat())
  save(b,ADDRESS,'tpot','Cowrie',proven(at=AT+dt.timedelta(minutes=2)),(AT+dt.timedelta(minutes=2)).isoformat())
  with pytest.raises(ValueError,match='contradictory'):recovery(b,ident,'',anchor,'Synthetic independent source review',at=AT+dt.timedelta(minutes=3))
+
+@pytest.mark.parametrize('values',[None,True,1,'interpreter_input',{'interpreter_input':True},[None],['interpreter_input']*6])
+def test_bounded_group_selection_does_not_crash_or_promote_malformed_syntax(values):
+ from source_observations import prioritize
+ events=[normalize(ADDRESS,'tpot','Cowrie',v,AT.isoformat()) for v in samples()];events[1]['source_observation']['syntax_categories']=values
+ assert len(prioritize(events,24))==3
