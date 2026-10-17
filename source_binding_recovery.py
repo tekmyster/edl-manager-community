@@ -38,8 +38,9 @@ def receive(db,address,event,scope,received):
   old=json.loads(previous['content'])
   if immutable(old)!=immutable(event) or core(old['source_observation'])!=core(observation) or old['source_observation']['binding_proof']['record_sha256']!=proof['record_sha256']:
    audit(db,event,scope,received,'hard_record_disagreement',old,event,{'prior_receipt':old,'incoming_receipt':event})
-  if _time(previous['checked_at'])>_time(proof['checked_at']):return
- db.execute('INSERT INTO source_binding_receipts VALUES(?,?,?,?) ON CONFLICT(event_id,scope) DO UPDATE SET checked_at=excluded.checked_at,content=excluded.content',(event['id'],scope,proof['checked_at'],json.dumps(event)))
+ older=bool(previous and _time(previous['checked_at'])>_time(proof['checked_at']))
+ if older and proof['connection_count']==1:return
+ if not older:db.execute('INSERT INTO source_binding_receipts VALUES(?,?,?,?) ON CONFLICT(event_id,scope) DO UPDATE SET checked_at=excluded.checked_at,content=excluded.content',(event['id'],scope,proof['checked_at'],json.dumps(event)))
  if proof['connection_count']==1:return
  state='ambiguous' if proof['connection_count']>1 else 'missing_connection'
  if not db.execute('SELECT 1 FROM source_binding_audit WHERE event_id=? AND scope=? AND action=? LIMIT 1',(event['id'],scope,'session_'+state)).fetchone():

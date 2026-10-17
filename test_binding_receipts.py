@@ -126,3 +126,14 @@ def test_forwarded_wrong_source_scope_is_not_silently_treated_as_missing(tmp_pat
  b=Brain(Store(tmp_path/'native'));values=samples();save(b,ADDRESS,'tpot','Cowrie',values,AT.isoformat());changed=copy.deepcopy(values[1]);changed['source_observation']['source_ref']='0'*64
  save(b,ADDRESS,'tpot','Cowrie',[changed],AT.isoformat())
  assert 'malicious' not in contract(packet(reload(b.store),values),{})['classifications']
+
+def test_late_arriving_complete_reuse_proof_still_invalidates_all_siblings(tmp_path):
+ b=Brain(Store(tmp_path/'native'));save(b,ADDRESS,'tpot','Cowrie',proven(at=AT+dt.timedelta(minutes=2)),(AT+dt.timedelta(minutes=2)).isoformat())
+ save(b,ADDRESS,'tpot','Cowrie',[proven(count=2)[1]],(AT+dt.timedelta(minutes=3)).isoformat())
+ assert not connections([json.loads(r['content']) for r in history(b)])
+
+def test_new_incoming_conflict_is_audited_and_not_eligible_for_legacy_recovery(tmp_path):
+ b,ident,anchor=setup_recovery(tmp_path);bad=proven()[2];bad['source_observation']['source_ref']='0'*64
+ save(b,ADDRESS,'tpot','Cowrie',[bad],(AT+dt.timedelta(minutes=1)).isoformat())
+ save(b,ADDRESS,'tpot','Cowrie',proven(at=AT+dt.timedelta(minutes=2)),(AT+dt.timedelta(minutes=2)).isoformat())
+ with pytest.raises(ValueError,match='contradictory'):recovery(b,ident,'',anchor,'Synthetic independent source review',at=AT+dt.timedelta(minutes=3))
