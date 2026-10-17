@@ -82,6 +82,11 @@ def test_dashboard_analytics_json_and_review_drilldowns_reconcile(tmp_path):
   assert '66.7%' in pages[url] and '2 / 3 helpful' in pages[url] and '1 uncertain' in pages[url] and '1 unrated' in pages[url]
   assert '/behavior/evaluation#assessment-feedback' in pages[url]
  page=pages['/behavior/evaluation/'+items[0]['id']];assert 'name="rating"' in page and 'Supported / useful' not in page
+ from test_chart_copy import Page
+ section=next(n for n in Page(page).root.walk() if n.attrs.get('id')=='assessment-feedback')
+ parent=section.parent
+ while parent and 'evaluation-case' not in parent.attrs.get('class','').split():parent=parent.parent
+ assert parent is not None,'Feedback must inherit the responsive evaluation form layout'
  url='/behavior/evaluation/'+items[0]['id']+'/feedback'
  assert client.post(url,data={**form(items[0]),'csrf':'wrong'}).status_code==400
  assert client.post(url,data=form(items[0],'uncertain')).status_code==302
