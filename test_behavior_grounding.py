@@ -24,7 +24,7 @@ def test_sparse_connections_are_observations_not_auth_failure_or_decisive_verdic
  p=packet(event(action=action,source='tpot',sensor='Cowrie'));value=example(p)
  (accepted,metadata),calls=transport(p,value)
  assert accepted['classification']=='inconclusive' and action in accepted['findings'][0]['summary']
- assert metadata['grounding_contract_version']=='grounded-observations-3'
+ assert metadata['grounding_contract_version']=='grounded-observations-4'
  assert calls[0]['format']['properties']['classification']['enum']==['inconclusive']
  bad=copy.deepcopy(value);bad['findings'][0]['summary']='Multiple authentication failures observed, indicating a brute-force attack.'
  with pytest.raises(ValueError,match='Unsupported observation'):ai.validate_result(bad,p,[],{})

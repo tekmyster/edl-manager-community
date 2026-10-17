@@ -27,9 +27,9 @@ def test_rich_nonempty_packet_outside_oldest_100_gets_priority_and_age_slot(tmp_
 def test_legacy_priority_backfill_is_restartable_bounded_and_partial(tmp_path):
  b=Brain(Store(tmp_path/'native'));queue(b)
  with b.connect() as db:db.execute('DELETE FROM packet_scheduling');db.execute('DELETE FROM queue_priority')
- assert backfill(b,50)=={'scanned':50,'bound':200,'partial':True}
+ assert backfill(b,50)=={'scanned':50,'bound':200,'partial':True,'version':2}
  b=Brain(b.store);assert backfill(b,50)['partial']
- assert backfill(b,50)=={'scanned':10,'bound':200,'partial':False}
+ assert backfill(b,50)=={'scanned':10,'bound':200,'partial':False,'version':2}
  with b.connect() as db:assert schedule(db)[1]['packet_id']=='candidate100'
 
 def test_priority_metadata_follows_current_window_and_queue_deletion(tmp_path):

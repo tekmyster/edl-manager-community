@@ -19,7 +19,7 @@ def wire_from_storage(packet,value,candidates=None,registry=None):
  table,_=offers(packet,candidates,registry);wire=example(packet,candidates,registry)
  wire.update(classification=canonical['classification'],maliciousness_confidence=canonical['maliciousness_confidence'])
  def find(kind,value):return next(k for k,v in table[kind].items() if v==value)
- for field in ('findings','contradictory_evidence'):wire[field]=[find('facts',v) for v in canonical[field]]
+ for field in ('findings','contradictory_evidence'):wire[field]=[find('counterevidence' if field=='contradictory_evidence' else 'facts',v) for v in canonical[field]]
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
   wire[field]=[next(k for k,v in table[kind].items() if {f:x for f,x in v.items() if f!='name'}==item) for item in canonical[field]]
  for field in ('automation','intent'):

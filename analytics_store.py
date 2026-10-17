@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS coverage(name TEXT PRIMARY KEY,started TEXT NOT NULL)
 CREATE TABLE IF NOT EXISTS counters(hour TEXT NOT NULL,provider TEXT NOT NULL,kind TEXT NOT NULL,ip TEXT NOT NULL,n INTEGER NOT NULL,last TEXT NOT NULL,PRIMARY KEY(hour,provider,kind,ip));
 CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,packet TEXT NOT NULL,started TEXT NOT NULL,finished TEXT,state TEXT NOT NULL,first_seconds REAL,input_tokens INTEGER,output_tokens INTEGER,total_seconds REAL);
 CREATE INDEX IF NOT EXISTS requests_started ON requests(started);
+CREATE TABLE IF NOT EXISTS request_recovery(id TEXT PRIMARY KEY,assessment_id TEXT NOT NULL,saved_at TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS request_recovery_delete AFTER DELETE ON requests BEGIN DELETE FROM request_recovery WHERE id=OLD.id; END;
 '''
 
 
@@ -76,8 +78,8 @@ def connect(store, write=False):
             # timeout; an unsuccessful initializer can try again at completion.
             if db.execute('PRAGMA journal_mode').fetchone()[0].lower() != 'wal':
                 db.execute('PRAGMA journal_mode=WAL')
-            names={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE name IN ('coverage','counters','requests','requests_started')")}
-            if len(names) != 4:db.executescript(SCHEMA)
+            names={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE name IN ('coverage','counters','requests','requests_started','request_recovery','request_recovery_delete')")}
+            if len(names) != 6:db.executescript(SCHEMA)
             _ready.add(str(target))
         if write:
             day = stamp()[:10]
@@ -153,6 +155,7 @@ class Attempt:
             return value if type(value) in ((int,) if integer else (int,float)) and math.isfinite(value) and value>=0 else None
         if self._outcome is None:
             self._outcome = (stamp(),state,number('first_content_seconds'),number('input_tokens',True),number('output_tokens',True),number('request_seconds'))
+        metadata.update(request_started_at=self.started,request_finished_at=self._outcome[0],request_transport_state=self._outcome[1])
         try:
             with connect(self.store, True) as db:
                 self.coverage(db)

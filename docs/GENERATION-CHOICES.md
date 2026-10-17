@@ -1,7 +1,7 @@
 # Versioned grounded choices
 
-Prompt `behavior-3.10` uses generation schema `grounded-choices-1`. Stored results
-remain `behavior-3` and are independently checked by `grounded-observations-3`.
+Prompt `behavior-3.11` uses generation schema `grounded-choices-2`. Stored results
+remain `behavior-3` and are independently checked by `grounded-observations-4`.
 Older assessments, rejections, reviews and labels remain unchanged.
 
 The model selects opaque IDs scoped to the packet, choice kind and complete
@@ -13,7 +13,12 @@ payloads, accept unknown IDs or repair a bad classification. A legacy wire objec
 is invalid under this new protocol, including one that would otherwise be valid
 as a stored result. Test-only fixture conversion is never used by runtime code.
 
-Findings and contradictions select at most two of twelve facts. Mapping selections
+Findings select at most two of twelve offered facts. Counterevidence has a
+separate packet/kind-scoped table, offering only up to two qualifying fresh
+positive-context statements opposing a malicious interpretation. Additional
+probes, detector labels, 301/404 responses and absent evidence have no opposing
+role. Without positive context, the counterevidence list is empty. Rendering and
+the canonical validator reject facts placed in that role or reused on both sides. Mapping selections
 retain the existing eligible ATT&CK/D3FEND bounds, with at most two/one selected.
 One correlation may select an offered current/historical pair and confidence.
 Pair construction examines at most eight current and eight historical reports
@@ -43,8 +48,16 @@ interpretation under the new protocol require natural observations after QA and
 deployment, not synthetic success claims or forced model calls.
 
 The 18,000-byte input check, 8,192 context, 1,800 output-token bound, measured
-streaming timing, request/attempt persistence, usage accounting, Unlimited,
+streaming timing, usage accounting, Unlimited,
 native/scoring and edition controls remain unchanged. Candidates are omitted
 when necessary to fit the input budget, with supplied-window metadata reflecting
 the actual input. No raw provider text or rejected selection values enter error
 diagnostics; only fixed reason/category/field/index values are retained.
+
+The deployed3.10 cohort independently passed121canonical/offer checks with zero
+rejections but only four findings assessments; two misused probe observations as
+contradictions. This version tightens evidence roles rather than asserting useful
+or correct interpretation from protocol success. Earlier saved assessments are
+not relabelled or rewritten. The choice-version boundary rejects the old wire;
+it never converts unsupported old outputs. New natural reliability and semantic
+usefulness remain unmeasured until separately reviewed after deployment.

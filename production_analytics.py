@@ -31,17 +31,21 @@ def summary(brain, timezone='UTC', at=None):
     # including display zones with half-hour/quarter-hour offsets.
     start=at.replace(minute=0,second=0,microsecond=0)-dt.timedelta(hours=23)
     bins=[dict(start=stamp(start+dt.timedelta(hours=i)),end=stamp(min(start+dt.timedelta(hours=i+1),at)),requests=0,input=0,output=0,token_reports=0,unknown_tokens=0,first=[],accepted=0,rejected=0,failed=0,pending=0) for i in range(24)]
-    coverage={};attempts=[];counters=[];unique_ips={};error=False
+    coverage={};attempts=[];counters=[];unique_ips={};error=False;recovered={}
     try:
         with connect(brain.store) as db:
             coverage={r['name']:r['started'] for r in db.execute("SELECT * FROM coverage WHERE name!='pruned'")}
-            attempts=[dict(r) for r in db.execute('SELECT * FROM requests WHERE (started>=? OR finished>=?) AND started<? ORDER BY started DESC',(stamp(min(start,midnight)),stamp(min(start,midnight)),stamp(at)))]
+            recovery_table=bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='request_recovery'").fetchone())
+            extra=',request_recovery.saved_at recovery_saved_at' if recovery_table else ''
+            join=' LEFT JOIN request_recovery ON request_recovery.id=requests.id' if recovery_table else ''
+            attempts=[dict(r) for r in db.execute('SELECT requests.*'+extra+' FROM requests'+join+' WHERE (started>=? OR finished>=?) AND started<? ORDER BY started DESC',(stamp(min(start,midnight)),stamp(min(start,midnight)),stamp(at)))]
+            recovered={r['id']:value for r in attempts if (value:=r.pop('recovery_saved_at',None))}
             bounds=(stamp(start),stamp(at))
             counters=[dict(r) for r in db.execute('SELECT hour,provider,kind,sum(n) n,max(last) last FROM counters WHERE hour>=? AND hour<? GROUP BY hour,provider,kind',bounds)]
             for r in db.execute("SELECT provider,count(distinct nullif(ip,'')) touched,count(distinct CASE WHEN kind='outbound' THEN nullif(ip,'') END) outbound,count(distinct CASE WHEN kind='usable' THEN nullif(ip,'') END) usable,count(distinct CASE WHEN kind='local_query' THEN nullif(ip,'') END) local_query FROM counters WHERE hour>=? AND hour<? GROUP BY provider",bounds):unique_ips[r['provider']]=dict(r)
     except (sqlite3.Error,OSError): error=path(brain.store).exists()
     for r in attempts:
-        if r['finished'] and parse(r['finished'])>=at:
+        if (r['finished'] and parse(r['finished'])>=at) or (not r['finished'] and parse(recovered.get(r['id'])) and parse(recovered[r['id']])>=at):
             r.update(finished=None,state='pending',first_seconds=None,input_tokens=None,output_tokens=None,total_seconds=None)
     def bucket(when):
         t=parse(when)
@@ -66,7 +70,7 @@ def summary(brain, timezone='UTC', at=None):
         publications=[r for r in db.execute('SELECT * FROM publication_samples WHERE created>=? AND created<? ORDER BY created',(lower,upper)) if parse(r['created']) and start<=parse(r['created'])<at]
     classifications=Counter()
     # New assessments carry request timing. They are already represented by ledger.
-    ledger_ids={r['id'] for r in attempts}
+    ledger_ids={r['id'] for r in attempts};completion_time_unknown=0
     for r in rows:
         result=json.loads(r['result']);v=result.get('metadata',{})
         if r['status']=='completed' and parse(r['created'])>=start:classifications[result.get('classification','unknown')]+=1
@@ -74,6 +78,12 @@ def summary(brain, timezone='UTC', at=None):
         historical+=1
         token_records.append((r['created'],v.get('input_tokens'),v.get('output_tokens')))
     token_records += [(r['finished'],r['input_tokens'],r['output_tokens']) for r in attempts if r['finished']]
+    # Saved assessment time is an explicit legacy token-time proxy, never an
+    # invented exact transport finish. Future queries still mask later outcomes.
+    for r in attempts:
+        if not r['finished'] and r['state'] in ('accepted','rejected','failed') and r['id'] in recovered:
+            completion_time_unknown+=1
+            token_records.append((recovered[r['id']],r['input_tokens'],r['output_tokens']))
     day_input=day_output=day_known=day_unknown=0
     for when,inp,out in token_records:
         known=all(type(n) is int and n>=0 for n in (inp,out))
@@ -127,7 +137,7 @@ def summary(brain, timezone='UTC', at=None):
                 day_input=day_input,day_output=day_output,day_tokens=day_input+day_output,day_known=day_known,day_unknown=day_unknown,
                 first_seconds=mean(measured),first_samples=len(measured),day_attempts=sum(parse(r['started'])>=midnight for r in attempts),
                 hour_requests=len(current),hour_outcomes=dict(Counter(r['state'] for r in current)),coverage=coverage,error=error,
-                requests=sum(start<=parse(r['started'])<at for r in attempts),outcomes=dict(Counter(r['state'] for r in attempts if start<=parse(r['started'])<at)),cached=cached,historical_completions=historical,
+                requests=sum(start<=parse(r['started'])<at for r in attempts),outcomes=dict(Counter(r['state'] for r in attempts if start<=parse(r['started'])<at)),cached=cached,historical_completions=historical,completion_time_unknown=completion_time_unknown,
                 providers=providers,recent=attempts[:30])
 
 

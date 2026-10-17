@@ -9,6 +9,8 @@ REFRESH='''INSERT INTO queue_priority
  ON CONFLICT(ip) DO UPDATE SET packet_id=excluded.packet_id,richness=excluded.richness,last_seen=excluded.last_seen,queued=excluded.queued,fingerprint=excluded.fingerprint;'''
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS packet_scheduling(packet_id TEXT PRIMARY KEY,richness INTEGER NOT NULL,last_seen TEXT NOT NULL,fingerprint TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS packet_scheduling_v2_ready(packet_id TEXT PRIMARY KEY);
+CREATE TRIGGER IF NOT EXISTS packet_scheduling_v2_delete AFTER DELETE ON packets BEGIN DELETE FROM packet_scheduling_v2_ready WHERE packet_id=OLD.id; END;
 CREATE TABLE IF NOT EXISTS queue_priority(ip TEXT PRIMARY KEY,packet_id TEXT NOT NULL,richness INTEGER NOT NULL,last_seen TEXT NOT NULL,queued TEXT NOT NULL,fingerprint TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS queue_priority_rich ON queue_priority(richness DESC,last_seen DESC,queued,ip);
 CREATE INDEX IF NOT EXISTS queue_priority_recent ON queue_priority(last_seen DESC,richness DESC,queued,ip);
@@ -19,25 +21,49 @@ for table,operations,address in [('analysis_queue',('INSERT','UPDATE'), 'NEW.ip'
  for operation in operations:
   SCHEMA+='CREATE TRIGGER IF NOT EXISTS schedule_'+table+'_'+operation.lower()+' AFTER '+operation+' ON '+table+' BEGIN '+REFRESH.format(address=address)+' END;\n'
 
+def richness(packet):
+ """Review value, not maliciousness or freshness. All event times stay original."""
+ from behavior_intelligence import profile
+ from source_observations import connections
+ p=profile(packet);base=min(4,len(p['paths']))+min(2,len(p['actions']))
+ events=p['events'][:160];linked=connections(events);groups={}
+ for e in events:
+  if e['id'] not in linked:continue
+  origin=(e.get('provenance') or {}).get('upstream_id')
+  semantic=(e.get('source_observation') or {}).get('semantic')
+  if not origin or semantic not in ('shell_input','interactive_input','file_capture','network_fetch'):continue
+  groups.setdefault(linked[e['id']]['id'],set()).add((origin,semantic))
+ coherent=any(len({v[0] for v in values})>=2 and len({v[1] for v in values})>=2 for values in groups.values())
+ return base+(8 if coherent else 0)
+
+
 def index(db,ident):
- if db.execute('SELECT 1 FROM packet_scheduling WHERE packet_id=?',(ident,)).fetchone():return
+ if db.execute('SELECT 1 FROM packet_scheduling_v2_ready v JOIN packet_scheduling s USING(packet_id) WHERE v.packet_id=?',(ident,)).fetchone():return
  row=db.execute('SELECT content FROM packets WHERE id=?',(ident,)).fetchone()
  if not row:return
  from behavior_intelligence import profile
- p=profile(json.loads(row[0]));rich=min(4,len(p['paths']))+min(2,len(p['actions']))
+ packet=json.loads(row[0]);p=profile(packet)
  last=max((e['seen'] for e in p['events']),default='')
- db.execute('INSERT OR IGNORE INTO packet_scheduling VALUES(?,?,?,?)',(ident,rich,last,p['fingerprint']))
+ db.execute('INSERT INTO packet_scheduling VALUES(?,?,?,?) ON CONFLICT(packet_id) DO UPDATE SET richness=excluded.richness,last_seen=excluded.last_seen,fingerprint=excluded.fingerprint',(ident,richness(packet),last,p['fingerprint']))
+ db.execute('INSERT OR IGNORE INTO packet_scheduling_v2_ready VALUES(?)',(ident,))
+
 
 def backfill(brain,limit=200):
- """Restartable rowid page; reads at most 200 packet contents per pass."""
+ """Versioned reverse-rowid migration; at most 200 packet contents per pass.
+
+ Recent saved packets are indexed first without changing observed event times.
+ New packets are indexed on insertion; this restartable cursor covers history.
+ """
  with brain.connect() as db:
-  row=db.execute("SELECT value FROM retention_state WHERE name='schedule_cursor'").fetchone();cursor=int(row[0]) if row else 0
-  rows=db.execute('SELECT rowid,id FROM packets WHERE rowid>? ORDER BY rowid LIMIT ?',(cursor,max(1,min(200,limit)))).fetchall()
+  row=db.execute("SELECT value FROM retention_state WHERE name='schedule_cursor_v2'").fetchone()
+  cursor=int(row[0]) if row else db.execute('SELECT coalesce(max(rowid),0)+1 FROM packets').fetchone()[0]
+  rows=db.execute('SELECT rowid,id FROM packets WHERE rowid<? ORDER BY rowid DESC LIMIT ?',(cursor,max(1,min(200,limit)))).fetchall()
   for row in rows:index(db,row['id'])
   if rows:cursor=rows[-1]['rowid']
-  db.execute("INSERT OR REPLACE INTO retention_state VALUES('schedule_cursor',?)",(str(cursor),))
-  partial=bool(db.execute('SELECT 1 FROM packets WHERE rowid>? LIMIT 1',(cursor,)).fetchone())
- return {'scanned':len(rows),'bound':200,'partial':partial}
+  db.execute("INSERT OR REPLACE INTO retention_state VALUES('schedule_cursor_v2',?)",(str(cursor),))
+  partial=bool(db.execute('SELECT 1 FROM packets WHERE rowid<? LIMIT 1',(cursor,)).fetchone())
+ return {'scanned':len(rows),'bound':200,'partial':partial,'version':2}
+
 
 def schedule(db,limit=100,excluded=None):
  """Oldest 100 + indexed richest 64 + indexed most-recent 64; at most 228 IDs.
@@ -68,11 +94,11 @@ def schedule(db,limit=100,excluded=None):
  ranked=[]
  for address,row in rows.items():
   p=profile(json.loads(row['content']));last=max((timestamp(e['seen']) for e in p['events']),default=None)
-  ranked.append((address,p['fingerprint'],min(4,len(p['paths']))+min(2,len(p['actions'])),bool(last and last>=dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=24))))
+  ranked.append((address,p['fingerprint'],richness(json.loads(row['content'])),bool(last and last>=dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=24))))
  ordered=[];seen=set();age=[a for a in age if a in rows]
  while ranked and len(ordered)<min(100,limit):
   remaining={r[0] for r in ranked};oldest=next((a for a in age if a in remaining),None)
   if len(ordered)%2==0 and oldest:best=next(i for i,r in enumerate(ranked) if r[0]==oldest)
-  else:best=max(range(len(ranked)),key=lambda i:(ranked[i][1] not in seen,ranked[i][3],ranked[i][2],-i))
+  else:best=max(range(len(ranked)),key=lambda i:(ranked[i][1] not in seen,ranked[i][2],ranked[i][3],-i))
   address,fingerprint,_,_=ranked.pop(best);seen.add(fingerprint);ordered.append(rows[address])
  return ordered

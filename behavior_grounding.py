@@ -5,7 +5,7 @@ source fields remain untrusted reports. Older stored assessments are not rewritt
 """
 import re
 
-VERSION='grounded-observations-3'
+VERSION='grounded-observations-4'
 MAX_FACTS=12
 MAX_SIGNAL_EVENTS=24
 MAX_SUPPORT_BUNDLES=6
@@ -144,7 +144,7 @@ def contract(packet,registry):
  if 'T1190' in eligible.get('attack',{}):intent.append('exploitation')
  if positive:automation.append('legitimate_automation')
  if positive and any(e.get('method') in ('GET','HEAD') and e.get('path') for e in events):intent.append('ordinary_browsing')
- return {'version':VERSION,'facts':offered,'positive_ids':[r['evidence_ids'][0] for r in positive[:2]],'malicious_support':bundles,'support_coverage':support_coverage,
+ return {'version':VERSION,'facts':offered,'counterevidence':positive[:2],'positive_ids':[r['evidence_ids'][0] for r in positive[:2]],'malicious_support':bundles,'support_coverage':support_coverage,
          'classifications':classes,'automation':automation,'intent':intent,'available_facts':len(positive)+len(facts),'offered_facts':len(offered),
          'summaries':SUMMARIES,'limitations':LIMITS}
 
@@ -157,9 +157,12 @@ def validate(value,packet,candidates,registry):
    if claim not in c['facts']:
     known=any(f['summary']==claim['summary'] for f in c['facts'])
     reject('Unsupported observation statement','citation_binding' if known else 'summary_not_offered',field+('.evidence_ids' if known else '.summary'),index)
+   if field=='contradictory_evidence' and claim not in c['counterevidence']:
+    reject('Counterevidence requires positive opposing context','counterevidence_not_supported',field,index)
    refs=tuple(claim['evidence_ids'])
    if refs in seen:reject('Duplicate observation statement','duplicate_observation',field,index)
    seen.add(refs)
+ if any(v in value['findings'] for v in value['contradictory_evidence']):reject('Observation cannot occupy opposing roles','duplicate_observation_sides','contradictory_evidence')
  if value['classification'] not in c['classifications']:reject('Unsupported decisive interpretation','classification_not_supported','classification')
  cited={i for v in value['findings']+value['contradictory_evidence'] for i in v['evidence_ids']}
  if value['classification']=='benign' and not cited.intersection(c['positive_ids']):reject('Benign interpretation requires positive context','positive_context_not_cited','findings')
@@ -189,8 +192,9 @@ def constrain(schema,packet,candidates,registry,choices):
  p['classification']['enum']=c['classifications']
  for key in ('automation','intent'):p[key]['properties']['classification']['enum']=c[key]
  for field in ('findings','contradictory_evidence'):
-  p[field]['items']['properties']['summary']['enum']=[f['summary'] for f in c['facts']] or ['No observations available']
-  if not c['facts']:p[field]['maxItems']=0
+  offered=c['counterevidence'] if field=='contradictory_evidence' else c['facts']
+  p[field]['items']['properties']['summary']['enum']=[f['summary'] for f in offered] or ['No observations available']
+  if not offered:p[field]['maxItems']=0
  p['analysis_summary']['enum']=list(SUMMARIES.values())
  p['limitations']['minItems']=p['limitations']['maxItems']=2;p['limitations']['items']['maxLength']=200;p['limitations']['items']['enum']=LIMITS
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:

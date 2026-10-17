@@ -22,3 +22,23 @@ Independent correlation QA exposed a pre-existing activity-cache race, not estab
 `activity.claim_activity` now samples once after `BEGIN IMMEDIATE` succeeds and persists that same full-precision UTC instant. Fresh cache remains300seconds, pending lease90seconds, and quota comparison/increment stays in the same transaction. Expired crashed owners can recover within budget; pending/cached/budget outcomes do not spend quota. Future-dated records remain invalid rather than permanent leases. The UI fast path now uses the same nonnegative-age bounds as the atomic claim and background path, so a future cache/lease cannot suppress refresh indefinitely. Existing background failure backoff of3600seconds is unchanged.
 
 `python -m pytest -q test_activity_leases.py test_behavior_context.py` runs disposable SQLite tests that force a writer-lock wait and an independently sampled next-second timestamp; no timing-dependent retries or live traffic are required. It also tests eight claimers/one owner, shared quotas across different IPs, exact90/300second boundaries, crashed-owner recovery, future clocks and existing background error/cache backoff. Native scoring, retention, replay provenance, AI scoring, source routing and production services are unchanged.
+
+
+## Useful-evidence scheduling
+
+The queue retains the oldest100, richest64 and most-recent64 indexed pools (at
+most228IDs), alternating age/fairness and diverse priority slots. Priority now
+ranks evidence richness before event recency. Besides bounded path/action detail,
+two distinct original activity records with different input/capture semantics
+linked to the same unambiguous original connection add a coherent-session weight.
+Missing/cross-session/conflicted linkage, repeated copies or generic summaries
+do not earn that weight. This is review value, never maliciousness, novelty,
+operator identity or enforcement eligibility. Collection/preparation refresh does
+not change original event times. The existing freshness, lease, retry, backoff,
+privacy and enforcement rules still apply. Unlimited adds no request ceilings.
+
+Versioned priority migration walks at most200packet rows in reverse rowid order
+per pass, indexed by the SQLite primary key, resuming across restarts. Recently
+saved windows get repaired first while original event times and queue positions
+stay unchanged. New packets are indexed normally. Historical coverage remains
+partial until backfill completes; no single IP is manually prioritized.

@@ -2,8 +2,8 @@
 import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.10'
-GENERATION_SCHEMA_VERSION='grounded-choices-1'
+PROMPT_VERSION='behavior-3.11'
+GENERATION_SCHEMA_VERSION='grounded-choices-2'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -557,6 +557,8 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
   previous=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
   failures=min(5,(json.loads(previous[0]).get('failures',0) if previous else 0)+1) if error else 0
   db.execute('INSERT OR REPLACE INTO retention_state VALUES(?,?)',(backoff_key,json.dumps({'failures':failures,'until':time.time()+min(900,30*2**failures) if failures else 0})))
+ from behavior_telemetry import recover
+ recover(brain)
  return status
 
 def drain_queue(brain,store,cfg,retrieved=None,should_stop=None,refresh_index=None):
@@ -602,7 +604,10 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  if should_stop and should_stop():return {'status':'cancelled'}
  cfg=settings(store)
  if not cfg['enabled']:return {'status':'disabled'}
- brain=Brain(store);backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
+ brain=Brain(store)
+ from behavior_telemetry import recover
+ telemetry_recovery=recover(brain)
+ backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
  from behavior_scheduling import backfill as backfill_schedule
  schedule_backfill=backfill_schedule(brain)
  from behavior_references import backfill as backfill_references
@@ -647,7 +652,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  if cfg['model_enabled'] and not index_only:
   refresh=lambda:run(store,index_only=True,source_cfg=source_cfg,should_stop=should_stop)
   results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
- status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  store.state('behavior_worker',status);return status
 
 

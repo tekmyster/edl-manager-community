@@ -152,3 +152,32 @@ lineage and review caveats; interval details appear on pointer or keyboard focus
 and clear when interaction leaves. Equivalent interval tables remain available.
 AI performance keeps full completion duration separate from first content.
 Narrow performance charts retain legible axes in a focusable horizontal scroller.
+
+
+## Recoverable completion measurements
+
+A transient25ms SQLite busy timeout must not hold up native enrichment. Attempts
+freeze their actual observed dispatch and completion timestamps before ledger
+I/O; these receipt fields also survive in saved assessment metadata, including
+when the ledger write fails. The behavior worker reconciles at most50assessment
+metadata rows per pass in one short analytics transaction, at worker maintenance
+and after saving an assessment. Its restartable rowid cursor advances only after
+the ledger transaction commits; busy pages retry without extra model requests.
+This path never modifies verdicts, reviews, usage or native data. Completed ledger
+rows remain immutable; request ID and packet binding must match. Receipts older
+than the35day ledger retention are not resurrected.
+
+An older assessment with measured timing/tokens may complete an existing actual
+pending dispatch, but cannot manufacture a missing historical dispatch or exact
+finish time. Its finish remains null. Recovery provenance records the immutable
+assessment ID and saved time; token charts use that saved time as an explicit
+legacy timestamp proxy, disclosed in contextual help and the
+`completion_time_unknown` coverage count. Request outcomes and latency sample
+counts use only observed values; missing timing is never zero-filled. As-of
+queries mask a recovered outcome until its saved assessment time. Missing old
+dispatches remain legacy completions with unknown dispatch time. No inference
+from uncorrelated busy journal warnings is used for repair.
+
+Recovery requires durable assessment metadata. A crash before both assessment
+and ledger persistence can still leave unknown telemetry. An abandoned dispatch
+without a saved completion remains pending; no guessed finish is supplied.
