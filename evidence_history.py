@@ -30,6 +30,11 @@ def normalize(address,source,sensor,sample,received):
   value['http_metadata']={k:v for k,v in metadata.items() if (k=='protocol' and v in ('HTTP/1.0','HTTP/1.1','HTTP/2','HTTP/3')) or (k=='content_type' and v in ('application/json','application/x-www-form-urlencoded','multipart/form-data','text/plain','application/xml','text/xml'))}
  origin=opaque_id(sample.get('id'))
  value['provenance']={'upstream_id':origin,'collector':'configured index' if sample.get('_index_id') else 'saved source sample','collector_agent':safe_text(sample.get('_agent'),100),'record_id':opaque_id(sample.get('_index_id')),'index':opaque_id(sample.get('_index')),'indexed_at':timestamp(sample.get('_indexed_at')).isoformat() if timestamp(sample.get('_indexed_at')) else None,'time_basis':'native event','detail':'summary' if sample.get('_summary') else 'sample'}
+ # Existing collectors already supply a parsed client label. Preserve only fixed
+ # vocabulary, never raw user-agent values, versions, headers or operator claims.
+ from web_client import BOTS
+ clients={operator+' / '+token for token,operator,role in BOTS}|{'Headless Chrome','Playwright','Puppeteer','Selenium','Python requests','Python urllib','aiohttp','httpx','Go HTTP client','curl','Wget','OkHttp','PowerShell','Node fetch','Apache HTTP client'}
+ if sample.get('client') in clients:value['client_claim']={'label':sample['client'],'basis':'spoofable user-agent label; not verified tool, operator or maliciousness'}
  value['id']='hist_'+digest([address,value['source'],value['sensor'],origin,value['seen'],path,value['method'],value['status'],value['destination'],value['port'],value['action']])[:24]
  return value
 

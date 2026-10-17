@@ -10,6 +10,53 @@ def register(app,store,cfg,login_required):
  @login_required
  def behavior_overview():
   return render_template('behavior.html',behavior_settings=settings(store),behavior_summary=service.summary(),worker_state=store.state('behavior_worker') or {},activity_groups=groups(service))
+ @app.get('/behavior/activity')
+ @login_required
+ def behavior_activity():
+  from behavior_intelligence import alerts
+  return render_template('behavior_activity.html',alerts=alerts(service))
+ @app.get('/behavior/activity/<ident>')
+ @login_required
+ def behavior_activity_detail(ident):
+  from behavior_intelligence import alerts
+  found=alerts(service,ident)
+  if not found:abort(404)
+  return render_template('behavior_activity_detail.html',alert=found[0])
+ @app.post('/behavior/activity/<ident>/review')
+ @login_required
+ def behavior_activity_review(ident):
+  from behavior_intelligence import review
+  try:review(service,ident,request.form.get('outcome',''),request.form.get('notes',''),session['user'])
+  except ValueError as exc:flash(str(exc),'error')
+  else:flash('Activity review saved. Review the cited relationship separately to change group membership.','success')
+  return redirect(url_for('behavior_activity_detail',ident=ident))
+ @app.get('/behavior/evaluation')
+ @login_required
+ def behavior_evaluation():
+  from behavior_evaluation import report,cases
+  return render_template('behavior_evaluation.html',evaluation=report(service),cases=cases(service))
+ @app.post('/behavior/observations/<ident>/evaluate')
+ @login_required
+ def behavior_evaluation_capture(ident):
+  from behavior_evaluation import capture
+  try:case=capture(service,ident)
+  except ValueError as exc:flash(str(exc),'error');return redirect(url_for('behavior_overview'))
+  return redirect(url_for('behavior_evaluation_case',ident=case))
+ @app.get('/behavior/evaluation/<ident>')
+ @login_required
+ def behavior_evaluation_case(ident):
+  from behavior_evaluation import cases,BASES
+  found=cases(service,ident)
+  if not found:abort(404)
+  return render_template('behavior_evaluation_case.html',case=found[0],bases=BASES)
+ @app.post('/behavior/evaluation/<ident>')
+ @login_required
+ def behavior_evaluation_label(ident):
+  from behavior_evaluation import label
+  try:label(service,ident,request.form,session['user'])
+  except ValueError as exc:flash(str(exc),'error')
+  else:flash('Independent review saved. Earlier reviews remain in history.','success')
+  return redirect(url_for('behavior_evaluation_case',ident=ident))
  @app.get('/behavior/metrics')
  @login_required
  def behavior_metrics():

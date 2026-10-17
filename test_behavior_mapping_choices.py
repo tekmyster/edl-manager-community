@@ -36,7 +36,7 @@ def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,c
   for claim in choices[kind].values():
    assert 'context-only' not in claim['evidence_ids'];validate_mapping(kind,claim,select(catalog,mixed),mixed)
  assert choices['attack']['attack:T1110']['evidence_ids']==['f1','f2']
- assert metadata['prompt_version']=='behavior-3.5' and metadata['generation_schema_version']=='taxonomy-choices-1'
+ assert metadata['prompt_version']=='behavior-3.6' and metadata['generation_schema_version']=='taxonomy-choices-1'
  assert len(payload['messages'][1]['content'].encode())<=18000 and payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
 
 @pytest.mark.parametrize('entry',[
@@ -145,7 +145,7 @@ def test_prompt_and_wire_schema_versions_invalidate_cache_without_native_changes
  monkeypatch.setattr(ai,'infer',fake);cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':5}
  monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.4');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','legacy')
  assert ai.model_job(brain,ident,packet,features,cfg)=='completed'
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.5');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','taxonomy-choices-1')
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.6');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','taxonomy-choices-1')
  assert ai.model_job(brain,ident,packet,features,cfg)=='completed'
  assert ai.model_job(brain,ident,packet,features,cfg)=='cached'
  monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','synthetic-next-wire')

@@ -1,7 +1,8 @@
 """Bounded local behavior retrieval. Similarity is a review aid, never identity."""
 import datetime as dt,json
 
-VERSION='correlation-2'
+VERSION='correlation-3'
+GENERIC_PATHS={'','/','/favicon.ico','/robots.txt','/sitemap.xml'}
 TOKEN_LIMIT=64
 POSTING_LIMIT=128
 POOL_LIMIT=512
@@ -34,18 +35,18 @@ def citations(packet,common):
  events={}
  for event in sorted(packet.get('events',[]),key=lambda e:(e.get('seen',''),e['id'])):
   events.setdefault(event.get('path',''),event)
- paths=sorted(v[5:] for v in common if v.startswith('path:') and v not in ('path:/','path:'))[:3]
+ paths=sorted(v[5:] for v in common if v.startswith('path:') and v[5:] not in GENERIC_PATHS)[:3]
  return [events[path] for path in paths if path in events]
 
 def weight(v):
- return 1 if v.startswith('path:') else .5 if v.startswith('params:') else .2 if v.startswith('action:') else 0
+ return (0 if v[5:] in GENERIC_PATHS else 1) if v.startswith('path:') else .5 if v.startswith('params:') else .2 if v.startswith('action:') else 0
 
 def retrieve(db,ident,limit=3,at=None):
  at=at or dt.datetime.now(dt.timezone.utc)
  own=db.execute('SELECT * FROM packets WHERE id=?',(ident,)).fetchone()
  if not own:return [],{}
  features=set(json.loads(own['features']));packet=json.loads(own['content'])
- selected=[v for v in tokens(features) if v.startswith('path:') and v not in ('path:/','path:')]
+ selected=[v for v in tokens(features) if v.startswith('path:') and v[5:] not in GENERIC_PATHS]
  if len(selected)<2:selected=[]
  cut=(at-dt.timedelta(days=365)).isoformat(timespec='seconds');end=(at+dt.timedelta(minutes=5)).isoformat(timespec='seconds')
  pool={};read=0;saturated=[]
@@ -61,7 +62,7 @@ def retrieve(db,ident,limit=3,at=None):
   if not row or row['ip']==own['ip']:continue
   other=set(json.loads(row['features']));common=features&other
   # Two distinct paths are required; generic actions/parameters alone abstain.
-  if len([v for v in common if v.startswith('path:') and v not in ('path:/','path:')])<2:continue
+  if len([v for v in common if v.startswith('path:') and v[5:] not in GENERIC_PATHS])<2:continue
   denominator=sum(weight(v) for v in features|other)
   score=sum(weight(v) for v in common)/denominator if denominator else 0
   if score<.45:continue

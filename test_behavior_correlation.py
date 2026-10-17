@@ -120,7 +120,7 @@ def test_comparison_snapshot_and_rendered_lineage_are_reviewable(tmp_path):
  with app.store.connect() as db:db.execute('INSERT INTO users VALUES(?,?,?)',('fixture','hash',1))
  with c.session_transaction() as session:session.update(user='fixture',version=1,expires_at=dt.datetime.now(dt.timezone.utc).timestamp()+3600,csrf='synthetic')
  html=c.get('/behavior/groups/'+group['id'],base_url='https://localhost').get_data(as_text=True)
- assert 'Previous groups:' in html and 'Revision observations' in html and 'Historical window' in html and 'Compared window' in html and 'correlation-2' in html
+ assert 'Previous groups:' in html and 'Revision observations' in html and 'Historical window' in html and 'Compared window' in html and VERSION in html
  assert 'NAT' in html and 'No score or enforcement is inherited' in html
  html=c.get('/ip/8.8.8.8',base_url='https://localhost').get_data(as_text=True)
  assert 'Historical activity candidates' in html and 'uncalibrated' in html and 'Shared observations' in html
