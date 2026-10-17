@@ -30,7 +30,7 @@ def stamp(at=None):
 
 
 def path(store):
-    return pathlib.Path(store.path).with_name('analytics.sqlite3')
+    return pathlib.Path(store.path).resolve().with_name('analytics.sqlite3')
 
 
 @contextlib.contextmanager

@@ -194,3 +194,12 @@ def test_legacy_seconds_and_new_fractional_timestamps_share_exact_boundaries(tmp
             d.execute('INSERT INTO analysis_counters VALUES(?,?,?)',(when,'cached',1))
     data=summary(b,at=AT)
     assert data['day_tokens']==15 and data['historical_completions']==1 and data['cached']==1
+
+
+def test_relative_database_configuration_remains_portable(tmp_path,monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    b=Brain(Store('data/manager.sqlite3'))
+    event(b.store,'misp','local_query','8.8.8.8',AT-dt.timedelta(minutes=5))
+    data=summary(b,at=AT)
+    assert data['providers'][1]['unique_local']==1 and not data['error']
+    assert path(b.store)==tmp_path/'data/analytics.sqlite3'
