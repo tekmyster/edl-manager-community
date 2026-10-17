@@ -63,6 +63,24 @@ with the first instrumented event, without backfilling unmeasured history.
 Telemetry is best effort. Failures are logged, native operations continue, and
 missing records can leave coverage gaps. WAL connections are reused per store and
 thread; `synchronous=NORMAL` means a power failure can lose recent telemetry.
+Each live request keeps its actual dispatch identity and timestamp in memory. If
+saving the pending row fails, completion can insert that same real request with
+its first observed completion time and scalar measurements. Duplicate completion
+saves preserve the first completed outcome. This recovers transient start-save
+failures; it does not reconstruct requests lost across a process exit, guarantee
+persistence during ongoing failure, or backfill history. Finish without a known
+dispatch saves nothing. The existing 25 ms SQLite busy timeout remains for both
+cache counters and request persistence; no retry loop or inference gate is added.
+
+Existing schemas avoid repeated DDL on worker startup; concurrent fresh schema
+initialization can fail within the bounded timeout and retry at a later observed
+completion. Maintenance is marked complete only after commit. Unusable SQLite
+handles are discarded so later operations can reopen them. Persistence warnings
+contain fixed operation names and numeric SQLite/OS error codes, without exception
+text, paths, request content or credentials. These diagnostics help establish an
+actual cause; a busy-lock fixture does not establish the cause of an earlier
+production failure.
+
 Reads aggregate provider rows in SQLite before building the UI model. Pruning runs
 at most once per process per UTC day, independently of evidence retention.
 
