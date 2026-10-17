@@ -11,7 +11,9 @@ CREATE INDEX IF NOT EXISTS event_history_origin ON event_history(ip,source,senso
 CREATE TABLE IF NOT EXISTS history_queries(ip TEXT PRIMARY KEY,scope TEXT NOT NULL,fetched TEXT NOT NULL,content TEXT NOT NULL);
 '''
 
-def initialize(db):db.executescript(SCHEMA)
+def initialize(db):
+ from source_binding_recovery import SCHEMA as BINDING_SCHEMA
+ db.executescript(SCHEMA+BINDING_SCHEMA)
 
 def normalize(address,source,sensor,sample,received):
  if not isinstance(sample,dict):return None
@@ -43,6 +45,12 @@ def normalize(address,source,sensor,sample,received):
  if hint:value['endpoint_hint']=hint
  from source_observations import sanitize
  observation=sanitize(sample.get('source_observation'),address)
+ raw_observation=sample.get('source_observation')
+ if isinstance(raw_observation,dict) and raw_observation.get('version')=='source-observations-1' and raw_observation.get('source_ref') and raw_observation['source_ref']!=__import__('source_observations').source_reference(address):observation={'conflict':True}
+ if observation.get('binding_proof'):
+  from source_observations import binding_proof,_time
+  proof=binding_proof(observation)
+  if proof['record_id']!=origin or not _time(proof['window_start'])<=seen<=_time(proof['window_end']):observation={'conflict':True}
  if observation:value['source_observation']=observation
  value['id']='hist_'+digest([address,value['source'],value['sensor'],origin,value['seen'],path,value['method'],value['status'],value['destination'],value['port'],value['action']])[:24]
  return value
@@ -52,6 +60,8 @@ def save(brain,address,source,sensor,samples,received,scope=""):
   for sample in samples[:500]:
    event=normalize(address,source,sensor,sample,received)
    if event:
+    from source_binding_recovery import receive,audit
+    receive(db,address,event,scope,received)
     db.execute('INSERT OR IGNORE INTO event_history VALUES(?,?,?,?,?,?,?,?)',(event['id'],address,event['source'],event['sensor'],event['seen'],received,scope,json.dumps(event)))
     # Merge the persisted report, never just the current input. First receipt,
     # event identity and original event fields stay immutable.
@@ -60,9 +70,12 @@ def save(brain,address,source,sensor,samples,received,scope=""):
     if event.get('source_observation'):
      from source_observations import merge_reports
      observation=merge_reports(prior.get('source_observation'),event['source_observation'])
+     if observation.get('conflict') and prior.get('source_observation') and not prior['source_observation'].get('conflict') and not event['source_observation'].get('conflict'):
+      audit(db,event,scope,received,'hard_metadata_disagreement',prior,event,{'incoming_source_observation':event['source_observation']})
      if prior.get('source_observation')!=observation:prior['source_observation']=observation;changed=True
     old_agent=prior['provenance'].get('collector_agent');new_agent=event['provenance'].get('collector_agent')
     if prior.get('source_observation') and old_agent and new_agent and old_agent!=new_agent:
+     audit(db,event,scope,received,'hard_collector_disagreement',prior,event,{'old_collector':old_agent,'new_collector':new_agent})
      prior['source_observation']={'conflict':True};changed=True
     if event['provenance']['record_id']:
      if not prior['provenance'].get('record_id'):
@@ -180,7 +193,10 @@ def refresh(brain,address,source_cfg,at,fetcher=None):
 
 def cleanup(brain,at):
  # Bounded deletion, independent of native retention; no unbounded browser work.
- with brain.connect() as db:db.execute('DELETE FROM event_history WHERE rowid IN (SELECT rowid FROM event_history WHERE seen<? ORDER BY seen LIMIT 5000)',((at-dt.timedelta(days=30)).isoformat(timespec='seconds'),))
+ with brain.connect() as db:
+  db.execute('DELETE FROM event_history WHERE rowid IN (SELECT rowid FROM event_history WHERE seen<? ORDER BY seen LIMIT 5000)',((at-dt.timedelta(days=30)).isoformat(timespec='seconds'),))
+  db.execute('DELETE FROM source_binding_receipts WHERE rowid IN (SELECT rowid FROM source_binding_receipts r WHERE NOT EXISTS(SELECT 1 FROM event_history h WHERE h.id=r.event_id AND h.scope=r.scope) LIMIT 5000)')
+  db.execute('DELETE FROM source_binding_audit WHERE rowid IN (SELECT rowid FROM source_binding_audit a WHERE NOT EXISTS(SELECT 1 FROM event_history h WHERE h.id=a.event_id AND h.scope=a.scope) AND NOT EXISTS(SELECT 1 FROM source_binding_receipts r WHERE r.event_id=a.event_id AND r.scope=a.scope) LIMIT 5000)')
 
 
 def collection_scope(brain,source_cfg):

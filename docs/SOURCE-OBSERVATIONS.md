@@ -6,16 +6,40 @@ Metadata is additive: original sample IDs, event timestamps, destinations and
 ports retain their meaning and the historical event ID formula is unchanged.
 Historical assessments and rejection records are never rewritten.
 
-Cached observations merge monotonically using the same conflict rule as packet
-assembly. Missing legacy metadata can be enriched; differing nonempty reports
-become a fixed `{"conflict": true}` marker. Save/reload, later original copies,
-legacy copies and provenance enrichment cannot clear that marker. If a timestamp
-or target disagreement creates another historical ID for the same original
-record, both IDs remain, and all cached variants are marked conflicting. Exact
-original-record lookups use a derived-history index scoped by IP, source, sensor
-and configured collection scope. Generic records without observation metadata
-retain existing behavior. Markers live with derived history under its existing
-retention rules; this is not an unbounded identity ledger.
+Cached observations and packet assembly share the same merge semantics. Missing
+optional connection bindings and incomplete lookup coverage mean unknown; they
+do not contradict an otherwise identical verified report. Contradictory source,
+collector, session, semantics, original time/target or connection IDs still fail
+closed. A complete full-window zero/multiple-connection receipt invalidates an
+older unique binding, including cached siblings omitted from the latest sample
+batch. Known session reuse cannot become unique through partial or older copies.
+Neither successful query transport nor a sampled connection asserts uniqueness.
+
+An optional `source-connection-proof-1` receipt records the exact original ID and
+source-field hash, hashed collector/source/session scope, declared 30-day bounds,
+check time, full original connection count and unique connection ID/hash where
+applicable. Scope, field types, original ID/time and privacy are validated. No raw
+commands, download URLs or session values enter this receipt. `lookup_status`
+distinguishes complete, not-selected, partial and error. A retained older receipt
+keeps its original check time; a recheck does not refresh native event time.
+
+Existing generic conflict marks remain closed automatically. The explicit
+`source_binding_recovery.recovery()` operation defaults to a dry run and reads no
+model result. It requires fresh complete receipts for the original event and
+connection, matching immutable packet anchor bytes, original scope/time/target,
+no disputed origin copies or recorded contrary session evidence, an independent
+review reference, and an exact plan hash plus reviewer identity before apply.
+Only the derived metadata changes. Original packets, assessments, labels,
+feedback, source counters and native scores/retention are never rewritten.
+
+Latest complete receipts and conflict/recovery audits live in derived history.
+Audit updates are rejected, and deletion is rejected while corresponding history
+or receipt is retained. Existing 30-day history expiry removes orphan receipts
+and audits in batches of at most 5,000; this creates no indefinite identity ledger.
+Hard disputes and indexed exact-original lookups remain scoped by source, sensor,
+address and configured collection. No broad cache reset or automatic legacy
+recovery is performed by deployment. A recovery plan is not an authorization to
+apply it; operators review the original-source proof first.
 
 Collectors may attach `source_observation` to a sampled event:
 
@@ -28,7 +52,9 @@ Collectors may attach `source_observation` to a sampled event:
 | `semantic` | Fixed category: `connection`, `shell_input`, `interactive_input`, `file_capture`, `file_event`, `network_fetch` |
 | `syntax_categories` | Optional fixed lexical categories: `permission_change`, `output_redirection`, `interpreter_input`, `relative_execution`, `network_client_input` |
 | `connection_id` | Exact original connection record ID, never the most recent connection for an IP |
-| `connection_count` | Integer `1`, only after an untruncated full-lookback query finds exactly one original connection for this source/session |
+| `connection_count` | `1` only for a complete unique original connection; a complete zero/multiple result explicitly disqualifies the binding |
+| `lookup_status` | `complete`, `not_selected`, `partial` or `error`; unknown detail cannot erase compatible verified evidence |
+| `binding_proof` | Validated original-record/full-window receipt described above; optional for legacy producers |
 
 Use `metadata()` and `sanitize()` rather than forwarding arbitrary fields. Never
 export raw session IDs, commands, credentials, file contents, artifact paths or

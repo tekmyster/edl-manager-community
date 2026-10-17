@@ -8,10 +8,36 @@ import datetime as dt
 import hashlib
 import ipaddress
 import re
+import json
 
 VERSION='source-observations-1'
 SEMANTICS={'shell_input','interactive_input','file_capture','file_event','network_fetch','connection'}
 SYNTAX={'permission_change','output_redirection','interpreter_input','relative_execution','network_client_input'}
+LOOKUP_STATES={'complete','not_selected','partial','error'}
+PROOF_VERSION='source-connection-proof-1'
+
+def fingerprint(value):return reference(json.dumps(value,sort_keys=True,separators=(',',':')))
+
+def proof_scope(observation,start,end):
+ return fingerprint([observation.get(k) for k in ('collector_ref','source_ref','session_ref')]+[start,end,'Cowrie','original-connection-count'])
+
+def binding_proof(observation):
+ """Validate a complete declared query receipt; never infer one from samples."""
+ p=observation.get('binding_proof')
+ if not isinstance(p,dict) or p.get('version')!=PROOF_VERSION:return None
+ required={'version','record_id','record_sha256','scope_ref','window_start','window_end','checked_at','connection_count','connection_id','connection_sha256'}
+ if set(p)!=required:return None
+ start,end,checked=(_time(p.get(k)) for k in ('window_start','window_end','checked_at'))
+ if not start or not end or not checked or not dt.timedelta(days=29)<=end-start<=dt.timedelta(days=31) or not end<=checked<=end+dt.timedelta(hours=1):return None
+ if not isinstance(p['record_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.:/+=-]{1,120}',p['record_id']):return None
+ if any(not isinstance(p[k],str) or not re.fullmatch('[0-9a-f]{64}',p[k]) for k in ('record_sha256','scope_ref')):return None
+ if p['scope_ref']!=proof_scope(observation,p['window_start'],p['window_end']):return None
+ count=p['connection_count']
+ if type(count) is not int or not 0<=count<=10000000:return None
+ if count==1:
+  if not isinstance(p['connection_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.:/+=-]{1,120}',p['connection_id']) or not isinstance(p['connection_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',p['connection_sha256']):return None
+ elif p['connection_id'] is not None or p['connection_sha256'] is not None:return None
+ return p
 
 def reference(value):
  return hashlib.sha256(str(value).encode()).hexdigest()
@@ -35,9 +61,20 @@ def sanitize(value,address):
  clean={k:value[k] for k in ('version','semantic')+keys}
  categories=value.get('syntax_categories')
  if isinstance(categories,list):clean['syntax_categories']=sorted({v for v in categories[:5] if isinstance(v,str) and v in SYNTAX})
+ if value.get('lookup_status') in LOOKUP_STATES:clean['lookup_status']=value['lookup_status']
  ident=value.get('connection_id')
  if value.get('connection_count')==1 and type(value.get('connection_count')) is int and isinstance(ident,str) and re.fullmatch(r'[A-Za-z0-9_.:/+=-]{1,120}',ident):
   clean.update(connection_id=ident,connection_count=1)
+ elif type(value.get('connection_count')) is int and 2<=value['connection_count']<=10000000:clean['connection_count']=value['connection_count']
+ proof=binding_proof(value)
+ if 'binding_proof' in value and not proof:return {'conflict':True}
+ if proof:
+  clean['binding_proof']=dict(proof);clean['connection_count']=proof['connection_count']
+  if proof['connection_count']==1:clean['connection_id']=proof['connection_id']
+  else:clean.pop('connection_id',None)
+ if value.get('binding_state') in ('ambiguous','missing_connection') and type(value.get('connection_count')) is int and (value['connection_count']>1 or value['binding_state']=='missing_connection' and value['connection_count']==0):
+  clean['binding_state']=value['binding_state'];clean['connection_count']=value['connection_count']
+  if isinstance(value.get('ambiguity_ref'),str) and re.fullmatch('[0-9a-f]{64}',value['ambiguity_ref']):clean['ambiguity_ref']=value['ambiguity_ref']
  return clean
 
 def _time(value):
@@ -47,9 +84,37 @@ def _time(value):
  except ValueError:return None
 
 def merge_reports(left,right):
- """Missing old metadata can be enriched; conflicting copies always abstain."""
- if left and right and left!=right:return {'conflict':True}
- return left or right or {}
+ """Unknown optional lookup detail is not contradictory source evidence.
+
+ Actual contradictory identities/semantics remain sticky. A complete later
+ multi-connection query defeats an older unique claim; unknown detail cannot.
+ Legacy conflict recovery is an explicit separately audited operation.
+ """
+ if not left or not right:return left or right or {}
+ if not isinstance(left,dict) or not isinstance(right,dict):return {'conflict':True}
+ if left.get('conflict') or right.get('conflict'):return {'conflict':True}
+ core=lambda o:{k:v for k,v in o.items() if k not in ('connection_id','connection_count','binding_proof','lookup_status','binding_state','ambiguity_ref')}
+ if core(left)!=core(right):return {'conflict':True}
+ lp,rp=binding_proof(left),binding_proof(right)
+ if lp and rp and (lp['record_id'],lp['record_sha256'])!=(rp['record_id'],rp['record_sha256']):return {'conflict':True}
+ # Known session reuse never becomes unique merely by rotating a window.
+ ambiguous=[o for o in (left,right) if o.get('binding_state') in ('ambiguous','missing_connection') or (binding_proof(o) and o['binding_proof']['connection_count']!=1)]
+ if ambiguous:
+  chosen=max(ambiguous,key=lambda o:(o.get('connection_count',0),(binding_proof(o) or {}).get('checked_at','')))
+  result=dict(chosen);result['binding_state']='ambiguous' if result.get('connection_count',0)>1 else 'missing_connection';result.pop('connection_id',None);return result
+ if any(o.get('connection_count',0)>1 for o in (left,right)):return {'conflict':True}
+ a,b=left.get('connection_id'),right.get('connection_id')
+ if a and b and a!=b:return {'conflict':True}
+ proofs=[o for o in (left,right) if binding_proof(o)]
+ if proofs:
+  chosen=max(proofs,key=lambda o:o['binding_proof']['checked_at'])
+  # A complete zero-connection query covering the same original defeats an old
+  # binding. Do not restore it through a subsequent partial/legacy copy.
+  if any(o['binding_proof']['connection_count']==0 for o in proofs):chosen=next(o for o in proofs if o['binding_proof']['connection_count']==0)
+ else:chosen=right if b else left if a else right
+ result=dict(chosen)
+ if right.get('lookup_status') in LOOKUP_STATES:result['lookup_status']=right['lookup_status']
+ return result
 
 def connections(events):
  """Resolve only a co-included, unique original connection; never fill a target.
@@ -82,12 +147,17 @@ def prioritize(events,limit=24):
  """Retain complete linked groups before generic newest samples, within a bound."""
  unique={e['id']:e for e in events if e and e.get('id')};events=list(unique.values());chosen=[]
  # Works on sanitized collector samples as well as normalized history.
- by_origin={(e.get('provenance') or {}).get('upstream_id',e['id']) if isinstance(e.get('provenance'),dict) else e['id']:e for e in events}
+ def scope(e):
+  o=e.get('source_observation') or {};p=e.get('provenance')
+  return tuple(o.get(k) for k in ('collector_ref','source_ref','session_ref'))+(e.get('source'),e.get('sensor'),p.get('collector_agent','') if isinstance(p,dict) else '')
+ by_origin={((e.get('provenance') or {}).get('upstream_id',e['id']) if isinstance(e.get('provenance'),dict) else e['id'],scope(e)):e for e in events}
  for event in sorted(events,key=lambda e:(e.get('action')!='cowrie.session.file_download',e.get('seen',''),e['id'])):
-  observation=event.get('source_observation') or {};connection=by_origin.get(observation.get('connection_id'))
+  observation=event.get('source_observation') or {};connection=by_origin.get((observation.get('connection_id'),scope(event)))
   if not connection:continue
   group=[connection,event]
-  group += [e for e in events if (e.get('source_observation') or {}).get('session_ref')==observation.get('session_ref') and e.get('action')=='cowrie.command.input'][:4]
+  commands=[e for e in events if scope(e)==scope(event) and e.get('action')=='cowrie.command.input']
+  commands.sort(key=lambda e:(not bool(set((e.get('source_observation') or {}).get('syntax_categories',[]))&{'permission_change','interpreter_input','relative_execution'}),e.get('seen',''),e['id']))
+  group += commands[:4]
   group=list({e['id']:e for e in group}.values())
   fresh=[e for e in group if e['id'] not in {v['id'] for v in chosen}]
   if len(chosen)+len(fresh)<=limit:chosen+=fresh
