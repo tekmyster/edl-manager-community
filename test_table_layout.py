@@ -24,7 +24,7 @@ def test_layout_saved_per_account_and_hidden_sort_is_safe(ui):
  assert c.post('/settings/columns',data=payload,base_url='https://localhost').status_code==302
  assert s.state('user_preferences:admin')['session_timeout']==3600 and s.state('user_preferences:admin')['timezone']=='UTC'
  html=c.get('/?sort=score&f_score=100',base_url='https://localhost').text
- table=html.split('<div class="scroll"><table>')[1]
+ table=html.split('id="ip-evidence"')[1].split('<table>')[1]
  assert table.index('IP address')<table.index('Last seen UTC')<table.index('Policy') and 'No addresses match' not in html
  assert 'name="f_score"' not in html and 'Active policy rules' not in html
  assert c.post('/settings/columns',data={'csrf':'csrf','column_order':'injected'},base_url='https://localhost').status_code==400

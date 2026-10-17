@@ -56,3 +56,9 @@ html{overflow-x:clip}
 
 /* Keep event columns readable inside the keyboard-accessible mobile scroller. */
 .history-events{min-width:900px}.history-events td:first-child,.history-events td:nth-child(2){white-space:nowrap}.history-table:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+
+/* Closed popovers must not contribute off-screen layout overflow. */
+.date-filter:not([open])>.date-filter-panel,.checkbox-filter:not([open])>.checkbox-filter-panel{display:none}
+.evidence-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.evidence-scroll-help{font-size:12px}.ai-table-cell{min-width:150px;max-width:240px}.ai-table-number{font-variant-numeric:tabular-nums}.ai-table-cell small{margin-top:3px}
+
+.evidence-scroll{position:relative}.evidence-scroll td{vertical-align:top}

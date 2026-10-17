@@ -17,6 +17,19 @@
  document.querySelectorAll('.date-filter').forEach(update);
  document.addEventListener('toggle',event=>{if(event.target.matches('.date-filter'))place(event.target);},true);
  window.addEventListener('resize',()=>document.querySelectorAll('.date-filter[open]').forEach(place));
+ document.addEventListener('keydown',event=>{
+  if(event.key!=='Escape')return;
+  const filter=event.target.closest('.date-filter[open]');
+  if(filter){filter.open=false;filter.querySelector('summary').focus();}
+ });
+ document.addEventListener('click',event=>{
+  document.querySelectorAll('.date-filter[open]').forEach(filter=>{if(!filter.contains(event.target))filter.open=false;});
+ });
+ let placement;
+ document.addEventListener('scroll',()=>{
+  if(placement)return;
+  placement=requestAnimationFrame(()=>{placement=null;document.querySelectorAll('.date-filter[open]').forEach(place);});
+ },true);
  document.addEventListener('change',event=>{
   const filter=event.target.closest('.date-filter');if(!filter)return;
   const fields=filter.querySelectorAll('input[type="date"]');

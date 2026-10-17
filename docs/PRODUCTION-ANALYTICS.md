@@ -122,3 +122,26 @@ access paths if access settings ever change; no access changes are required here
 
 The collector cache-conflict repair, broad accuracy and calibration remain deferred
 and incomplete. This UI patch does not incorporate the preserved collector branch.
+
+## Optional IP table columns
+
+The account column chooser can enable AI assessment, AI contribution and AI
+evidence coverage. They are hidden by default, including for existing saved
+layouts, and follow saved order, search, column filters, sorting and paging.
+Assessment labels refer to the latest retained assessment of the current packet
+and model configuration, with expiry, rejection, failure, model-off and missing
+states explicit. Accepted model output is not independent truth or accuracy.
+Contribution is the actual AI points already present in the displayed score;
+confidence never supplies a substitute. History-only rows have unavailable
+contribution. Coverage counts saved packet observations, not complete traffic,
+unique attacks or a population denominator. Links open the original saved packet.
+
+The annotations use read-only SQLite handles, scalar JSON projections and batches
+of at most400addresses per query. No model, provider or preparation request is
+issued by the table. Only selected AI fields enter general search. A missing
+behavior database is not created by this read model, and failed reads show
+unavailable assessment/coverage. Native scoring and model validation are unchanged.
+The table region is keyboard-focusable for horizontal scrolling. It contains
+positioned off-screen header labels inside its own scroll boundary; closed
+filter panels do not expand page geometry. Date disclosures support Escape and
+retain viewport placement during scrolling.

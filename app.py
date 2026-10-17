@@ -19,7 +19,7 @@ from source_settings import preferences,effective,validate,SOURCES,FIELDS
 
 from metric_trends import initialize as initialize_trends,trends as tile_trends,values as tile_values
 
-from table_layout import DEFAULT as COLUMN_ORDER,layout as column_layout,policy_rows
+from table_layout import ALL as COLUMN_ORDER,DEFAULT as DEFAULT_COLUMNS,OPTIONAL as AI_COLUMNS,layout as column_layout,policy_rows
 
 from table_filters import DATE_KEYS,highlight
 
@@ -551,7 +551,13 @@ def create_app(config=None):
 
   scores=policy_rows(store,scores,rules);report=reports.snapshot();query=request.args.get('q','').strip().lower();view=request.args.get('view','all')
 
-  rows=[r for r in scores if not query or query in (' '.join([r['ip'],r['asn'],r['organization'],r['repeat_text']]+r.get('source_labels',r['sources'])+[str(p) for p in r.get('ports',[])]+[r.get('enrichment_text','')]+r.get('client_types',[])+r.get('source_identity',{}).get('clients',[]))).lower()]
+  saved_layout=(store.state('user_preferences:'+session['user']) or {}).get('ip_columns',{})
+  ai_visible=set(saved_layout.get('visible',DEFAULT_COLUMNS)) & set(AI_COLUMNS)
+  if ai_visible:
+   from ai_table import decorate as ai_table_rows
+   scores=ai_table_rows(store,scores,ai_visible)
+
+  rows=[r for r in scores if not query or query in (' '.join([r['ip'],r['asn'],r['organization'],r['repeat_text']]+r.get('source_labels',r['sources'])+[str(p) for p in r.get('ports',[])]+[r.get('enrichment_text',''),r.get('ai_search','')]+r.get('client_types',[])+r.get('source_identity',{}).get('clients',[]))).lower()]
 
   if view=='candidate':rows=[r for r in rows if r['auto_candidate']]
 
@@ -585,13 +591,16 @@ def create_app(config=None):
 
    'priority':('Review priority',lambda r:r.get('priority','Local evidence only'),lambda r:{'Review benign conflict':4,'Corroborated attack':3,'Review suspicious activity':2,'Local evidence only':1,'Protected benign actor':0}.get(r.get('priority'),1)),
 
+   'ai_assessment':('AI assessment',lambda r:r.get('ai_assessment','Unavailable'),lambda r:r.get('ai_assessment','').casefold()),
+   'ai_contribution':('AI contribution',lambda r:r.get('ai_contribution','Unavailable'),lambda r:(r.get('ai_contribution_value') is not None,r.get('ai_contribution_value') or 0)),
+   'ai_coverage':('AI evidence coverage',lambda r:r.get('ai_coverage','Unavailable'),lambda r:r.get('ai_coverage','').casefold()),
    'policy':('Policy',lambda r:r['policy'],lambda r:r['policy']),**time_columns()}
 
   visible=set(preferences(store,cfg)['fields'])
 
   available={k:v for k,v in ip_columns.items() if k not in FIELDS or k in visible}
 
-  ordered,shown=column_layout((store.state('user_preferences:'+session['user']) or {}).get('ip_columns',{}),available)
+  ordered,shown=column_layout(saved_layout,available)
 
   column_options=[{'key':k,'label':available[k][0],'visible':k in shown} for k in ordered]
 
@@ -627,7 +636,11 @@ def create_app(config=None):
 
    'policy':[(v,v) for v in ('Allowed','Denied','Evaluating')]}
 
-  ip_matchers={'client_type':lambda r,v:v in r.get('client_types',['Unknown']),'asn':lambda r,v:asn_identity(r)==v,'sources':source_matches,
+  ip_choices.update(ai_assessment=[(k,v) for k,v in __import__('ai_table').LABELS.items()],ai_contribution=[('applied','Points applied'),('none','No points applied'),('unknown','Unavailable')],ai_coverage=[('sampled','Saved samples'),('unknown','Coverage unavailable'),('not_indexed','Not indexed')])
+
+  ip_matchers={'ai_assessment':lambda r,v:r.get('ai_assessment_status')==v,'ai_coverage':lambda r,v:r.get('ai_coverage_status')==v,
+   'ai_contribution':lambda r,v:(r.get('ai_contribution_value') or 0)>0 if v=='applied' else r.get('ai_contribution_value')==0 if v=='none' else r.get('ai_contribution_value') is None,
+   'client_type':lambda r,v:v in r.get('client_types',['Unknown']),'asn':lambda r,v:asn_identity(r)==v,'sources':source_matches,
 
    'enrichment_sources':lambda r,v:v in r['enrichment_sources'],
 

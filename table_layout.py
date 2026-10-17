@@ -3,16 +3,18 @@
 import datetime as dt,ipaddress,json
 
 DEFAULT=('ip','policy','priority','score','last_seen','sources','ports','client_type','asn','enrichment_sources','enrichment','repeat','first_seen','block_recorded','block_expires')
+OPTIONAL=('ai_assessment','ai_contribution','ai_coverage')
+ALL=DEFAULT+OPTIONAL
 
 def layout(saved,available):
 
  order=['ip']+[k for k in saved.get('order',DEFAULT) if k in available and k!='ip']
 
- order=list(dict.fromkeys(order+[k for k in DEFAULT if k in available]))
+ order=list(dict.fromkeys(order+[k for k in ALL if k in available]))
  if 'priority' in available and 'priority' not in saved.get('order',DEFAULT):
   order.remove('priority');order.insert(order.index('policy')+1 if 'policy' in order else 1,'priority')
 
- visible=set(saved.get('visible',order)) & set(available);visible.add('ip')
+ visible=set(saved.get('visible',DEFAULT)) & set(available);visible.add('ip')
  if 'priority' in available and 'priority' not in saved.get('order',DEFAULT):visible.add('priority')
 
  if 'priority' in available and 'priority' not in saved.get('order',DEFAULT):visible.add('priority')
