@@ -93,6 +93,26 @@ cannot independently authenticate an external investigation. Earlier reviews are
 append-only and the latest review is used once per case. No labels are prefilled
 from production scores or synthetic fixtures.
 
+The initial page contains the case's saved observations only. It does not render
+model, policy, comparison or activity hypotheses. Quality fields are shown only
+after the first label; any quality fields submitted with an initial blind label
+are recorded as unknown. This prevents a quality judgment without seeing the
+captured finding.
+
+After the first label, **Frozen review context** shows the saved comparison and
+activity findings, states, cited current/historical events, uncertainty and advisory
+versions/source hashes. New cases also snapshot the latest ten source reviews per
+finding and the local policy reasons and separate capture time. Derived findings
+and reviews are read in one derived-database transaction; the local policy snapshot
+is a separate native/derived read and is not claimed to be globally atomic. No live
+relationship, alert or catalog lookup fills missing case context. Older cases keep
+their original bytes; unavailable histories and policy fields remain unknown.
+
+The review form prefills the prior activity label and provenance during later
+quality reviews. Current IP navigation is explicitly separate from immutable case
+context and cannot substitute for a missing historical finding. Unknown and Not
+applicable remain available for absent or unsupported categories.
+
 After the first label, inspect the saved model mappings and evidence and append
 an optional quality review for ATT&CK, D3FEND, correlation, return activity and
 tool/exploit trends: supported, unsupported, unknown or not applicable. Independent

@@ -70,10 +70,11 @@ def register(app,store,cfg,login_required):
  @app.get('/behavior/evaluation/<ident>')
  @login_required
  def behavior_evaluation_case(ident):
-  from behavior_evaluation import cases,BASES
+  from behavior_evaluation import cases,BASES,frozen_context,saved_object
   found=cases(service,ident)
   if not found:abort(404)
-  return render_template('behavior_evaluation_case.html',case=found[0],bases=BASES)
+  case=found[0];latest=case['labels'][0] if case['labels'] else None
+  return render_template('behavior_evaluation_case.html',case=case,bases=BASES,latest=latest,latest_quality=saved_object(latest['quality']) if latest else {},frozen=frozen_context(case['snapshot']) if latest else None)
  @app.post('/behavior/evaluation/<ident>')
  @login_required
  def behavior_evaluation_label(ident):

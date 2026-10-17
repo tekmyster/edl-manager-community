@@ -6,3 +6,9 @@
  .advisory-context .scroll table { min-width: 640px; }
 .advisory-context .scroll td:first-child { white-space: nowrap; }
 .advisory-context textarea { display: block; width: 100%; min-height: 6rem; padding: 10px 12px; margin-top: 5px; font: inherit; border: 1px solid var(--line); border-radius: 5px; background: #101820; color: var(--text); resize: vertical; }
+.evaluation-case { overflow-wrap: anywhere; }
+.evaluation-case .card { min-width: 0; }
+.evaluation-case .scroll table { min-width: 640px; }
+.evaluation-case small { white-space: normal; overflow-wrap: anywhere; }
+.evaluation-case textarea { display: block; width: 100%; min-height: 6rem; padding: 10px 12px; margin-top: 5px; font: inherit; border: 1px solid var(--line); border-radius: 5px; background: #101820; color: var(--text); resize: vertical; }
+.evaluation-case select { max-width: 100%; }
