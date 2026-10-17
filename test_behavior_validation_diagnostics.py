@@ -8,8 +8,8 @@ from behavior_generation import example as result
  (lambda r:r.update(classification='PRIVATE-REJECTED-LABEL'),'response_schema','label_or_enum','classification'),
  (lambda r:r.update(maliciousness_confidence=90),'response_schema','confidence','maliciousness_confidence'),
  (lambda r:r.update(**{'PRIVATE-UNEXPECTED-KEY':'PRIVATE-CONTENT'}),'response_schema','object_fields','$'),
- (lambda r:r['findings'].__setitem__(0,'PRIVATE-CITATION'),'response_schema','label_or_enum','findings.*'),
- (lambda r:r.update(classification='malicious',findings=[]),'response_schema','label_or_enum','classification'),
+ (lambda r:r['observations'].update({'PRIVATE-CITATION':'finding'}),'response_schema','object_fields','observations'),
+ (lambda r:r.update(classification='malicious'),'response_schema','label_or_enum','classification'),
 ])
 def test_rejections_record_only_fixed_codes_and_schema_paths(tmp_path,change,stage,reason,field):
  packet,unused,calls=request_fixture(tmp_path,{})

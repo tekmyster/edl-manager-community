@@ -4,6 +4,7 @@ import pytest
 from behavior_generation import VERSION,offers,prepare,decode,example,ChoiceError
 from behavior_ai import infer,DEFAULTS,validate_result,ModelOutputError
 from behavior_grounding import contract,mapping_text
+from test_generation_fixtures import observation_roles
 from test_source_observations import linked_packet
 from test_behavior_taxonomy import catalog,event
 
@@ -20,25 +21,25 @@ def transport(packet,wire,candidates=None,registry=None):
 def test_conservative_choice_round_trip_has_exact_bound_facts_and_zero_unknowns():
  p=linked_packet();wire=example(p);(value,metadata),calls=transport(p,wire)
  assert value['findings'][0] in contract(p,{})['facts'] and value['automation']==value['intent']=={'classification':'unknown','confidence':0}
- assert metadata['generation_schema_version']==VERSION and metadata['prompt_version']=='behavior-3.11'
+ assert metadata['generation_schema_version']==VERSION and metadata['prompt_version']=='behavior-3.12'
  assert calls[0]['stream'] is True and calls[0]['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
  assert set(calls[0]['format']['properties'])==set(wire)
  assert not {'analysis_summary','limitations','evidence_ids','explanation'}&set(wire)
 
 def test_complete_pair_optional_malicious_class_still_requires_full_cited_support():
  p=linked_packet();table,coverage=offers(p,[],{})
- wire=example(p);wire['classification']='malicious';wire['findings']=coverage['malicious_support_pairs'][0]
+ wire=example(p);wire['classification']='malicious';pair=coverage['malicious_support_pairs'][0];observation_roles(wire,pair)
  accepted=transport(p,wire)[0][0];validate_result(accepted,p,[],{})
  assert {e for f in accepted['findings'] for e in f['evidence_ids']}>=set(contract(p,{})['malicious_support'][0]['evidence_ids'])
- wire['findings']=wire['findings'][:1]
+ observation_roles(wire,pair[:1])
  with pytest.raises(ModelOutputError):transport(p,wire)
- wire['findings']=[]
+ observation_roles(wire)
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 @pytest.mark.parametrize('mutation',[
- lambda w:w['findings'].append(w['findings'][0]),
- lambda w:w['contradictory_evidence'].extend(w['findings']),
- lambda w:w['findings'].__setitem__(0,'PRIVATE-UNKNOWN-CHOICE'),
+ lambda w:w.update(observations=list(w['observations'])),
+ lambda w:w.update(contradictory_evidence=list(w['observations'])),
+ lambda w:w['observations'].update({'PRIVATE-UNKNOWN-CHOICE':'finding'}),
  lambda w:w.update(packet_id='other-packet'),
  lambda w:w.update(generation_schema_version='grounded-observations-3'),
  lambda w:w.update(analysis_summary='PRIVATE-TEXT'),
@@ -56,14 +57,14 @@ def test_fact_choice_cannot_be_reused_across_packets_or_bind_new_citations():
  p=linked_packet();other=copy.deepcopy(p);other['packet_id']='other';wire=example(p)
  assert set(offers(p,[],{})[0]['facts']).isdisjoint(offers(other,[],{})[0]['facts'])
  with pytest.raises(ModelOutputError):transport(other,{**wire,'packet_id':'other'})
- wire['findings']=[{'choice_id':wire['findings'][0],'evidence_ids':['PRIVATE']}]
+ wire['observations'][next(iter(wire['observations']))]={'evidence_ids':['PRIVATE']}
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 def test_mapping_choice_renders_exact_explanation_and_complete_technique_refs(catalog):
  p={'packet_id':'mappings','coverage':'saved_samples','events':[event('a','powershell execution'),event('b','authentication failure'),event('c','authentication failure')],'context':[]}
  table,_=offers(p,[],catalog);wire=example(p,registry=catalog)
- ident=next(k for k,v in table['attack'].items() if v['technique_id']=='T1110');wire['attack_techniques']=[ident]
- d3=next(k for k,v in table['d3fend'].items() if v['technique_id']=='D3-ANET');wire['d3fend_context']=[d3]
+ ident=next(k for k,v in table['attack'].items() if v['technique_id']=='T1110');wire['attack_techniques'][ident]='include'
+ d3=next(k for k,v in table['d3fend'].items() if v['technique_id']=='D3-ANET');wire['d3fend_context'][d3]='include'
  value=transport(p,wire,registry=catalog)[0][0]
  assert value['attack_techniques'][0]['evidence_ids']==['b','c']
  assert value['d3fend_context'][0]['explanation']==mapping_text('d3fend','D3-ANET',catalog['d3fend']['D3-ANET'])
@@ -125,9 +126,9 @@ def test_benign_requires_actual_cited_positive_context_and_malicious_cannot_borr
  p=linked_packet();p['context']=[{'id':'ctx-positive','kind':'intelligence','provider':'crawler','status':'ok','verified':True,'cache_fresh':True,'expires':'2099-01-01T00:00:00+00:00'}]
  table,c=offers(p,[],{});wire=example(p);wire['classification']='benign'
  assert transport(p,wire)[0][0]['classification']=='benign'
- wire['findings']=[k for k,v in table['facts'].items() if 'ctx-positive' not in v['evidence_ids']][:1]
+ observation_roles(wire,[k for k,v in table['facts'].items() if 'ctx-positive' not in v['evidence_ids']][:1])
  with pytest.raises(ModelOutputError):transport(p,wire)
- wire['classification']='malicious';pair=c['malicious_support_pairs'][0];wire['findings']=pair[:1];wire['contradictory_evidence']=pair[1:]
+ wire['classification']='malicious';pair=c['malicious_support_pairs'][0];observation_roles(wire,pair[:1]);wire['observations'][pair[1]]='counterevidence'
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 def test_repeated_current_record_cannot_be_its_own_historical_relationship():

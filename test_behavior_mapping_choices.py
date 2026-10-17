@@ -39,16 +39,16 @@ def send_result(packet,catalog,value,candidates=None):
 def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,catalog):
  wire=result(mixed);wire['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':'Unconfirmed detector observation'},{'support_id':'attack:T1046','explanation':'Separate observation'}];wire['d3fend_context']=[{'support_id':'d3fend:D3-ANET','explanation':'Defensive context only'}]
  (value,metadata),calls=send_result(mixed,catalog,wire);payload=calls[0];prompt=json.loads(payload['messages'][1]['content']);choices={kind:{kind+':'+v['technique_id']:v for v in prompt['offered'][kind].values()} for kind in ('attack','d3fend')};schema=payload['format']['properties']
- assert value['attack_techniques'][0]['evidence_ids']==['ps']
- assert value['attack_techniques'][1]['evidence_ids']==['net']
+ assert {v['technique_id']:v['evidence_ids'] for v in value['attack_techniques']}=={'T1059.001':['ps'],'T1046':['net']}
  assert value['d3fend_context'][0]['evidence_ids']==['f1','f2']
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
-  spec=schema[field]['items'];assert spec['type']=='string'
-  assert spec['enum']==list(prompt['offered'][kind])
+  spec=schema[field];assert spec['type']=='object'
+  assert list(spec['properties'])==list(prompt['offered'][kind])
+  assert all(v['enum']==['omit','include'] for v in spec['properties'].values())
   for claim in choices[kind].values():
    assert 'context-only' not in claim['evidence_ids'];validate_mapping(kind,claim,select(catalog,mixed),mixed)
  assert choices['attack']['attack:T1110']['evidence_ids']==['f1','f2']
- assert metadata['prompt_version']=='behavior-3.11' and metadata['generation_schema_version']=='grounded-choices-2'
+ assert metadata['prompt_version']=='behavior-3.12' and metadata['generation_schema_version']=='grounded-choices-3'
  assert len(payload['messages'][1]['content'].encode())<=18000 and payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
 
 @pytest.mark.parametrize('entry',[
@@ -91,7 +91,7 @@ def test_empty_unsupported_mapping_is_offered_and_remains_empty(catalog):
  (value,_),calls=send_result(packet,catalog,result(packet));prompt=json.loads(calls[0]['messages'][1]['content'])
  assert not prompt['offered']['attack'] and not prompt['offered']['d3fend']
  assert not value['attack_techniques'] and not value['d3fend_context']
- assert all(calls[0]['format']['properties'][f]['maxItems']==0 for f in ['attack_techniques','d3fend_context'])
+ assert all(calls[0]['format']['properties'][f]['properties']=={} for f in ['attack_techniques','d3fend_context'])
 
 def test_single_failed_login_never_offers_bruteforce_choice(catalog):
  packet={'packet_id':'one','coverage':'saved_samples','events':[event(action='authentication failure')],'context':[]}

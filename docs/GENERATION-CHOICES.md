@@ -1,6 +1,6 @@
 # Versioned grounded choices
 
-Prompt `behavior-3.11` uses generation schema `grounded-choices-2`. Stored results
+Prompt `behavior-3.12` uses generation schema `grounded-choices-3`. Stored results
 remain `behavior-3` and are independently checked by `grounded-observations-4`.
 Older assessments, rejections, reviews and labels remain unchanged.
 
@@ -13,13 +13,17 @@ payloads, accept unknown IDs or repair a bad classification. A legacy wire objec
 is invalid under this new protocol, including one that would otherwise be valid
 as a stored result. Test-only fixture conversion is never used by runtime code.
 
-Findings select at most two of twelve offered facts. Counterevidence has a
-separate packet/kind-scoped table, offering only up to two qualifying fresh
-positive-context statements opposing a malicious interpretation. Additional
+Each of at most twelve observations has one required keyed decision slot:
+`omit`, `finding`, or (for qualifying fresh positive context only)
+`counterevidence`. A positive observation has one identity and one role slot,
+not separate aliases for both sides. At most two findings and two counterevidence
+may be selected; overflow rejects the entire output. Counterevidence still
+opposes a malicious interpretation using only qualifying positive context. Additional
 probes, detector labels, 301/404 responses and absent evidence have no opposing
 role. Without positive context, the counterevidence list is empty. Rendering and
-the canonical validator reject facts placed in that role or reused on both sides. Mapping selections
-retain the existing eligible ATT&CK/D3FEND bounds, with at most two/one selected.
+the canonical validator reject facts placed in that role or reused on both sides. Mappings have one required `omit`/`include` slot per offered mapping. They
+retain existing eligible ATT&CK/D3FEND bounds, with at most two/one selected;
+overflow rejects rather than trimming. Zero included mappings is valid.
 One correlation may select an offered current/historical pair and confidence.
 Pair construction examines at most eight current and eight historical reports
 for one candidate (64 comparisons), offers at most eight supported pairs and
@@ -61,3 +65,21 @@ or correct interpretation from protocol success. Earlier saved assessments are
 not relabelled or rewritten. The choice-version boundary rejects the old wire;
 it never converts unsupported old outputs. New natural reliability and semantic
 usefulness remain unmeasured until separately reviewed after deployment.
+
+
+The observed3.11 convenience window had31completed and6rejected assessments:
+two repeated ATT&CK selections and four observations used on both sides. Old
+arrays could repeat a single eligible ID, and separate positive-context aliases
+could select the same claim in both roles. Version3removes those repeated slots.
+A strict inner JSON parser also rejects duplicate object members, including
+escaped equivalent keys, before Python can silently keep the last occurrence.
+Unknown/missing/foreign fields, invalid roles, excess selected claims and old
+wire versions reject. No invalid stored result is converted, deduplicated,
+filtered, retried or rewritten. Canonical classification, role, provenance and
+support checks remain mandatory and unchanged.
+
+All-omit observations/mappings and empty hypothesis/relation arrays are honest
+empty output. Required decision slots do not require any included claim. Sparse
+findings may reflect limited source detail or a model selecting no offered fact;
+protocol validity does not establish which, useful interpretation or accuracy.
+New natural model reliability under these slots remains unmeasured at staging.

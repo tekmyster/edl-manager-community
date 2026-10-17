@@ -19,9 +19,13 @@ def wire_from_storage(packet,value,candidates=None,registry=None):
  table,_=offers(packet,candidates,registry);wire=example(packet,candidates,registry)
  wire.update(classification=canonical['classification'],maliciousness_confidence=canonical['maliciousness_confidence'])
  def find(kind,value):return next(k for k,v in table[kind].items() if v==value)
- for field in ('findings','contradictory_evidence'):wire[field]=[find('counterevidence' if field=='contradictory_evidence' else 'facts',v) for v in canonical[field]]
+ wire['observations']={k:'omit' for k in wire['observations']}
+ for field,role in [('findings','finding'),('contradictory_evidence','counterevidence')]:
+  for claim in canonical[field]:wire['observations'][find('facts',claim)]=role
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
-  wire[field]=[next(k for k,v in table[kind].items() if {f:x for f,x in v.items() if f!='name'}==item) for item in canonical[field]]
+  chosen=[next(k for k,v in table[kind].items() if {f:x for f,x in v.items() if f!='name'}==item) for item in canonical[field]]
+  if len(set(chosen))!=len(chosen):raise ValueError('Duplicate fixture selection')
+  wire[field]={k:'include' if k in chosen else 'omit' for k in table[kind]}
  for field in ('automation','intent'):
   item=canonical[field];wire[field]=[] if item['classification']=='unknown' else [{'choice_id':find(field,item['classification']),'confidence':item['confidence']}]
  wire['actor_correlation']=[{'choice_id':find('relations',{k:v for k,v in item.items() if k!='confidence'}),'confidence':item['confidence']} for item in canonical['actor_correlation']]
@@ -30,3 +34,12 @@ def wire_from_storage(packet,value,candidates=None,registry=None):
 def wire_or_invalid_legacy(packet,value,candidates=None,registry=None):
  try:return wire_from_storage(packet,value,candidates,registry)
  except (ValueError,KeyError,TypeError,StopIteration):return copy.deepcopy(value)
+
+
+def observation_roles(wire,findings=(),counterevidence=()):
+ wire['observations']={k:'omit' for k in wire['observations']}
+ for key in findings:wire['observations'][key]='finding'
+ for key in counterevidence:
+  if wire['observations'].get(key)=='finding':raise ValueError('Fixture cannot assign both roles')
+  wire['observations'][key]='counterevidence'
+ return wire

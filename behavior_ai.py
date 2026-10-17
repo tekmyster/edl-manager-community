@@ -2,8 +2,8 @@
 import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.11'
-GENERATION_SCHEMA_VERSION='grounded-choices-2'
+PROMPT_VERSION='behavior-3.12'
+GENERATION_SCHEMA_VERSION='grounded-choices-3'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -397,7 +397,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
  import requests,copy
  from behavior_mapping import select
  registry=select(registry,packet)
- from behavior_generation import prepare,decode,INSTRUCTION,ChoiceError
+ from behavior_generation import prepare,decode,INSTRUCTION,ChoiceError,parse_wire
  from behavior_grounding import VERSION as GROUNDING_VERSION
  local_endpoint(cfg['endpoint'])
  candidates=list(candidates)[:1]
@@ -477,7 +477,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
   if envelope.get('done_reason')=='length':raise ModelOutputError('output_limit',metadata)
   validation_stage='json_content'
   try:
-   value=json.loads(envelope['message']['content'],parse_constant=invalid_constant)
+   value=parse_wire(envelope['message']['content'],parse_constant=invalid_constant)
    validation_stage='response_schema'
    shape(schema,value)
    validation_stage='generation_choices'

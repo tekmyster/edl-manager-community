@@ -84,7 +84,7 @@ def test_transport_pins_tls_disables_redirects_and_restricts_output(evidence):
   assert url=='https://127.0.0.1/api/chat' and kwargs['verify']=='/trusted/ca.pem' and kwargs['allow_redirects'] is False
   schema=kwargs['json']['format']['properties'];assert schema['maliciousness_confidence']['enum'][0]==0 and schema['maliciousness_confidence']['enum'][-1]==1
   assert schema['automation']['items']['properties']['confidence']['enum']==schema['maliciousness_confidence']['enum']
-  assert schema['attack_techniques']['maxItems']==0 and schema['actor_correlation']['maxItems']==0
+  assert schema['attack_techniques']['properties']=={} and schema['actor_correlation']['maxItems']==0
   assert 'tools' not in kwargs['json']
   return Response()
  assessment,metadata=infer(cfg,packet,[],{},'secret',requester=send)
@@ -130,8 +130,8 @@ def test_small_gpu_response_is_compact_and_truncation_is_rejected(evidence):
   def close(self):pass
  def send(*args,**kwargs):
   schema=kwargs['json']['format']['properties']
-  assert schema['findings']['maxItems']==2
-  assert schema['findings']['items']['type']=='string'
+  assert schema['observations']['type']=='object'
+  assert 'finding' in next(iter(schema['observations']['properties'].values()))['enum']
   assert 'analysis_summary' not in schema
   return Response()
  with pytest.raises(ValueError,match='output_limit'):
