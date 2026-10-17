@@ -161,7 +161,8 @@ def test_real_readonly_ledger_fails_safely_and_recovers_without_acl_workaround(t
         assert a.start() is False
         assert a.finish('rejected',META) is False
         ledger.event(store,'misp','hit','8.8.8.8')
-        assert 'sqlite_code=8' in caplog.text
+        codes=[r.args[1] for r in caplog.records if r.msg.startswith('Analytics persistence failed')]
+        assert codes and all(type(c) is int and c & 255 == sqlite3.SQLITE_READONLY for c in codes)
         assert str(tmp_path) not in caplog.text and 'private-packet' not in caplog.text and '8.8.8.8' not in caplog.text
     finally:directory.chmod(0o755);database.chmod(0o644)
     assert a.finish('rejected',META)
