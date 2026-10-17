@@ -62,7 +62,13 @@ def validate_settings(form):
   except ValueError:raise ValueError('Enter a valid model server port.')
  value['endpoint']=value['endpoint'].rstrip('/')
  if len(value['model'])>120 or len(value['ca_file'])>500:raise ValueError('Model name or certificate path is too long.')
- for key,lo,hi in [('window_days',1,30),('batch_size',1,100),('daily_budget',1,10000),('palo_daily_budget',1,10000),('timeout',10,180),('assessment_hours',1,168)]:
+ mode=form.get('daily_budget_mode','limited')
+ if mode not in ('limited','unlimited'):raise ValueError('Choose a daily model request limit or Unlimited.')
+ # JSON null is the explicit Unlimited value; missing mode preserves older finite forms.
+ value['daily_budget']=None
+ limits=[('window_days',1,30),('batch_size',1,100),('palo_daily_budget',1,10000),('timeout',10,180),('assessment_hours',1,168)]
+ if mode=='limited':limits.append(('daily_budget',1,10000))
+ for key,lo,hi in limits:
   try:n=int(form.get(key,DEFAULTS[key]))
   except (ValueError,TypeError):raise ValueError('Enter whole numbers for analysis limits.')
   if not lo<=n<=hi:raise ValueError('Analysis limits are outside the supported range.')
@@ -494,7 +500,7 @@ def model_job(brain,ident,packet,features,cfg,candidates=None):
     db.execute('UPDATE jobs SET attempts=0 WHERE id=?',(job['id'],))
    else:return 'leased_or_exhausted'
   used=db.execute('SELECT requests FROM usage WHERE day=?',(day,)).fetchone()
-  if used and used[0]>=cfg['daily_budget']:return 'budget'
+  if cfg['daily_budget'] is not None and used and used[0]>=cfg['daily_budget']:return 'budget'
   db.execute('INSERT INTO usage VALUES(?,1) ON CONFLICT(day) DO UPDATE SET requests=requests+1',(day,))
   db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?) ON CONFLICT(packet_id,config_id) DO UPDATE SET state=excluded.state,lease=excluded.lease,attempts=jobs.attempts+1,updated=excluded.updated',(str(uuid.uuid4()),ident,cid,'running',clock+cfg['timeout']+30,1,now()))
  secret=pathlib.Path(brain.store.path).parent/'behavior-provider.json'
@@ -555,7 +561,7 @@ def run(store,index_only=False,source_cfg=None):
   if cfg['model_enabled'] and packet['events']:
    with brain.connect() as db:db.execute('INSERT INTO analysis_queue SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM analysis_queue WHERE ip=?) OR (SELECT count(*) FROM analysis_queue)<10000 ON CONFLICT(ip) DO UPDATE SET packet_id=excluded.packet_id',(row['ip'],ident,now(),row['ip']))
  # An oldest-first fairness slot plus diverse evidence candidates within the oldest 100
- # decouples indexing from the unchanged two-call and daily-budget caps.
+ # decouples indexing from the two-call cap and optional daily request ceiling.
  # Changed windows replace pending content without losing their original place.
  scheduled_candidates=0
  if cfg['model_enabled'] and not index_only:

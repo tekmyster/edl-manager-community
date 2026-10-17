@@ -20,6 +20,7 @@ def metrics(brain, period='24h', at=None):
                           (start.isoformat(), at.isoformat())).fetchall()
         cached = db.execute("SELECT coalesce(sum(count),0) FROM analysis_counters WHERE kind='cached' AND hour>=? AND hour<?",
                             (start.isoformat(), at.isoformat())).fetchone()[0]
+        usage=db.execute('SELECT requests FROM usage WHERE day=?',(at.astimezone(dt.timezone.utc).date().isoformat(),)).fetchone()
         samples=db.execute('SELECT created,blocks FROM publication_samples WHERE created>=? AND created<?',(start.isoformat(),at.isoformat())).fetchall()
     for sample in samples:
         index=int((dt.datetime.fromisoformat(sample['created'])-start).total_seconds()//seconds)
@@ -100,10 +101,12 @@ def metrics(brain, period='24h', at=None):
             if points:ai_segments.append(' '.join(points));points=[]
         else:points.append(f"{b['x']},{b['ai_y']}")
     if points:ai_segments.append(' '.join(points))
-    cfg=brain.store.state('behavior_settings') or {}
+    from behavior_ai import settings
+    cfg=settings(brain.store)
     active=all(cfg.get(k) for k in ('enabled','model_enabled','scoring_enabled'))
     publication=(brain.store.state('latest_build') or {}).get('ai_scoring',{})
-    return {'period': period, 'start': start.isoformat(), 'end': at.isoformat(), 'bins': bins,
+    daily_usage={'day':at.astimezone(dt.timezone.utc).date().isoformat(),'requests':usage[0] if usage else 0,'limit':cfg['daily_budget']}
+    return {'daily_usage':daily_usage,'period': period, 'start': start.isoformat(), 'end': at.isoformat(), 'bins': bins,
             'totals': totals, 'peaks': peaks, 'latency_segments': segments,'ai_segments':ai_segments, 'models': sorted(models),
             'active_scoring': active, 'applied_points': publication.get('applied_points',0) if active else 0,'ai_blocks':len(publication.get('ai_only_ips',[])) if active else 0}
 

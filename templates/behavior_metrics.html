@@ -2,6 +2,7 @@
 <link rel="stylesheet" href="{{url_for('static',filename='behavior-metrics.css')}}">
 <div class="title"><div><h1>AI performance</h1><p class="muted">{{metrics.start|recorded_time}} – {{metrics.end|recorded_time}}</p></div><a href="/behavior">Analysis settings</a></div>
 <nav class="ai-toolbar" aria-label="AI metrics time range">{% for value,label in [('24h','24 hours'),('7d','7 days'),('30d','30 days')] %}<a href="?period={{value}}" {% if metrics.period==value %}aria-current="page"{% endif %}>{{label}}</a>{% endfor %}<span class="ai-mode">{{'Scoring pilot' if metrics.active_scoring else 'Shadow mode'}}</span></nav>
+<p>Daily model requests (UTC {{metrics.daily_usage.day}}): <strong>{{metrics.daily_usage.requests}} / {{metrics.daily_usage.limit if metrics.daily_usage.limit is not none else 'Unlimited'}}</strong>. This count includes attempted requests; the charts show recorded outcomes for the selected time range.</p>
 {% set total=metrics.totals %}
 <div class="ai-kpis">
 <section><h2>Tokens used</h2><strong>{{'{:,}'.format(total.tokens)}}</strong><p>{{'{:,}'.format(total.input)}} input · {{'{:,}'.format(total.output)}} output</p>{% if total.unknown_tokens %}<small>Token counts unavailable for {{total.unknown_tokens}} older or interrupted requests.</small>{% endif %}</section>
