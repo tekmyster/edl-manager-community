@@ -122,3 +122,32 @@ def test_packet_byte_bound_keeps_rare_file_original_connection_and_support(tmp_p
  def send(*args,**kwargs):requests.append(kwargs['json']);return Response()
  assert infer({**DEFAULTS,'endpoint':'https://127.0.0.1','model':'offline'},p,[],{},'',requester=send)[0]['classification']=='inconclusive'
  assert len(requests[0]['messages'][1]['content'].encode())<=18000
+
+def test_conflicting_duplicate_source_reports_abstain_and_cannot_be_reenriched():
+ from source_observations import merge_reports
+ p=linked_packet();a=p['events'][1]['source_observation'];b={**a,'connection_count':2}
+ assert merge_reports(None,a)==a
+ conflict=merge_reports(a,b)
+ assert conflict==merge_reports(conflict,a)=={'conflict':True}
+ p['events'][1]['source_observation']=conflict
+ assert 'malicious' not in contract(p,{})['classifications']
+
+@pytest.mark.parametrize('conflicting',[False,True])
+def test_packet_duplicate_merge_enriches_missing_metadata_but_abstains_on_conflicts(tmp_path,conflicting):
+ import datetime as dt
+ from core import Store
+ from behavior_ai import Brain,DEFAULTS
+ s=Store(tmp_path/'native');brain=Brain(s);at=dt.datetime(2026,10,17,10,1,tzinfo=dt.timezone.utc)
+ samples=[]
+ for e in linked_packet()['events']:
+  sample={'id':e['provenance']['upstream_id'],'seen':e['seen'],'action':e['action'],'source_observation':e['source_observation']}
+  if sample['id']=='zconn':sample.update(destination='192.168.9.1',port='22')
+  samples.append(sample)
+ early=copy.deepcopy(samples)
+ if conflicting:early[1]['source_observation']['connection_id']='conflicting-original'
+ else:
+  for sample in early:sample.pop('source_observation')
+ row=s.describe('8.8.8.8');row['activity']=[{'source':'tpot','sensor':'Cowrie','seen':at.isoformat(),'details':{'activity':{'events':items}}} for items in (early,samples)]
+ _,packet,_=brain.packet(row,DEFAULTS,at=at)
+ assert len(packet['events'])==3
+ assert ('malicious' in contract(packet,{})['classifications']) is (not conflicting)

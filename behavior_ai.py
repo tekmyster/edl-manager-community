@@ -157,6 +157,9 @@ class Brain:
     if normalized.get('endpoint_hint'):event['endpoint_hint']=normalized['endpoint_hint']
     if normalized.get('source_observation'):event['source_observation']=normalized['source_observation']
     if eid in events:
+     from source_observations import merge_reports
+     observation=merge_reports(events[eid].get('source_observation'),event.get('source_observation'))
+     if observation:events[eid]['source_observation']=observation
      events[eid]['independent_evidence']=events[eid]['independent_evidence'] and event['independent_evidence']
      for counter in ('native_attempts','native_records'):events[eid][counter]=max(events[eid][counter],event[counter])
      continue
@@ -168,7 +171,11 @@ class Brain:
     if sensor:features.add('sensor:'+sensor)
   for cached in priority_events+history['events']:
    if not timestamp(cached.get('seen')) or not cut<=timestamp(cached['seen'])<=at+dt.timedelta(minutes=5):continue
-   if cached['id'] not in events:
+   if cached['id'] in events:
+    from source_observations import merge_reports
+    observation=merge_reports(events[cached['id']].get('source_observation'),cached.get('source_observation'))
+    if observation:events[cached['id']]['source_observation']=observation
+   else:
     events[cached['id']]=cached
     if cached['path']:features.add('path:'+cached['path'])
     if cached['action']:features.add('action:'+cached['action'].casefold())

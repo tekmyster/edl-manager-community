@@ -45,6 +45,11 @@ def _time(value):
   return parsed if parsed.tzinfo else None
  except ValueError:return None
 
+def merge_reports(left,right):
+ """Missing old metadata can be enriched; conflicting copies always abstain."""
+ if left and right and left!=right:return {'conflict':True}
+ return left or right or {}
+
 def connections(events):
  """Resolve only a co-included, unique original connection; never fill a target.
 
