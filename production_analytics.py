@@ -141,7 +141,10 @@ def summary(brain, timezone='UTC', at=None):
             matched=sum(v.get('found') is True for v in payloads) if provider=='greynoise' else sum(v.get('matches',0)+v.get('context_matches',0)>0 for v in payloads)
             indicators={str(i) for v in payloads for i in v.get('attribute_ids',[]) if isinstance(i,(str,int))}
             cache_snapshot.append(dict(provider=provider,entries=len(saved),fresh=len(fresh),stale=sum(bool(parse(r['expires']) and parse(r['expires'])<=at) for r in saved),matched=matched,indicator_ids=len(indicators),latest=max((r['fetched'] for r in saved),default=None)))
-    return dict(start=stamp(start),end=stamp(at),day_start=stamp(midnight),hour_start=stamp(hour),timezone=timezone,bins=bins,peaks=peaks,cache_snapshot=cache_snapshot,classifications=dict(classifications),
+    from behavior_feedback import report as feedback_report
+    try:usefulness=feedback_report(brain)
+    except (sqlite3.Error,OSError):usefulness={'available':False,'helpful_rate':None}
+    return dict(usefulness=usefulness,start=stamp(start),end=stamp(at),day_start=stamp(midnight),hour_start=stamp(hour),timezone=timezone,bins=bins,peaks=peaks,cache_snapshot=cache_snapshot,classifications=dict(classifications),
                 day_input=day_input,day_output=day_output,day_tokens=day_input+day_output,day_known=day_known,day_unknown=day_unknown,
                 first_seconds=mean(measured),first_samples=len(measured),day_attempts=sum(parse(r['started'])>=midnight for r in attempts),
                 hour_requests=len(current),hour_outcomes=dict(Counter(r['state'] for r in current)),coverage=coverage,error=error,

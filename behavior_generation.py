@@ -6,7 +6,7 @@ object's fixed text and citations; canonical grounding still validates it all.
 import copy,itertools,json
 from behavior_grounding import contract,mapping_text,shared,SUMMARIES,LIMITS,RELATION,ALTERNATIVE
 
-VERSION='grounded-choices-4'
+VERSION='grounded-choices-5'
 from behavior_grounding import MAX_FACTS
 from behavior_mapping import MAX_ATTACK,MAX_DEFEND
 SELECTION_BOUNDS={'facts':MAX_FACTS,'attack':MAX_ATTACK,'d3fend':MAX_DEFEND}

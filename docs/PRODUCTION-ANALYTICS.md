@@ -31,7 +31,7 @@ provider key, prompt or response body is exposed through this endpoint.
 - Acceptance means the complete output passed the existing schema, evidence,
   grounding, mapping and correlation validation. It does not establish accuracy or
   usefulness. Independent quality judgments retain the separate immutable review
-  cohort and its coverage. No overall helpful/unhelpful rating is currently collected.
+  cohort and its coverage. Overall usefulness is collected separately as explicit helpful, not helpful or uncertain assessment feedback; prior labels and support ratings never supply it.
 - Cache reads, writes, outbound attempts, local MISP queries and imports are
   different counters. Cache writes include in-flight and failed entries and cannot
   establish requests avoided. Positive plus negative successful reads divided by

@@ -5,7 +5,7 @@ source fields remain untrusted reports. Older stored assessments are not rewritt
 """
 import re
 
-VERSION='grounded-observations-4'
+VERSION='grounded-observations-5'
 MAX_FACTS=12
 MAX_SIGNAL_EVENTS=24
 MAX_SUPPORT_BUNDLES=6
@@ -30,6 +30,13 @@ def mapping_text(kind,ident,name):
  name=str(name)[:50]
  if kind=='d3fend':return f'Defensive context {ident} ({name}) for cited source reports; deployment, prevention, attacks and tests are unverified.'
  return f'Candidate {ident} ({name}) describes cited source reports; intent, subtype and successful execution remain unverified.'
+
+SYNTAX_LABELS={'permission_change':'permission change','output_redirection':'output redirection','interpreter_input':'interpreter input','relative_execution':'relative execution syntax','network_client_input':'network-client input'}
+
+def recorded_syntax(observation):
+ values=observation.get('syntax_categories')
+ if observation.get('version')!='source-observations-1' or not isinstance(values,list) or len(values)>5 or any(not isinstance(v,str) or v not in SYNTAX_LABELS for v in values):return None
+ return [k for k in SYNTAX_LABELS if k in values]
 
 def shared(left,right):
  from behavior_correlation import GENERIC_PATHS
@@ -61,7 +68,7 @@ are required. Copies, repeated labels, paths alone and generic failures abstain.
    if re.fullmatch(pattern+r'(?: detected)?',action):features.add('reported:'+ident)
   # Machine event semantics are recognized independently of collector branding.
   semantic=(event.get('source_observation') or {}).get('semantic')
-  syntax=(event.get('source_observation') or {}).get('syntax_categories',[])
+  syntax=recorded_syntax(event.get('source_observation') or {}) or []
   if action=='cowrie.command.input' and semantic=='shell_input' and any(v in syntax for v in ('permission_change','interpreter_input','relative_execution')):features.add('reported:shell_staging_input')
   if action=='cowrie.session.file_download' and semantic in ('file_capture','network_fetch'):features.add('reported:'+semantic)
   method=event.get('method');path=event.get('path','');status=str(event.get('status',''))
@@ -123,6 +130,18 @@ def contract(packet,registry):
   if e.get('method') and e.get('path') and not re.fullmatch(FAILURE,action.casefold()):
    statement=f'Saved request: {safe_text(e["method"],8)} {safe_text(e["path"],70)}; status {safe_text(e.get("status"),3) or "unavailable"}; source {source}.'
   connection=linked.get(e['id'])
+  # Describe existing privacy-safe machine metadata, never reconstruct input
+  # text or promote syntax/session linkage into execution or authorization.
+  if action=='cowrie.command.input' and semantic=='shell_input':
+   syntax=recorded_syntax(e.get('source_observation') or {})
+   if syntax is not None:
+    names=[SYNTAX_LABELS[k] for k in syntax]
+    statement+=(' Recorded syntax categories: '+', '.join(names)+'.') if names else ' No allowlisted syntax category was recorded.'
+   else:statement+=' Syntax detail unavailable.'
+  if connection and action in ('cowrie.command.input','cowrie.session.file_download'):
+   seconds=(timestamp(e['seen'])-timestamp(connection['seen'])).total_seconds()
+   elapsed=f'{seconds:.3f}'.rstrip('0').rstrip('.')
+   statement+=f' Same-source session link: about {elapsed} seconds after its cited connection.'
   refs=list(dict.fromkeys([e['id']]+([connection['id']] if connection else [])))
   facts.append({'summary':statement,'evidence_ids':refs})
  for c in packet.get('context',[]):

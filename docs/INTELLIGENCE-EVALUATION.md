@@ -44,6 +44,34 @@ this explicitly and avoid assuming chronological return ordering.
 The existing relationship review remains the sole group
 membership path and preserves rejection/split/merge revisions.
 
+## Assessment usefulness
+
+After an initial blind label, a separate **Assessment usefulness** form records
+Helpful, Not helpful or Uncertain for the exact completed assessment frozen with
+the case. It does not change the independent activity label or mapping support.
+The former “Supported / useful” option is labelled “Supported”; old stored values
+and reviews keep their original meaning and are never converted into helpfulness.
+
+Each usefulness save appends reviewer, assessment/case identity, timestamp,
+up to twelve distinct cited original observation IDs, practical-difference
+rationale and the exact frozen snapshot hash. Helpful requires at least one
+original cited observation present in the immutable case. Later live evidence
+cannot substitute. The original assessment must still agree with its frozen
+copy. Database triggers reject update/delete of feedback history. Feedback
+does not create labels, scores, relationships or enforcement actions.
+
+Dashboard, analytics JSON/page and independent evaluation use the same retained
+cohort definition: latest 100 review cases, one latest valid explicit rating per
+distinct completed frozen assessment. Helpful rate is helpful divided by helpful
+plus not helpful. Uncertain and absent ratings are counted separately. No binary
+ratings means an unavailable rate, not zero percent. Read failures remain unknown;
+feedback with mismatched snapshot provenance is excluded and disclosed. This
+cohort is independent of operational chart time windows. Drilldowns retain rating
+history and the separate support review. Usefulness is reviewer-attested and does
+not establish population accuracy, calibrated confidence or incremental native
+policy benefit; the existing independently labelled paired-policy report remains
+a separate measure. Accurate repeated generic source facts may be unhelpful.
+
 Each pass reads at most 32 earlier same-IP windows, three existing cross-IP peers
 and 32 reference rules. Oldest-first cleanup removes at most 100 unreviewed alert
 observations older than 90 days per pass and releases their packet references.
@@ -264,7 +292,7 @@ detector descriptions independent ground truth.
 
 ## Grounded observation contract
 
-Prompt `behavior-3.13` and generation contract `grounded-choices-4` select scoped offered objects and render exact bounded source-report statements with their bound citations. The canonical grounding validator remains `grounded-observations-4`; see [generation choices](GENERATION-CHOICES.md). At most twelve statements are offered. The acceptance validator recomputes the contract independently: valid event IDs alone cannot support authentication failures, shared tooling, collaboration, tests or defensive-control deployment. ATT&CK and D3FEND explanations use fixed server-approved language bound to the selected technique. D3FEND remains optional defensive context. Historical similarity requires actual common request structure or a supplied client label in both cited sides, with spoofing/shared-infrastructure alternatives; generic connection overlap alone does not qualify.
+Prompt `behavior-3.14` and generation contract `grounded-choices-5` select scoped offered objects and render exact bounded source-report statements with their bound citations. The canonical grounding validator remains `grounded-observations-5`; see [generation choices](GENERATION-CHOICES.md). At most twelve statements are offered. The acceptance validator recomputes the contract independently: valid event IDs alone cannot support authentication failures, shared tooling, collaboration, tests or defensive-control deployment. ATT&CK and D3FEND explanations use fixed server-approved language bound to the selected technique. D3FEND remains optional defensive context. Historical similarity requires actual common request structure or a supplied client label in both cited sides, with spoofing/shared-infrastructure alternatives; generic connection overlap alone does not qualify.
 
 No provider-authored narrative is accepted in findings, contradictions, mapping/correlation explanations, summary or limitations. The provider selects bounded observations and interpretations; it cannot invent supporting facts. This deliberately reduces narrative flexibility and may abstain or reject more often. A permitted observation is a source report, not independently established truth. The contract is not a semantic accuracy, authorization or identity oracle.
 

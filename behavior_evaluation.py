@@ -13,6 +13,8 @@ CREATE TRIGGER IF NOT EXISTS evaluation_case_refs AFTER INSERT ON evaluation_cas
 END;
 '''
 BASES={'owner_verified':'Owner-confirmed activity','raw_event_review':'Independent raw-event investigation','authorized_test_record':'Previously documented authorized test'}
+from behavior_feedback import SCHEMA as FEEDBACK_SCHEMA
+SCHEMA+=FEEDBACK_SCHEMA
 
 def capture(brain,ident):
  """Freeze evidence and real decision context. Historical policy stays unknown."""
@@ -88,7 +90,11 @@ def cases(brain,ident=None):
  with brain.connect() as db:
   rows=db.execute('SELECT * FROM evaluation_cases '+('WHERE id=? ' if ident else '')+'ORDER BY created DESC LIMIT 100',([ident] if ident else [])).fetchall();result=[]
   for row in rows:
-   item=dict(row);item['snapshot']=json.loads(row['snapshot']);item['labels']=[dict(r) for r in db.execute('SELECT * FROM evaluation_labels WHERE case_id=? ORDER BY rowid DESC LIMIT 50',(row['id'],))];result.append(item)
+   item=dict(row);item['snapshot']=json.loads(row['snapshot']);item['labels']=[dict(r) for r in db.execute('SELECT * FROM evaluation_labels WHERE case_id=? ORDER BY rowid DESC LIMIT 50',(row['id'],))]
+   from behavior_feedback import snapshot_hash
+   item['snapshot_sha256']=snapshot_hash(row['snapshot']);item['feedback']=[dict(r) for r in db.execute('SELECT rowid sequence,* FROM assessment_feedback WHERE case_id=? ORDER BY rowid DESC LIMIT 50',(row['id'],))]
+   for rating in item['feedback']:rating['evidence_ids']=json.loads(rating['evidence_ids'])
+   item['latest_feedback']=next((r for r in item['feedback'] if r['assessment_id']==row['assessment_id'] and r['snapshot_sha256']==item['snapshot_sha256']),None);result.append(item)
  return result
 
 def ratio(a,b):return round(a/b,4) if b else None
@@ -125,4 +131,7 @@ def report(brain):
  items=cases(brain);result=evaluate(items)
  with brain.connect() as db:result['total_cases']=db.execute('SELECT count(*) FROM evaluation_cases').fetchone()[0]
  result['limited']=result['total_cases']>len(items)
+ from behavior_feedback import summarize
+ result['usefulness']=summarize(items)
+ result['usefulness'].update(total_cases=result['total_cases'],limited=result['limited'])
  return result

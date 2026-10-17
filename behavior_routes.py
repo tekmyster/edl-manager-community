@@ -90,7 +90,16 @@ def register(app,store,cfg,login_required):
   found=cases(service,ident)
   if not found:abort(404)
   case=found[0];latest=case['labels'][0] if case['labels'] else None
-  return render_template('behavior_evaluation_case.html',case=case,bases=BASES,latest=latest,latest_quality=saved_object(latest['quality']) if latest else {},frozen=frozen_context(case['snapshot']) if latest else None)
+  from behavior_feedback import observations,eligible
+  return render_template('behavior_evaluation_case.html',case=case,bases=BASES,latest=latest,latest_quality=saved_object(latest['quality']) if latest else {},frozen=frozen_context(case['snapshot']) if latest else None,feedback_observations=observations(case['snapshot']) if latest else [],feedback_eligible=eligible(case))
+ @app.post('/behavior/evaluation/<ident>/feedback')
+ @login_required
+ def behavior_evaluation_feedback(ident):
+  from behavior_feedback import save
+  try:save(service,ident,request.form,session['user'])
+  except ValueError as exc:flash(str(exc),'error')
+  else:flash('Assessment feedback saved. Earlier ratings remain in history.','success')
+  return redirect(url_for('behavior_evaluation_case',ident=ident,_anchor='assessment-feedback'))
  @app.post('/behavior/evaluation/<ident>')
  @login_required
  def behavior_evaluation_label(ident):

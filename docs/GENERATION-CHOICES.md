@@ -1,7 +1,7 @@
 # Versioned grounded choices
 
-Prompt `behavior-3.13` uses generation schema `grounded-choices-4`. Stored results
-remain `behavior-3` and are independently checked by `grounded-observations-4`.
+Prompt `behavior-3.14` uses generation schema `grounded-choices-5`. Stored results
+remain `behavior-3` and are independently checked by `grounded-observations-5`.
 Older assessments, rejections, reviews and labels remain unchanged.
 
 The model selects opaque IDs scoped to the packet, choice kind and complete
@@ -115,3 +115,25 @@ Supervisor observed that a naturally indexed newer window superseded it; that
 window had lower richness and was queued, with no new interpretation claimed.
 Preserving useful session context across such windows remains an open dependency,
 along with independently labelled accuracy, calibration and usefulness.
+
+Version 5 makes already-collected honeypot metadata visible in fixed source
+facts: allowlisted shell-input syntax categories and elapsed time from an
+unambiguous cited connection in the same source session. It never exposes command
+text, raw sessions, file names, URLs, hashes, credentials or payloads. At most five
+fixed category labels are possible; missing/malformed metadata stays unavailable.
+The syntax parser now also fails closed for malformed source category values;
+valid existing sufficiency features and all classification guards are unchanged.
+The elapsed interval is derived from original aware timestamps through the
+existing unique session resolver (same stream, target/port and <=15 minutes).
+Missing, reused or conflicting links do not create a time/session claim.
+
+These are source reports of syntax and linkage, not execution, maliciousness,
+authorization, successful transfer or operator identity. Fact counts/citations,
+support bundles, offer bounds and model input/context/output limits are preserved.
+No NetFlow/IRC adapter, invented detector action or broadened verdict eligibility
+is added. The external CTU input-only pilot remains inadequate for current
+positive-discrimination testing; no inference is authorized merely by this text
+repair. Authentic saved honeypot before/after offers support representation QA,
+not independent attack labels or useful-model conclusions. Older stored outputs
+remain immutable historical results; new prompt/choice/grounding versions isolate
+the new contract without revalidating or rewriting old history.
