@@ -145,3 +145,10 @@ The table region is keyboard-focusable for horizontal scrolling. It contains
 positioned off-screen header labels inside its own scroll boundary; closed
 filter panels do not expand page geometry. Date disclosures support Escape and
 retain viewport placement during scrolling.
+
+Chart defaults keep titles, values, units, ranges, compact legends and short
+unknown/partial/error statuses. Contextual help holds measurement definitions,
+lineage and review caveats; interval details appear on pointer or keyboard focus
+and clear when interaction leaves. Equivalent interval tables remain available.
+AI performance keeps full completion duration separate from first content.
+Narrow performance charts retain legible axes in a focusable horizontal scroller.
