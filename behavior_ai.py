@@ -191,15 +191,21 @@ class Brain:
   if total>len(selected):missing.add('Only a bounded subset of saved samples was included')
   from behavior_context import context as build_context
   content={'version':VERSION,'window_days':cfg['window_days'],'events':selected,'context':build_context(self.store,row,source_cfg,at),'source_counts':source_counts,'coverage':'saved_samples','history_coverage':{k:v for k,v in history.items() if k!='events'},'sequence':{},'limitations':sorted(missing|{'Saved source summaries are not a complete raw event history','Intelligence and history are bounded, field-allowlisted context','Native attempt/record counters summarize parent buckets; do not sum repeated bucket counts across samples','TLS and header-order fingerprints are not collected by this packet builder'})}
-  while len(json.dumps(content,ensure_ascii=True).encode())>11200 and content['events']:
+  def sequence_value():
+   chosen=sorted(content['events'],key=lambda e:(e['seen'],e['id']))
+   return {'available':total,'cached_total':history['total'],'cached_read':len(history['events']),'included':len(chosen),'partial':True,'selection':'complete source session groups and indexed advisory-pattern events, then source time endpoints and spaced positions, bounded by bytes','first':chosen[0]['seen'] if chosen else None,'last':chosen[-1]['seen'] if chosen else None}
+  content['sequence']=sequence_value()
+  # Include the fixed-size identity and preparation metadata in the byte budget.
+  while len(json.dumps({**content,'packet_id':'pkt_'+'0'*64,'prepared_at':at.isoformat(timespec='seconds')},ensure_ascii=True).encode())>11200 and content['events']:
    removed=content['events'].pop()
    if removed.get('action')=='cowrie.session.connect':
     origin=(removed.get('provenance') or {}).get('upstream_id')
     content['events']=[e for e in content['events'] if not origin or (e.get('source_observation') or {}).get('connection_id')!=origin]
    if 'Input limited to a bounded evidence subset' not in content['limitations']:content['limitations'].append('Input limited to a bounded evidence subset')
+   content['sequence']=sequence_value()
   content['events']=sorted(content['events'],key=lambda e:(e['seen'],e['id']))
   chosen_events=content['events']
-  content['sequence']={'available':total,'cached_total':history['total'],'cached_read':len(history['events']),'included':len(chosen_events),'partial':True,'selection':'complete source session groups and indexed advisory-pattern events, then source time endpoints and spaced positions, bounded by bytes','first':chosen_events[0]['seen'] if chosen_events else None,'last':chosen_events[-1]['seen'] if chosen_events else None}
+  content['sequence']=sequence_value()
   ident='pkt_'+digest([row['ip'],content])
   content['packet_id']=ident;content['prepared_at']=at.isoformat(timespec='seconds')
   with self.connect() as db:
