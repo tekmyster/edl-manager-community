@@ -163,6 +163,9 @@ when the ledger write fails. The behavior worker reconciles at most50assessment
 metadata rows per pass in one short analytics transaction, at worker maintenance
 and after saving an assessment. Its restartable rowid cursor advances only after
 the ledger transaction commits; busy pages retry without extra model requests.
+The watermark binds rowid and assessment identity, so retention deletion or
+rowid reuse safely restarts a bounded, idempotent scan. Cursor updates use a
+compare-and-swap to avoid concurrent recovery moving progress backwards.
 This path never modifies verdicts, reviews, usage or native data. Completed ledger
 rows remain immutable; request ID and packet binding must match. Receipts older
 than the35day ledger retention are not resurrected.

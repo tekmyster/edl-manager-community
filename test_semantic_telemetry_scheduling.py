@@ -193,3 +193,14 @@ def test_existing_priority_reindex_is_versioned_bounded_and_restartable(tmp_path
         plan=' '.join(r[3] for r in db.execute('EXPLAIN QUERY PLAN SELECT rowid,id FROM packets WHERE rowid<? ORDER BY rowid DESC LIMIT 200',(999,)))
         assert 'INTEGER PRIMARY KEY' in plan and 'TEMP B-TREE' not in plan
     assert backfill(Brain(b.store))['scanned']==5 and not backfill(b)['partial']
+
+
+def test_recovery_watermark_survives_retention_and_reused_rowids(tmp_path):
+    b=Brain(Store(tmp_path/'native'));saved(b,'removed','p',{})
+    assert recover(b)['scanned']==1
+    with b.connect() as db:db.execute('DELETE FROM assessments')
+    a=ledger.Attempt(b.store,'new-packet');a.start();meta=dict(META);meta['request_id']=a.id
+    # Simulate a durable completion with no successful finish write.
+    saved(b,'replacement','new-packet',meta)
+    assert recover(Brain(b.store))['recovered']==1
+    with ledger.connect(b.store) as db:assert db.execute('SELECT state FROM requests WHERE id=?',(a.id,)).fetchone()[0]=='accepted'

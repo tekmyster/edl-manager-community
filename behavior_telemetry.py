@@ -48,7 +48,17 @@ def recover(brain,limit=50):
         with sqlite3.connect(str(brain.path),timeout=.025) as db:
             db.row_factory=sqlite3.Row
             row=db.execute("SELECT value FROM retention_state WHERE name='telemetry_cursor'").fetchone()
-            cursor=int(row[0]) if row else 0
+            saved_cursor=row[0] if row else None
+            try:marker=json.loads(saved_cursor) if saved_cursor else {}
+            except (ValueError,TypeError):marker={}
+            if not isinstance(marker,dict):marker={}
+            cursor=marker.get('rowid',0)
+            if type(cursor) is not int or cursor<0:cursor=0
+            previous=db.execute('SELECT id FROM assessments WHERE rowid=?',(cursor,)).fetchone() if cursor else None
+            # Retention may delete the watermark and SQLite can reuse rowids.
+            # Identity loss restarts the bounded scan; idempotence prevents
+            # double counting, and a compare-and-swap avoids a racing rewind.
+            if cursor and (not previous or previous[0]!=marker.get('id')):cursor=0
             rows=db.execute("SELECT rowid,id,packet_id,created,status,json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.metadata') metadata FROM assessments WHERE rowid>? ORDER BY rowid LIMIT ?",(cursor,limit)).fetchall()
         result['scanned']=len(rows)
         if not rows:return result
@@ -70,7 +80,8 @@ def recover(brain,limit=50):
                     db.execute('INSERT OR IGNORE INTO request_recovery VALUES(?,?,?)',(ident,source['id'],source['created']))
                     result['recovered']+=1
         with sqlite3.connect(str(brain.path),timeout=.025) as db:
-            db.execute("INSERT INTO retention_state VALUES('telemetry_cursor',?) ON CONFLICT(name) DO UPDATE SET value=CAST(max(CAST(value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",(str(rows[-1]['rowid']),))
+            next_cursor=json.dumps({'rowid':rows[-1]['rowid'],'id':rows[-1]['id']},sort_keys=True)
+            db.execute("INSERT INTO retention_state VALUES('telemetry_cursor',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value WHERE value=?",(next_cursor,saved_cursor))
             result['partial']=bool(db.execute('SELECT 1 FROM assessments WHERE rowid>? LIMIT 1',(rows[-1]['rowid'],)).fetchone())
         return result
     except (sqlite3.Error,OSError,ValueError,TypeError) as exc:
