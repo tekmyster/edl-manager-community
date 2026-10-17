@@ -29,10 +29,13 @@ def richness(packet):
  events=p['events'][:160];linked=connections(events);groups={}
  for e in events:
   if e['id'] not in linked:continue
-  origin=(e.get('provenance') or {}).get('upstream_id')
+  provenance=e.get('provenance') or {}
+  if provenance.get('detail')!='sample':continue
+  origin=provenance.get('upstream_id')
   semantic=(e.get('source_observation') or {}).get('semantic')
   if not origin or semantic not in ('shell_input','interactive_input','file_capture','network_fetch'):continue
-  groups.setdefault(linked[e['id']]['id'],set()).add((origin,semantic))
+  stage='input' if semantic in ('shell_input','interactive_input') else 'capture'
+  groups.setdefault(linked[e['id']]['id'],set()).add((origin,stage))
  coherent=any(len({v[0] for v in values})>=2 and len({v[1] for v in values})>=2 for values in groups.values())
  return base+(8 if coherent else 0)
 

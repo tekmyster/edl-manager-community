@@ -82,6 +82,18 @@ def test_known_legacy_pending_completion_recovers_without_inventing_times_or_row
     assert report['outcomes']=={'accepted':1} and report['completion_time_unknown']==1
     # Both distinct observed completions retain tokens; only one known dispatch.
     assert report['day_tokens']==2*(2981+181) and report['historical_completions']==1
+    from app import create_app
+    app=create_app({'database':str(b.store.path),'output':str(tmp_path/'output'),'providers_file':str(tmp_path/'keys'),'session_secret':'test-only','hosts':['localhost']})
+    app.testing=True;client=app.test_client()
+    with app.store.connect() as db:db.execute('INSERT INTO users VALUES(?,?,?)',('fixture','hash',1))
+    with client.session_transaction() as session:session.update(user='fixture',version=1,expires_at=time.time()+3600,csrf='test-only')
+    response=client.get('/analytics',base_url='https://localhost');assert response.status_code==200
+    assert b'Recovered completion timing: 1 without exact finish times.' in response.data
+    assert b'Token charts use saved assessment times.' in response.data
+    import os,pathlib
+    if os.environ.get('INTELLIGENCE_UI_EXPORT'):
+        folder=pathlib.Path(os.environ['INTELLIGENCE_UI_EXPORT']);folder.mkdir(exist_ok=True)
+        (folder/'recovered-analytics.html').write_bytes(response.data)
     earlier=summary(b,at=dt.datetime(2026,10,17,19,8,56,tzinfo=dt.timezone.utc))
     assert earlier['outcomes']=={'pending':1} and earlier['first_samples']==0 and earlier['day_tokens']==0
 
@@ -162,6 +174,7 @@ def test_coherent_session_beats_recent_generic_paths_without_losing_fairness(tmp
     lambda p:p['events'].pop(0),
     lambda p:p['events'][1]['source_observation'].update(session_ref='0'*64),
     lambda p:p['events'][2]['source_observation'].update(semantic='shell_input'),
+    lambda p:p['events'][2]['source_observation'].update(semantic='interactive_input'),
     lambda p:p['events'][2]['provenance'].update(upstream_id=p['events'][1]['provenance']['upstream_id']),
 ])
 def test_missing_conflicted_or_repeated_session_reports_have_no_sequence_bonus(mutation):
