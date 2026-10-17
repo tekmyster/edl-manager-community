@@ -5,8 +5,10 @@ source fields remain untrusted reports. Older stored assessments are not rewritt
 """
 import re
 
-VERSION='grounded-observations-1'
+VERSION='grounded-observations-2'
 MAX_FACTS=12
+MAX_SIGNAL_EVENTS=24
+MAX_SUPPORT_BUNDLES=6
 LIMITS=['Saved source reports are partial and may be wrong; authorization, ownership and successful exploitation are unverified.',
         'Model interpretations and maliciousness estimates are uncalibrated. Shared tools or addresses do not identify an operator.']
 SUMMARIES={
@@ -29,15 +31,67 @@ def shared(left,right):
  client=bool(isinstance(a,dict) and isinstance(b,dict) and a.get('label') and a.get('label')==b.get('label'))
  return request or client
 
+def sufficiency(events):
+ """Offer interpretations, never verdicts, from coherent distinct source reports.
+
+Source/sensor names confer no privilege. Detailed original-record provenance,
+time/target or collection scope, and two different supported behavior features
+are required. Copies, repeated labels, paths alone and generic failures abstain.
+"""
+ from behavior_ai import timestamp
+ from behavior_mapping import DETECTORS
+ from behavior_references import endpoint_hint
+ signals=[]
+ for event in events:
+  provenance=event.get('provenance') or {};origin=provenance.get('upstream_id') or provenance.get('record_id')
+  seen=timestamp(event.get('seen'))
+  if provenance.get('detail')!='sample' or not origin or not seen or not event.get('id') or not event.get('source') or not event.get('sensor'):continue
+  action=event.get('action','').casefold();features=set()
+  for ident,pattern,_ in DETECTORS:
+   if re.fullmatch(pattern+r'(?: detected)?',action):features.add('reported:'+ident)
+  # Machine event semantics are recognized independently of collector branding.
+  if action=='cowrie.command.input':features.add('reported:T1059')
+  if action=='cowrie.session.file_download':features.add('reported:T1105')
+  method=event.get('method');path=event.get('path','');status=str(event.get('status',''))
+  if method=='POST' and path and status.isdigit() and 100<=int(status)<=599:
+   category=endpoint_hint(path)
+   if '[identifier]' in path and event.get('endpoint_hint') in ('phpunit_eval_stdin','apache_cgi_traversal'):category=event['endpoint_hint']
+   if category:features.add('targeting:'+category)
+  if not features:continue
+  destination=event.get('destination') or {};target=destination.get('asset_id') or destination.get('address')
+  signals.append({'event':event,'origin':origin,'seen':seen,'features':features,'target':target})
+ # Bound pair comparisons and explicitly expose partial support coverage.
+ signals=sorted(signals,key=lambda x:x['event']['id']);available=len(signals);signals=signals[:MAX_SIGNAL_EVENTS];bundles=[]
+ for index,left in enumerate(signals):
+  for right in signals[index+1:]:
+   a=left['event'];b=right['event']
+   if left['origin']==right['origin'] or a['id']==b['id'] or abs((left['seen']-right['seen']).total_seconds())>900:continue
+   signature=lambda e:(timestamp(e.get('seen')),e.get('method'),e.get('path'),str(e.get('port','')))
+   if signature(a)==signature(b):continue
+   if a.get('method') and a.get('path') and (a.get('method'),a.get('path'),str(a.get('port','')))==(b.get('method'),b.get('path'),str(b.get('port',''))) and abs((left['seen']-right['seen']).total_seconds())<=1:continue
+   # Two copies/repetitions of one feature are not corroborating behavior.
+   if left['features']==right['features']:continue
+   target_match=bool(left['target'] and left['target']==right['target'])
+   if left['target'] and right['target'] and not target_match:continue
+   pa=a.get('provenance') or {};pb=b.get('provenance') or {};port=str(a.get('port',''))
+   stream_match=bool(pa.get('collector_agent') and pa.get('collector_agent')==pb.get('collector_agent') and (a['source'],a['sensor'])==(b['source'],b['sensor']) and port==str(b.get('port','')) and port.isdigit() and 1<=int(port)<=65535)
+   if not target_match and not stream_match:continue
+   bundles.append({'evidence_ids':[a['id'],b['id']],'basis':'Distinct sampled reports within 15 minutes; '+('matching observed target' if target_match else 'matching recorded collector stream and port')+'; different supported behavior features. Authorization and successful compromise remain unknown.'})
+   if len(bundles)==MAX_SUPPORT_BUNDLES:break
+  if len(bundles)==MAX_SUPPORT_BUNDLES:break
+ return bundles,{'available_signal_events':available,'examined_signal_events':len(signals),'signal_bound':MAX_SIGNAL_EVENTS,'support_bundle_bound':MAX_SUPPORT_BUNDLES,'pair_bound':276}
+
 def contract(packet,registry):
  from behavior_ai import safe_text,timestamp,now
  from behavior_mapping import select,FAILURE
- eligible=select(registry,packet);facts=[];positive=[];strong=[]
+ eligible=select(registry,packet);facts=[];positive=[]
  events=list(packet.get('events',[]))
- # Prefer actual explicit failures/commands to generic connection summaries.
+ bundles,support_coverage=sufficiency(events)
+ support_ids=list(dict.fromkeys(i for b in bundles for i in b['evidence_ids']))
+ # Prefer complete sufficient pairs, then actual failures, over generic reports.
  def priority(e):
   action=e.get('action','').casefold()
-  return (0 if re.fullmatch(FAILURE,action) else 1 if action in ('cowrie.command.input','cowrie.session.file_download') else 2,e.get('id',''))
+  return (0 if e.get('id') in support_ids else 1 if re.fullmatch(FAILURE,action) else 2,e.get('id',''))
  events=sorted(events,key=priority)
  for e in events:
   if not e.get('id'):continue
@@ -46,7 +100,6 @@ def contract(packet,registry):
   if e.get('method') and e.get('path') and not re.fullmatch(FAILURE,action.casefold()):
    statement=f'Saved request: {safe_text(e["method"],8)} {safe_text(e["path"],70)}; status {safe_text(e.get("status"),3) or "unavailable"}; source {source}.'
   facts.append({'summary':statement,'evidence_ids':[e['id']]})
-  if (e.get('provenance') or {}).get('detail')=='sample' and e.get('source')=='tpot' and e.get('sensor','').casefold()=='cowrie' and action in ('cowrie.command.input','cowrie.session.file_download'):strong.append(e['id'])
  for c in packet.get('context',[]):
   expiry=timestamp(c.get('expires'));fresh=c.get('status')=='ok' and c.get('cache_fresh') is True and expiry is not None and expiry>timestamp(now())
   if c.get('kind')!='intelligence' or not fresh or not c.get('id'):continue
@@ -56,16 +109,17 @@ def contract(packet,registry):
    positive.append({'summary':'Fresh cached GreyNoise benign classification is positive context, not independent proof of request authorization.','evidence_ids':[c['id']]})
  # Leave space for up to two positive references, with explicit bounded coverage.
  offered=(positive[:2]+facts)[:MAX_FACTS]
- strong=[ident for ident in strong if any(f['evidence_ids']==[ident] for f in offered)]
+ offered_ids={i for f in offered for i in f['evidence_ids']}
+ bundles=[b for b in bundles if set(b['evidence_ids'])<=offered_ids]
  detailed=any((e.get('provenance') or {}).get('detail')=='sample' for e in events)
- classes=['inconclusive']+(['benign'] if positive and detailed else [])+(['malicious'] if strong else [])
+ classes=['inconclusive']+(['benign'] if positive and detailed else [])+(['malicious'] if bundles else [])
  automation=['unknown'];intent=['unknown']
  if 'T1110' in eligible.get('attack',{}):automation.append('credential_attack_automation');intent.append('credential_attack')
  if any(i.startswith('T1595') for i in eligible.get('attack',{})):automation+=['vulnerability_scanner','suspicious_bot'];intent.append('reconnaissance')
  if 'T1190' in eligible.get('attack',{}):intent.append('exploitation')
  if positive:automation.append('legitimate_automation')
  if positive and any(e.get('method') in ('GET','HEAD') and e.get('path') for e in events):intent.append('ordinary_browsing')
- return {'version':VERSION,'facts':offered,'positive_ids':[r['evidence_ids'][0] for r in positive[:2]],'strong_ids':strong,
+ return {'version':VERSION,'facts':offered,'positive_ids':[r['evidence_ids'][0] for r in positive[:2]],'malicious_support':bundles,'support_coverage':support_coverage,
          'classifications':classes,'automation':automation,'intent':intent,'available_facts':len(positive)+len(facts),'offered_facts':len(offered),
          'summaries':SUMMARIES,'limitations':LIMITS}
 
@@ -78,7 +132,8 @@ def validate(value,packet,candidates,registry):
  if value['classification'] not in c['classifications']:raise ValueError('Unsupported decisive interpretation')
  cited={i for v in value['findings']+value['contradictory_evidence'] for i in v['evidence_ids']}
  if value['classification']=='benign' and not cited.intersection(c['positive_ids']):raise ValueError('Benign interpretation requires positive context')
- if value['classification']=='malicious' and not {i for v in value['findings'] for i in v['evidence_ids']}.intersection(c['strong_ids']):raise ValueError('Malicious interpretation requires reported behavior')
+ finding_ids={i for v in value['findings'] for i in v['evidence_ids']}
+ if value['classification']=='malicious' and not any(set(b['evidence_ids'])<=finding_ids for b in c['malicious_support']):raise ValueError('Malicious interpretation requires reported behavior')
  for key in ('automation','intent'):
   if value[key]['classification'] not in c[key]:raise ValueError('Unsupported interpretation label')
   if value[key]['classification']=='unknown' and value[key]['confidence']!=0:raise ValueError('Unknown interpretation requires zero confidence')
@@ -106,7 +161,7 @@ def constrain(schema,packet,candidates,registry,choices):
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
   p[field]['items']['properties']['explanation']['enum']=[mapping_text(kind,v['technique_id'],v['name']) for v in choices[kind].values()] or ['Unavailable']
  fields=p['actor_correlation']['items']['properties'];fields['explanation']['enum']=[RELATION];fields['alternative_explanations']['items']['enum']=[ALTERNATIVE]
- return {k:v for k,v in c.items() if k not in ('positive_ids','strong_ids')}
+ return {k:v for k,v in c.items() if k!='positive_ids'}
 
 def example(packet,registry=None):
  """Conservative complete example for isolated contract fixtures; no model call."""

@@ -2,8 +2,8 @@
 import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.7'
-GENERATION_SCHEMA_VERSION='grounded-observations-1'
+PROMPT_VERSION='behavior-3.8'
+GENERATION_SCHEMA_VERSION='grounded-observations-2'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -413,7 +413,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
  session=requests.Session();session.trust_env=False
  try:
   call=requester or session.post
-  grounding_instruction='Copy findings/contradictions exactly from grounded_observations.facts, including their bound evidence_ids. Copy the exact summary for the selected classification and both limitations in order. Copy the enum explanation for each mapping and historical match. Never add narrative facts or turn defensive context into an observed attack, test or control. Choose inconclusive for sparse/ambiguous reports; decisive labels require the supplied positive support. Automation/intent are bounded hypotheses, not facts. Unknown automation/intent confidence must be zero. '
+  grounding_instruction='Copy findings/contradictions exactly from grounded_observations.facts, including their bound evidence_ids. Copy the exact summary for the selected classification and both limitations in order. Copy the enum explanation for each mapping and historical match. Never add narrative facts or turn defensive context into an observed attack, test or control. Choose inconclusive for sparse/ambiguous reports. A malicious interpretation is optional only when findings cite both members of one malicious_support bundle; offered support never forces a verdict. Detector labels or paths alone do not prove maliciousness. Automation/intent are bounded hypotheses, not facts. Unknown automation/intent confidence must be zero. '
   response=call(cfg['endpoint']+'/api/chat',headers={'Authorization':'Bearer '+key},json={'model':cfg['model'],'messages':[{'role':'system','content':grounding_instruction+SYSTEM},{'role':'user','content':json.dumps(prompt,ensure_ascii=True)}],'stream':False,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}},verify=cfg['ca_file'] or True,timeout=(5,cfg['timeout']),allow_redirects=False,stream=True)
   if response.status_code!=200:response.close();raise ValueError('Model service rejected the request')
   body=b''

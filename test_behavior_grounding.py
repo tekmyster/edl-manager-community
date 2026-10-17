@@ -22,7 +22,7 @@ def test_sparse_connections_are_observations_not_auth_failure_or_decisive_verdic
  p=packet(event(action=action,source='tpot',sensor='Cowrie'));value=example(p)
  (accepted,metadata),calls=transport(p,value)
  assert accepted['classification']=='inconclusive' and action in accepted['findings'][0]['summary']
- assert metadata['grounding_contract_version']=='grounded-observations-1'
+ assert metadata['grounding_contract_version']=='grounded-observations-2'
  assert calls[0]['format']['properties']['classification']['enum']==['inconclusive']
  bad=copy.deepcopy(value);bad['findings'][0]['summary']='Multiple authentication failures observed, indicating a brute-force attack.'
  with pytest.raises(ValueError,match='Unsupported observation'):ai.validate_result(bad,p,[],{})
@@ -122,8 +122,10 @@ def test_fresh_positive_context_required_for_benign_and_not_replaced_by_absence(
  context['cache_fresh']=True;p['events']=[]
  with pytest.raises(ai.ModelOutputError):transport(p,value)
 
-def test_reported_command_behavior_can_support_a_malicious_interpretation_not_execution_success():
- p=packet(event(action='cowrie.command.input',source='tpot',sensor='Cowrie',provenance={'detail':'sample'}));value=example(p)
+def test_coherent_reported_command_and_transfer_can_permit_an_interpretation_not_execution_success():
+ details={'source':'tpot','sensor':'Cowrie','destination':{'asset_id':'fixture-target'},'provenance':{'detail':'sample','upstream_id':'command'}}
+ p=packet(event('cmd',action='cowrie.command.input',**details),event('download',action='cowrie.session.file_download',source='tpot',sensor='Cowrie',destination={'asset_id':'fixture-target'},seen='2026-10-16T12:00:05+00:00',provenance={'detail':'sample','upstream_id':'transfer'}));value=example(p)
+ value['findings']=contract(p,{})['facts'][:2]
  assert contract(p,{})['intent']==['unknown']
  value.update(classification='malicious',maliciousness_confidence=.91,analysis_summary=SUMMARIES['malicious'])
  assert transport(p,value)[0][0]['classification']=='malicious'

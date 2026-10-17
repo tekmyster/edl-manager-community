@@ -12,7 +12,7 @@ def mixed():
  return {'packet_id':'mixed','coverage':'saved_samples','events':[
   event('ps','powershell execution'),event('net','network service discovery'),
   event('f1','authentication failure'),event('f2','cowrie.login.failed'),
-  event('http','HTTP request',path='/login',method='POST'),event('cmd','cowrie.command.input',source='tpot',sensor='Cowrie',provenance={'detail':'sample'})],
+  event('http','HTTP request',path='/login',method='POST'),event('cmd','cowrie.command.input',source='tpot',sensor='Cowrie',destination={'asset_id':'fixture-target'},provenance={'detail':'sample','upstream_id':'command'}),event('download','cowrie.session.file_download',source='tpot',sensor='Cowrie',seen='2026-10-16T12:00:05+00:00',destination={'asset_id':'fixture-target'},provenance={'detail':'sample','upstream_id':'transfer'})],
   'context':[{'id':'context-only','classification':'malicious'}]}
 
 def send_result(packet,catalog,value,candidates=None):
@@ -46,7 +46,7 @@ def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,c
   for claim in choices[kind].values():
    assert 'context-only' not in claim['evidence_ids'];validate_mapping(kind,claim,select(catalog,mixed),mixed)
  assert choices['attack']['attack:T1110']['evidence_ids']==['f1','f2']
- assert metadata['prompt_version']=='behavior-3.7' and metadata['generation_schema_version']=='grounded-observations-1'
+ assert metadata['prompt_version']=='behavior-3.8' and metadata['generation_schema_version']=='grounded-observations-2'
  assert len(payload['messages'][1]['content'].encode())<=18000 and payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
 
 @pytest.mark.parametrize('entry',[
