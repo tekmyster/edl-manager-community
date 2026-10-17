@@ -79,6 +79,28 @@ def test_source_bytes_tamper_blocks_activation(tmp_path):
  with pytest.raises(ValueError):review(b,p['hash'],'accepted','Synthetic attempted review','fixture')
  assert active(tmp_path)['status']=='packaged_starter'
 
+def test_public_bundle_import_works_without_egress_and_does_not_reset_cooldown(tmp_path):
+ import zipfile
+ from behavior_references import import_bundle
+ b=Brain(Store(tmp_path/'native'))
+ def unavailable(url):raise OSError('synthetic unavailable')
+ refresh(tmp_path,unavailable,AT);network_state=(tmp_path/'reference-refresh.json').read_bytes()
+ bundle=tmp_path/'public.zip';manifest=[]
+ with zipfile.ZipFile(bundle,'w') as archive:
+  for ident,(url,marker) in PUBLIC_SOURCES.items():
+   body=marker+b' synthetic test bytes';name=ident+'.source';archive.writestr(name,body)
+   manifest.append({'id':ident,'url':url,'file':name,'status':200,'sha256':hashlib.sha256(body).hexdigest(),'retrieved_at':AT.isoformat()})
+  archive.writestr('manifest.json',json.dumps(manifest))
+ result=import_bundle(tmp_path,bundle,AT);assert result['status']=='pending_review' and result['network'] is False
+ assert (tmp_path/'reference-refresh.json').read_bytes()==network_state
+ assert active(tmp_path)['status']=='packaged_starter'
+ pending=json.loads((tmp_path/'behavior-references.pending.json').read_text());assert all(s['retrieved_at']==AT.isoformat() for s in pending['sources'].values())
+ review(b,pending['hash'],'accepted','Synthetic offline bundle review only','fixture');assert active(tmp_path)['status']=='reviewed_local'
+ bad=tmp_path/'bad.zip'
+ with zipfile.ZipFile(bad,'w') as archive:archive.writestr('../private','should not extract');archive.writestr('manifest.json','[]')
+ with pytest.raises(ValueError):import_bundle(tmp_path,bad,AT)
+ assert not (tmp_path.parent/'private').exists()
+
 def test_two_request_fields_support_targeting_not_payload_or_named_tool():
  catalog=active(pathlib.Path('/nonexistent-synthetic-directory'));rule=next(r for r in catalog['rules'] if r['label']=='CVE-2017-9841')
  raw='/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php'

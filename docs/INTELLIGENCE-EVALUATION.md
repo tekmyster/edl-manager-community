@@ -180,6 +180,22 @@ a candidate containing changed source hashes. Existing match logic stays fixed. 
 versions or generate new pattern alerts; changed source bytes affect only the
 corresponding rule versions.
 
+If the Manager cannot reach these sources, fetch their exact bytes on an authorized
+research workstation and prepare the reviewed public snapshot bundle. Stage it
+without changing network or TLS policy:
+
+```sh
+python behavior_references.py import-bundle --directory /path/to/private-data --bundle public-primary-source-snapshots.zip
+```
+
+The importer accepts only the four fixed source filenames plus a bounded manifest,
+checks URLs, timestamps and SHA-256 hashes, reads at most 3 MB per source, and never
+extracts arbitrary paths, executes source text or makes network requests. It
+preserves original retrieval times and records local staging separately. It does
+not reset or consume the network refresh cooldown or any model budget. Import
+still produces a pending candidate; it does not activate context. This also lets
+reviewers inspect the starter's exact archived source bytes in the UI.
+
 Review changed bytes and rule applicability before accepting or rejecting the
 exact pending hash in the authenticated UI. Acceptance checks source byte hashes,
 preserves the prior active catalog as last-good, atomically replaces the active

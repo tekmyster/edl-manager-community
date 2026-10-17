@@ -1,5 +1,5 @@
 """Reviewed public advisory context. No model, scores, private outbound data or auto-activation."""
-import argparse,copy,datetime as dt,hashlib,json,os,pathlib,re,urllib.request,uuid
+import argparse,copy,datetime as dt,hashlib,json,os,pathlib,re,urllib.request,uuid,zipfile
 from filelock import FileLock
 from behavior_ai import digest,timestamp,now
 
@@ -122,15 +122,16 @@ def fetch(url):
   if not body or len(body)>MAX_BYTES:raise ValueError('Public source exceeds read bound.')
   return body,{'etag':response.headers.get('ETag'),'last_modified':response.headers.get('Last-Modified')}
 
-def refresh(directory,fetcher=None,at=None):
+def refresh(directory,fetcher=None,at=None,network=True):
+ if not network and fetcher is None:raise ValueError('A local source reader is required for offline staging.')
  directory=pathlib.Path(directory);directory.mkdir(parents=True,exist_ok=True);at=at or dt.datetime.now(dt.timezone.utc)
  with FileLock(str(directory/'reference-refresh.lock'),timeout=0):
-  state_path=directory/'reference-refresh.json'
+  state_path=directory/('reference-refresh.json' if network else 'reference-import.json')
   try:state=read(state_path)
   except (OSError,ValueError):state={}
   prior=timestamp(state.get('at'))
-  if prior and (at-prior).total_seconds()<86400:raise ValueError('Public reference refresh is limited to once per 24 hours, including failed attempts.')
-  state={'at':at.isoformat(),'status':'fetching','maximum_sources':4,'maximum_bytes_per_source':MAX_BYTES};atomic(state_path,state)
+  if network and prior and (at-prior).total_seconds()<86400:raise ValueError('Public reference refresh is limited to once per 24 hours, including failed attempts.')
+  state={'at':at.isoformat(),'status':'fetching' if network else 'importing_public_bundle','maximum_sources':4,'maximum_bytes_per_source':MAX_BYTES,'network':network};atomic(state_path,state)
   current=active(directory);candidate={k:copy.deepcopy(v) for k,v in current.items() if k not in ('status','sha256','warning')};sources={};blobs=directory/'reference-sources';blobs.mkdir(exist_ok=True)
   try:
    for ident,(url,marker) in PUBLIC_SOURCES.items():
@@ -166,7 +167,33 @@ def refresh(directory,fetcher=None,at=None):
     if blob.stem not in keep:blob.unlink()
    return state
   except Exception as exc:
-   state.update(status='failed_last_good_retained',error_type=type(exc).__name__);atomic(state_path,state);return state
+   state.update(status='failed_last_good_retained',error_type=type(exc).__name__,reason_type=type(getattr(exc,'reason',exc)).__name__,source_id=ident if 'ident' in locals() else None,http_status=getattr(exc,'code',None));atomic(state_path,state);return state
+
+def import_bundle(directory,bundle,at=None):
+ """Read only four named public snapshots; never extract paths or make requests."""
+ bundle=pathlib.Path(bundle)
+ if bundle.stat().st_size>4*MAX_BYTES+150000:raise ValueError('Public source bundle exceeds the total size bound.')
+ known={ident+'.source' for ident in PUBLIC_SOURCES}|{'manifest.json'}
+ with zipfile.ZipFile(bundle) as archive:
+  names=archive.namelist()
+  if len(names)!=len(set(names)) or not set(names)<=known or 'manifest.json' not in names:raise ValueError('Bundle contains unexpected or duplicate members.')
+  def bounded(name,maximum):
+   if archive.getinfo(name).file_size>maximum:raise ValueError('Public source bundle exceeds its read bound.')
+   with archive.open(name) as stream:body=stream.read(maximum+1)
+   if len(body)>maximum:raise ValueError('Public source bundle exceeds its read bound.')
+   return body
+  manifest=json.loads(bounded('manifest.json',131072))
+  if not isinstance(manifest,list) or len(manifest)>8:raise ValueError('Invalid public-source manifest.')
+  entries={entry['id']:entry for entry in manifest if entry.get('status')==200}
+  if len(entries)!=sum(entry.get('status')==200 for entry in manifest):raise ValueError('Duplicate source identity in manifest.')
+  if set(entries)!=set(PUBLIC_SOURCES):raise ValueError('Bundle must contain all four approved public primary sources.')
+  bodies={}
+  for ident,entry in entries.items():
+   if entry['url']!=PUBLIC_SOURCES[ident][0] or entry.get('file')!=ident+'.source' or not timestamp(entry.get('retrieved_at')):raise ValueError('Source provenance does not match the public allowlist.')
+   body=bounded(entry['file'],MAX_BYTES)
+   if hashlib.sha256(body).hexdigest()!=entry.get('sha256'):raise ValueError('Source byte hash mismatch.')
+   bodies[entry['url']]=(body,{'etag':entry.get('etag'),'last_modified':entry.get('last_modified'),'retrieved_at':entry['retrieved_at'],'retrieval_method':'imported public snapshot bundle'})
+ return refresh(directory,lambda url:bodies[url],at,network=False)
 
 def review(brain,expected,outcome,notes,actor):
  if outcome not in ('accepted','rejected') or not 5<=len(notes.strip())<=1000:raise ValueError('Explain the reference review in 5–1,000 characters.')
@@ -189,12 +216,14 @@ def review(brain,expected,outcome,notes,actor):
  brain.store.audit(actor,'behavior.references.review',{'candidate':expected,'outcome':outcome})
 
 def state(brain):
- directory=pathlib.Path(brain.store.path).parent;result={'active':active(directory),'pending':None,'refresh':None}
- for key,name in [('pending','behavior-references.pending.json'),('refresh','reference-refresh.json')]:
+ directory=pathlib.Path(brain.store.path).parent;result={'active':active(directory),'pending':None,'refresh':None,'bundle_import':None}
+ for key,name in [('pending','behavior-references.pending.json'),('refresh','reference-refresh.json'),('bundle_import','reference-import.json')]:
   try:result[key]=read(directory/name,262144)
   except (OSError,ValueError):pass
  with brain.connect() as db:result['history']=[dict(r) for r in db.execute('SELECT * FROM reference_reviews ORDER BY rowid DESC LIMIT 20')]
  return result
 
 if __name__=='__main__':
- parser=argparse.ArgumentParser(description='Stage public primary-source refresh; never activate rules automatically.');parser.add_argument('action',choices=['refresh']);parser.add_argument('--directory',required=True);args=parser.parse_args();print(json.dumps(refresh(args.directory)))
+ parser=argparse.ArgumentParser(description='Stage public primary-source context; never activate rules automatically.');parser.add_argument('action',choices=['refresh','import-bundle']);parser.add_argument('--directory',required=True);parser.add_argument('--bundle');args=parser.parse_args()
+ if args.action=='import-bundle' and not args.bundle:parser.error('--bundle is required for import-bundle')
+ print(json.dumps(import_bundle(args.directory,args.bundle) if args.action=='import-bundle' else refresh(args.directory)))
