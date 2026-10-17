@@ -261,18 +261,22 @@ CONF={'type':'number','minimum':0,'maximum':1}
 REFS=array(text(80),20,1)
 RESPONSE_SCHEMA=obj({'schema_version':text(enum=(VERSION,)),'packet_id':text(100),'classification':text(enum=('malicious','benign','inconclusive')),'maliciousness_confidence':CONF,'automation':obj({'classification':text(enum=AUTOMATION),'confidence':CONF}),'intent':obj({'classification':text(enum=('reconnaissance','credential_attack','exploitation','ordinary_browsing','unknown')),'confidence':CONF}),'findings':array(obj({'summary':text(),'evidence_ids':REFS})),'attack_techniques':array(obj({'technique_id':text(32),'evidence_ids':REFS,'explanation':text()})),'d3fend_context':array(obj({'technique_id':text(100),'evidence_ids':REFS,'explanation':text()})),'actor_correlation':array(obj({'candidate_id':text(100),'confidence':CONF,'evidence_ids':REFS,'explanation':text(),'alternative_explanations':array(text(),5,1)}),5),'contradictory_evidence':array(obj({'summary':text(),'evidence_ids':REFS})),'limitations':array(text(),10),'analysis_summary':text(1000)})
 
-def shape(spec,value):
+class AssessmentShapeError(ValueError):
+ def __init__(self,message,reason,path):
+  super().__init__(message);self.reason=reason;self.field=('.'.join(path) or '$')[:120]
+
+def shape(spec,value,path=()):
  kind=spec['type']
  if kind=='object':
-  if not isinstance(value,dict) or set(value)!=set(spec['required']):raise ValueError('Unexpected assessment fields')
-  for k,item in value.items():shape(spec['properties'][k],item)
+  if not isinstance(value,dict) or set(value)!=set(spec['required']):raise AssessmentShapeError('Unexpected assessment fields','object_fields',path)
+  for k,item in value.items():shape(spec['properties'][k],item,path+(k,))
  elif kind=='array':
-  if not isinstance(value,list) or not spec.get('minItems',0)<=len(value)<=spec['maxItems']:raise ValueError('Invalid assessment list')
-  for item in value:shape(spec['items'],item)
+  if not isinstance(value,list) or not spec.get('minItems',0)<=len(value)<=spec['maxItems']:raise AssessmentShapeError('Invalid assessment list','list_bounds_or_type',path)
+  for item in value:shape(spec['items'],item,path+('*',))
  elif kind=='string':
-  if not isinstance(value,str) or len(value)>spec['maxLength'] or ('enum' in spec and value not in spec['enum']):raise ValueError('Invalid assessment label')
+  if not isinstance(value,str) or len(value)>spec['maxLength'] or ('enum' in spec and value not in spec['enum']):raise AssessmentShapeError('Invalid assessment label','label_or_enum',path)
  elif kind=='number':
-  if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=1 or ('enum' in spec and value not in spec['enum']):raise ValueError('Invalid confidence')
+  if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=1 or ('enum' in spec and value not in spec['enum']):raise AssessmentShapeError('Invalid confidence','confidence',path)
 
 def validate_result(value,packet,candidates,registry):
  shape(RESPONSE_SCHEMA,value)
@@ -384,14 +388,25 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
   metadata.update(cached_input_tokens=cached,input_cache_accounting=accounting,uncached_input_tokens=total-cached if accounting=='consistent' else None)
   if envelope.get('done') is not True or envelope.get('model')!=cfg['model']:raise ModelOutputError('incomplete_response',metadata)
   if envelope.get('done_reason')=='length':raise ModelOutputError('output_limit',metadata)
+  validation_stage='json_content'
   try:
    value=json.loads(envelope['message']['content'],parse_constant=invalid_constant)
+   validation_stage='response_schema'
    shape(schema,value)
+   validation_stage='correlation_fields'
    if candidates:
     for match in value['actor_correlation']:
      match['evidence_ids']=match.pop('current_evidence_ids')+match.pop('historical_evidence_ids')
+   validation_stage='evidence_validation'
    value=validate_result(value,packet,candidates,registry)
-  except (ValueError,KeyError,TypeError):raise ModelOutputError('invalid_assessment',metadata) from None
+  except (ValueError,KeyError,TypeError) as exc:
+   # Fixed codes and schema-defined paths only: never retain provider text,
+   # unexpected keys, rejected labels, citation IDs or exception messages.
+   reasons={'Incorrect evidence packet':'packet_identity','Unknown evidence reference':'citation_not_supplied','Unknown taxonomy reference':'taxonomy_not_supplied','Unknown historical candidate':'candidate_not_supplied','Correlation requires current and historical observations':'correlation_event_sides','Correlation requires a supporting current observation':'correlation_current_support','Taxonomy mapping requires supporting observations':'taxonomy_support','Brute force mapping requires multiple sampled failures':'taxonomy_minimum_samples','Malicious assessment requires supporting events':'missing_findings','Non-finite JSON constant':'non_finite_json'}
+   diagnostic={'stage':validation_stage,'reason':'json_decode' if isinstance(exc,json.JSONDecodeError) else reasons.get(str(exc),'validation_rejected')}
+   if isinstance(exc,AssessmentShapeError):diagnostic.update(reason=exc.reason,field=exc.field)
+   metadata['validation_diagnostic']=diagnostic
+   raise ModelOutputError('invalid_assessment',metadata) from None
   metadata['taxonomy_mappings']={field:[{'technique_id':item['technique_id'],'name':registry[kind][item['technique_id']],'evidence_ids':item['evidence_ids']} for item in value[field]] for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]}
   return value,metadata
  finally:session.close()

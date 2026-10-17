@@ -160,3 +160,13 @@ production timing evidence. Device observations must separate the independent
 Receptionist and desktop workload from the EDL model's own allocation.
 
 Backend field definitions follow the [Ollama chat response documentation](https://docs.ollama.com/api/chat). That format reference does not establish that the installed backend emitted any measured value; only genuine retained responses can do so.
+
+Rejected assessments keep status `failed` and error `invalid_assessment`. Optional
+`metadata.validation_diagnostic` identifies the JSON-content, response-schema,
+correlation-field or evidence-validation stage with a fixed reason code. Schema
+failures also report a schema-defined field path (array positions use `*`, at
+most 120 characters). Diagnostics never retain model text, unexpected field
+names, rejected values, citation IDs or exception messages. Validation, citation
+and taxonomy requirements remain unchanged. Earlier failures without these
+diagnostics cannot retrospectively identify the rejected field or validation
+stage from token/timing metadata alone; they must remain unresolved failures.
