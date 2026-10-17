@@ -139,14 +139,23 @@ class Store:
  def cache(self,address,provider,payload,status='ok',hours=168):
   address=str(ip(address));until=(dt.datetime.now(UTC)+dt.timedelta(hours=hours)).isoformat(timespec='seconds')
   with self.connect() as d:d.execute('INSERT OR REPLACE INTO cache VALUES(?,?,?,?,?,?)',(address,provider,status,json.dumps(payload),now(),until))
+  from analytics_store import event
+  event(self,provider,'cache_write',address)
  def cached(self,address,provider):
-  with self.connect() as d:r=d.execute('SELECT * FROM cache WHERE ip=? AND provider=? AND expires>?',(address,provider,now())).fetchone()
-  return dict(r) if r else None
+  with self.connect() as d:r=d.execute('SELECT * FROM cache WHERE ip=? AND provider=?',(address,provider)).fetchone()
+  from analytics_store import event
+  payload=json.loads(r['payload']) if r else {}
+  negative=payload.get('found') is False or (provider=='misp' and payload.get('matches')==0 and payload.get('context_matches',0)==0)
+  kind='miss' if not r else 'stale' if r['expires']<=now() else 'cached_error' if r['status']!='ok' else 'negative_hit' if negative else 'hit'
+  event(self,provider,kind,address)
+  return dict(r) if r and r['expires']>now() else None
  def cache_many(self,records):
   fetched=now();rows=[]
   for address,provider,payload,status,hours in records:
    rows.append((str(ip(address)),provider,status,json.dumps(payload),fetched,(dt.datetime.now(UTC)+dt.timedelta(hours=hours)).isoformat(timespec='seconds')))
   with self.connect() as d:d.executemany('INSERT OR REPLACE INTO cache VALUES(?,?,?,?,?,?)',rows)
+  from analytics_store import events
+  events(self,[(r[1],'cache_write',r[0],1) for r in rows])
  def add_rule(self,action,value,reason,expires,actor,emergency=False):
   return self.add_rules(action,[value],reason,expires,actor,emergency)[0]
  def add_rules(self,action,values,reason,expires,actor,emergency=False):

@@ -4,13 +4,16 @@ import requests,maxminddb,contextlib
 from core import Store,now,ip
 from source_settings import effective
 UTC=dt.timezone.utc
-def misp_attributes(session,url):
+def misp_attributes(session,url,store=None):
  """Fetch a complete bounded snapshot; callers retain prior state on failure."""
  attrs=[];received=0
  # Native MISP applies warninglists after database pagination. A short or even
  # empty filtered page can precede later data. Probe through a terminal empty
  # page; native MISP versions report zero or one (the look-ahead sentinel).
  for page in range(1,102):
+  if store:
+   from analytics_store import event
+   event(store,'misp','outbound')
   r=session.post(url+'/attributes/restSearch',json={'returnFormat':'json','type':['ip-src','ip-dst','ip-src|port','ip-dst|port'],'includeContext':True,'deleted':False,'enforceWarninglist':True,'timestamp':'30d','limit':1000,'page':page},timeout=30)
   r.raise_for_status();v=r.json()
   if not isinstance(v,dict) or 'response' not in v:raise ValueError('Unexpected MISP response')
@@ -248,10 +251,15 @@ def enrich(s,cfg):
       if cfg.get('misp_sha256'):kwargs.update(assert_hostname=False,assert_fingerprint=cfg['misp_sha256'])
       return super().init_poolmanager(*args,**kwargs)
     ms=requests.Session();ms.mount(cfg['misp_url'],PinnedMISP());ms.verify=cfg['misp_ca'];ms.headers.update({'Authorization':keys['misp'],'Accept':'application/json'})
-    attrs=misp_attributes(ms,cfg['misp_url'])
+    attrs=misp_attributes(ms,cfg['misp_url'],s)
     expiry=min([(dt.datetime.now(UTC)+dt.timedelta(hours=6)).isoformat(timespec='seconds')]+[a['expires'] for a in attrs if a.get('expires')])
     snapshot={'fetched':now(),'expires':expiry,'generation':hashlib.sha256(json.dumps(attrs,sort_keys=True).encode()).hexdigest(),'attributes':attrs};s.state('misp_snapshot',snapshot)
-   except (requests.RequestException,ValueError,KeyError) as e:providers['misp']='sync failed; prior snapshot retained: '+type(e).__name__
+    from analytics_store import event
+    event(s,'misp','imports',n=len(attrs))
+   except (requests.RequestException,ValueError,KeyError) as e:
+    from analytics_store import event
+    event(s,'misp','error')
+    providers['misp']='sync failed; prior snapshot retained: '+type(e).__name__
   networks=[];exact={}
   for a in snapshot.get('attributes',[]):
    try:
@@ -270,8 +278,10 @@ def enrich(s,cfg):
    if cached and snapshot.get('expires','')>now() and json.loads(cached['payload']).get('snapshot_generation')==snapshot.get('generation'):continue
    if snapshot.get('expires','')<=now():pending_misp.append((address,'misp',{'error':'Local indicator snapshot is unavailable or stale'},'failed',1))
    else:
+    from analytics_store import events
     a=ipaddress.ip_address(address);hits=list(exact.get(address,[]))
     for mask,entries in prefix_index[a.version]:hits.extend(entries.get(int(a)&mask,[]))
+    events(s,[('misp','local_query',address,1),('misp','match' if hits else 'no_match',address,1)])
     actionable=[h for h in hits if h.get('to_ids',True) in (True,1,'1')]
     hours=max(0,(dt.datetime.fromisoformat(snapshot['expires'])-dt.datetime.now(UTC)).total_seconds()-1)/3600
     pending_misp.append((address,'misp',{'matches':len(actionable),'context_matches':len(hits)-len(actionable),'attribute_ids':[h['id'] for h in hits[:20]],'sources':sorted({h.get('source','MISP indicator') for h in hits})[:8],'snapshot_generation':snapshot.get('generation'),'snapshot_fetched':snapshot['fetched'],'fresh_to_ids_and_warninglists_enforced':True,'score_contribution':25 if actionable else 0,'note':'Only fresh actionable intelligence adds points; context-only indicators add none; whitelist and crawler protection remain in force'},'ok',hours));checks+=1

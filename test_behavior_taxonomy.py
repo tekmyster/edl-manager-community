@@ -228,7 +228,7 @@ def test_authenticated_detail_renders_mapping_and_preserves_native_policy(catalo
    status_code=200
    def iter_content(self,n):yield json.dumps({'done':True,'model':'fixture','message':{'content':json.dumps(r)}}).encode()
    def close(self):pass
-  return infer(*args,requester=lambda *a,**k:Response())
+  return infer(*args[:5],requester=lambda *a,**k:Response(),attempt=args[6] if len(args)>6 else None)
  monkeypatch.setattr(behavior_ai,'infer',fake)
  assert model_job(brain,ident,packet,features,cfg)=='completed'
  with store.connect() as db:db.execute('INSERT INTO users VALUES(?,?,?)',('fixture','hash',1))

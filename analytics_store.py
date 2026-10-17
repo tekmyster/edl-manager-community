@@ -1,0 +1,114 @@
+"""Local operational ledger. No prompts, provider bodies, secrets or external writes.
+
+Hourly per-IP provider counters and individual AI transport attempts are retained
+35 days. Telemetry failure never stops native ingestion or policy evaluation.
+"""
+import contextlib
+import datetime as dt
+import json
+import logging
+import pathlib
+import sqlite3
+import uuid
+import threading
+import weakref
+
+UTC = dt.timezone.utc
+_ready = set()
+_pruned = {}
+SCHEMA = '''
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS coverage(name TEXT PRIMARY KEY,started TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS counters(hour TEXT NOT NULL,provider TEXT NOT NULL,kind TEXT NOT NULL,ip TEXT NOT NULL,n INTEGER NOT NULL,last TEXT NOT NULL,PRIMARY KEY(hour,provider,kind,ip));
+CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,packet TEXT NOT NULL,started TEXT NOT NULL,finished TEXT,state TEXT NOT NULL,first_seconds REAL,input_tokens INTEGER,output_tokens INTEGER,total_seconds REAL);
+CREATE INDEX IF NOT EXISTS requests_started ON requests(started);
+'''
+
+
+def stamp(at=None):
+    return (at or dt.datetime.now(UTC)).astimezone(UTC).isoformat(timespec='microseconds')
+
+
+def path(store):
+    return pathlib.Path(store.path).with_name('analytics.sqlite3')
+
+
+@contextlib.contextmanager
+def connect(store, write=False):
+    target = path(store)
+    if write:
+        # Keep the WAL open across frequent cache reads. Closing its last handle
+        # per read would force checkpoints and dominate enrichment runtime.
+        if not hasattr(store,'_analytics_handles'):
+            store._analytics_handles={}
+            weakref.finalize(store,lambda handles:[c.close() for c in handles.values()],store._analytics_handles)
+        owner=threading.get_ident()
+        db=store._analytics_handles.get(owner)
+        if db is None:
+            db=sqlite3.connect(str(target),timeout=.025,check_same_thread=False)
+            db.row_factory=sqlite3.Row
+            db.execute('PRAGMA synchronous=NORMAL')
+            store._analytics_handles[owner]=db
+    else:
+        db=sqlite3.connect(target.as_uri()+'?mode=ro',uri=True,timeout=.25)
+        db.row_factory=sqlite3.Row
+    try:
+        if write and str(target) not in _ready:
+            db.executescript(SCHEMA)
+            _ready.add(str(target))
+        if write:
+            day = stamp()[:10]
+            if _pruned.get(str(target)) != day:
+                cut = stamp(dt.datetime.now(UTC)-dt.timedelta(days=35))
+                db.execute('DELETE FROM counters WHERE hour<?', (cut,))
+                db.execute('DELETE FROM requests WHERE started<?', (cut,))
+                db.execute("INSERT OR REPLACE INTO coverage VALUES('pruned',?)", (day,))
+                _pruned[str(target)] = day
+        yield db
+        if write: db.commit()
+    except Exception:
+        if write:db.rollback()
+        raise
+    finally:
+        if not write:db.close()
+
+
+def event(store, provider, kind, address='', at=None, n=1):
+    events(store, [(provider,kind,address,n)],at)
+
+
+def events(store, records, at=None):
+    when = stamp(at)
+    try:
+        with connect(store, True) as db:
+            db.executemany('INSERT OR IGNORE INTO coverage VALUES(?,?)', [(p,when) for p in {r[0] for r in records}])
+            db.executemany('INSERT OR IGNORE INTO coverage VALUES(?,?)', [(p+':'+k,when) for p,k,_,_ in records])
+            db.executemany('INSERT INTO counters VALUES(?,?,?,?,?,?) ON CONFLICT(hour,provider,kind,ip) DO UPDATE SET n=n+excluded.n,last=excluded.last',
+                          [(when[:13]+':00:00.000000+00:00',p,k,a,n,when) for p,k,a,n in records])
+    except (sqlite3.Error, OSError):
+        logging.warning('Operational counters could not be saved')
+
+
+class Attempt:
+    def __init__(self, store, packet):
+        self.store, self.packet, self.id = store, packet, uuid.uuid4().hex
+
+    def start(self):
+        try:
+            with connect(self.store, True) as db:
+                db.execute("INSERT OR IGNORE INTO coverage VALUES('ai',?)", (stamp(),))
+                db.execute("INSERT INTO requests(id,packet,started,state) VALUES(?,?,?,'pending')", (self.id,self.packet,stamp()))
+        except (sqlite3.Error, OSError):
+            logging.warning('AI attempt could not be saved')
+
+    def finish(self, state, metadata):
+        def number(key, integer=False):
+            value=metadata.get(key)
+            import math
+            return value if type(value) in ((int,) if integer else (int,float)) and math.isfinite(value) and value>=0 else None
+        try:
+            with connect(self.store, True) as db:
+                db.execute('UPDATE requests SET finished=?,state=?,first_seconds=?,input_tokens=?,output_tokens=?,total_seconds=? WHERE id=?',
+                           (stamp(),state,number('first_content_seconds'),number('input_tokens',True),number('output_tokens',True),number('request_seconds'),self.id))
+        except (sqlite3.Error, OSError):
+            logging.warning('AI outcome could not be saved')

@@ -45,18 +45,25 @@ def enrich(store,rows,key,requester=None):
   store.cache(address,'greynoise',{},status='in-flight',hours=.25)
   used+=1;count+=1;store.state(quota_key,used)
   try:
+   from analytics_store import event
+   event(store,'greynoise','outbound',address)
    response=request('https://api.greynoise.io/v3/community/'+address,headers={'key':key,'User-Agent':'Community-EDL-Manager/1.0'},timeout=15)
    if response.status_code==429:
+    event(store,'greynoise','rate_limited',address)
     store.cache(address,'greynoise',{},status='rate-limited',hours=24)
     store.state('greynoise_status',{'status':'rate-limited','retry_after':(current+dt.timedelta(hours=24)).isoformat(timespec='seconds')});break
    if response.status_code==404:
+    event(store,'greynoise','no_data',address)
     store.cache(address,'greynoise',{'classification':'unknown','found':False},hours=168);continue
    response.raise_for_status();data=response.json()
    if data.get('ip')!=address or data.get('classification') not in ('benign','malicious','suspicious','unknown'):raise ValueError('Unexpected IP classification')
    payload={k:data.get(k) for k in ('classification','name','last_seen','noise','riot')}
    payload.update(found=True,origin='GreyNoise',score_enabled=config['score_enabled'])
    store.cache(address,'greynoise',payload,hours=168)
+   event(store,'greynoise','usable',address)
   except (requests.RequestException,ValueError,TypeError):
+   from analytics_store import event
+   event(store,'greynoise','error',address)
    store.cache(address,'greynoise',{},status='failed',hours=1)
  store.state('greynoise_usage',{'week':week,'used':used,'budget':budget,'updated':now()})
  return count

@@ -5,6 +5,22 @@ from behavior_ai import brain,settings,validate_settings
 
 def register(app,store,cfg,login_required):
  service=brain(store)
+ @app.get('/analytics')
+ @login_required
+ def production_analytics():
+  from production_analytics import summary,investigations
+  from flask import g
+  # The existing context processor supplies the saved display timezone.
+  timezone=(store.state('user_preferences:'+session['user']) or {}).get('timezone','UTC')
+  data=summary(service,timezone)
+  return render_template('analytics.html',analytics=data,investigations=investigations(service,data['start'],data['end']))
+ @app.get('/analytics/data')
+ @login_required
+ def production_analytics_data():
+  from production_analytics import summary
+  from flask import jsonify
+  timezone=(store.state('user_preferences:'+session['user']) or {}).get('timezone','UTC')
+  response=jsonify(summary(service,timezone));response.headers['Cache-Control']='no-store';return response
  from behavior_groups import groups
  @app.get('/behavior')
  @login_required

@@ -370,7 +370,7 @@ def decode_taxonomy_choices(value,choices):
   result[field]=decoded
  return result
 
-def infer(cfg,packet,candidates,registry,key,requester=None):
+def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
  import requests,copy
  from behavior_mapping import select
  registry=select(registry,packet)
@@ -417,23 +417,55 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
  prompt=taxonomy_prompt(packet,candidates,registry,choices)
  if len(json.dumps(prompt).encode())>18000:raise ValueError('Analysis input exceeds size limit')
  session=requests.Session();session.trust_env=False
+ metadata={};transport_start=None;transport_state='failed'
  try:
   call=requester or session.post
   grounding_instruction='Copy findings/contradictions exactly from grounded_observations.facts, including their bound evidence_ids. Copy the exact summary for the selected classification and both limitations in order. Copy the enum explanation for each mapping and historical match. Never add narrative facts or turn defensive context into an observed attack, test or control. Choose inconclusive for sparse/ambiguous reports. A malicious interpretation is optional only when findings cite both members of one malicious_support bundle; offered support never forces a verdict. Detector labels or paths alone do not prove maliciousness. Automation/intent are bounded hypotheses, not facts. Unknown automation/intent confidence must be zero. '
-  response=call(cfg['endpoint']+'/api/chat',headers={'Authorization':'Bearer '+key},json={'model':cfg['model'],'messages':[{'role':'system','content':grounding_instruction+SYSTEM},{'role':'user','content':json.dumps(prompt,ensure_ascii=True)}],'stream':False,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}},verify=cfg['ca_file'] or True,timeout=(5,cfg['timeout']),allow_redirects=False,stream=True)
+  if attempt:attempt.start()
+  transport_start=time.monotonic()
+  response=call(cfg['endpoint']+'/api/chat',headers={'Authorization':'Bearer '+key},json={'model':cfg['model'],'messages':[{'role':'system','content':grounding_instruction+SYSTEM},{'role':'user','content':json.dumps(prompt,ensure_ascii=True)}],'stream':True,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}},verify=cfg['ca_file'] or True,timeout=(5,cfg['timeout']),allow_redirects=False,stream=True)
   if response.status_code!=200:response.close();raise ValueError('Model service rejected the request')
-  body=b''
+  body=b'';size=0;content_size=0;parts=[];envelope=None;first_content=None;streamed=False;finished=False
+  def invalid_constant(value):raise ValueError('Non-finite JSON constant')
+  def consume(line):
+   nonlocal envelope,first_content,streamed,finished,content_size
+   item=json.loads(line,parse_constant=invalid_constant)
+   if not isinstance(item,dict) or finished or item.get('model')!=cfg['model']:raise ValueError('Invalid model stream')
+   content=item.get('message',{}).get('content','')
+   if not isinstance(content,str):raise ValueError('Invalid model content')
+   if content:
+    content_size+=len(content.encode('utf-8'))
+    if content_size>131072:raise ValueError('Model content exceeds size limit')
+    if first_content is None:first_content=time.monotonic()-transport_start
+    parts.append(content)
+   streamed=True
+   if item.get('done') is True:envelope=item;finished=True
   try:
-   for chunk in response.iter_content(8192):
+   # Read through each complete NDJSON message without application buffering.
+   # Timing is receipt of first nonempty message.content, never headers or total duration.
+   for chunk in response.iter_content(1):
+    if time.monotonic()-transport_start>cfg['timeout']:raise ValueError('Model response deadline exceeded')
+    size+=len(chunk)
+    if size>1048576:raise ValueError('Model response exceeds size limit')
     body+=chunk
+    while b'\n' in body:
+     line,body=body.split(b'\n',1)
+     if line.strip():consume(line)
     if len(body)>131072:raise ValueError('Model response exceeds size limit')
   finally:response.close()
-  def invalid_constant(value):raise ValueError('Non-finite JSON constant')
-  envelope=json.loads(body,parse_constant=invalid_constant)
+  if streamed:
+   if body.strip():consume(body)
+   if envelope is None:raise ModelOutputError('incomplete_response',{'first_content_seconds':first_content})
+   envelope={**envelope,'message':{'content':''.join(parts)}}
+  else:
+   # Older gateways may ignore streaming. Complete output still validates, but
+   # its completion time cannot establish first-content latency.
+   envelope=json.loads(body,parse_constant=invalid_constant)
   def count(name):
    value=envelope.get(name)
    return value if type(value) is int and 0<=value<=10000000 else None
   metadata={'input_tokens':count('prompt_eval_count'),'output_tokens':count('eval_count'),'model':cfg['model'],'prompt_version':PROMPT_VERSION,'generation_schema_version':GENERATION_SCHEMA_VERSION,'taxonomy_version':registry.get('version','unconfigured'),'taxonomy_registry_sha256':registry.get('registry_sha256'),'taxonomy_rule_version':registry.get('rule_version'),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy unavailable'),'taxonomy_coverage':registry.get('coverage',{}),'historical_windows_supplied':len(candidates),'coverage':packet['coverage']}
+  metadata.update(first_content_seconds=first_content if streamed else None,request_seconds=round(time.monotonic()-transport_start,6),first_content_definition='request dispatch to receipt of first nonempty streamed message.content; seconds')
   # Preserve actual backend measurements separately from complete request wall
   # time. Missing/invalid fields stay unknown; evaluation is not device/kernel or
   # standalone tokenizer timing. This does not issue an additional model call.
@@ -474,8 +506,18 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
    metadata['validation_diagnostic']=diagnostic
    raise ModelOutputError('invalid_assessment',metadata) from None
   metadata['taxonomy_mappings']={field:[{'technique_id':item['technique_id'],'name':registry[kind][item['technique_id']],'evidence_ids':item['evidence_ids']} for item in value[field]] for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]}
+  transport_state='accepted'
   return value,metadata
- finally:session.close()
+ except ModelOutputError as exc:
+  transport_state='rejected';metadata=exc.metadata
+  raise
+ finally:
+  if transport_start is not None:
+   if attempt:metadata['request_id']=attempt.id
+   metadata['request_seconds']=round(time.monotonic()-transport_start,6)
+   if 'first_content' in locals():metadata['first_content_seconds']=first_content if streamed else None
+   if attempt:attempt.finish(transport_state,metadata)
+  session.close()
 
 def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
  candidates=(brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else candidates[:1]
@@ -510,7 +552,8 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
  secret=pathlib.Path(brain.store.path).parent/'behavior-provider.json'
  try:
   key=json.loads(secret.read_text()).get('key','') if secret.exists() else ''
-  result,metadata=infer(cfg,packet,candidates,allowed,key)
+  from analytics_store import Attempt
+  result,metadata=infer(cfg,packet,candidates,allowed,key,None,Attempt(brain.store,ident))
   result={**result,'metadata':{**metadata,'supplied_packet_ids':[ident]+[c['candidate_id'] for c in candidates]}};status='completed';error='';hours=cfg['assessment_hours']
  except Exception as exc:
   result={'metadata':exc.metadata} if isinstance(exc,ModelOutputError) else {};status='failed';error=exc.code if isinstance(exc,ModelOutputError) else type(exc).__name__;hours=1

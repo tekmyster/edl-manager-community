@@ -3,7 +3,26 @@
 Run with: python model_gateway.py /private/path/gateway.json
 No administrator or enforcement tools are exposed to the model.
 """
-import hashlib,hmac,http.server,ipaddress,json,pathlib,ssl,sys,threading,urllib.error,urllib.request
+import hashlib,hmac,http.server,ipaddress,json,pathlib,ssl,sys,threading,time,urllib.error,urllib.request
+
+def stream_lines(response,model,timeout=180):
+ """Bound transport overhead separately from generated content; no buffering to EOF."""
+ started=time.monotonic();size=content_size=0;done=False
+ while True:
+  line=response.readline(131073)
+  if not line:break
+  size+=len(line)
+  if size>1048576 or len(line)>131072 or time.monotonic()-started>timeout:raise ValueError('Stream bound exceeded')
+  if not line.strip():continue
+  value=json.loads(line)
+  if not isinstance(value,dict) or done or value.get('model')!=model:raise ValueError('Invalid model stream')
+  content=value.get('message',{}).get('content','')
+  if not isinstance(content,str):raise ValueError('Invalid model content')
+  content_size+=len(content.encode('utf-8'))
+  if content_size>131072:raise ValueError('Content bound exceeded')
+  done=value.get('done') is True
+  yield line.rstrip(b'\r\n')+b'\n'
+ if not done:raise ValueError('Incomplete model stream')
 
 def serve(config):
  cfg=json.loads(pathlib.Path(config).read_text(encoding='utf-8'))
@@ -31,7 +50,7 @@ def serve(config):
     size=int(self.headers.get('Content-Length','0'))
     if not 0<size<=65536 or self.headers.get('Transfer-Encoding'):raise ValueError()
     payload=json.loads(self.rfile.read(size))
-    if set(payload)-{'model','messages','stream','format','options'} or payload.get('model')!=cfg['model'] or payload.get('stream') is not False:raise ValueError()
+    if set(payload)-{'model','messages','stream','format','options'} or payload.get('model')!=cfg['model'] or type(payload.get('stream')) is not bool:raise ValueError()
     messages=payload['messages']
     if not isinstance(messages,list) or not 1<=len(messages)<=4:raise ValueError()
     for item in messages:
@@ -41,15 +60,22 @@ def serve(config):
     payload['keep_alive']='2m'
    except (ValueError,KeyError,TypeError):self.reply(400,{'error':'Invalid inference request'});return
    if not slots.acquire(blocking=False):self.reply(429,{'error':'Model is busy'});return
+   streaming_started=False
    try:
     req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
     # Fixed loopback upstream; no user supplied URLs, proxies, redirects or tools.
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
     with opener.open(req,timeout=180) as response:
-     body=response.read(131073)
-     if len(body)>131072:raise ValueError()
-     self.reply(200,json.loads(body))
-   except Exception:self.reply(502,{'error':'Model request failed'})
+     if payload['stream']:
+      self.send_response(200);self.send_header('Content-Type','application/x-ndjson');self.send_header('Cache-Control','no-store');self.send_header('Connection','close');self.end_headers();self.close_connection=True;streaming_started=True
+      for line in stream_lines(response,cfg['model']):self.wfile.write(line);self.wfile.flush()
+     else:
+      body=response.read(131073)
+      if len(body)>131072:raise ValueError()
+      self.reply(200,json.loads(body))
+   except Exception:
+    if not streaming_started:self.reply(502,{'error':'Model request failed'})
+    else:self.close_connection=True
    finally:slots.release()
  class Server(http.server.ThreadingHTTPServer):
   daemon_threads=True
