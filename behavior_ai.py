@@ -477,7 +477,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None):
   return value,metadata
  finally:session.close()
 
-def model_job(brain,ident,packet,features,cfg,candidates=None):
+def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
  candidates=(brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else candidates[:1]
  registry_file=pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'
  from behavior_taxonomy import load
@@ -487,6 +487,7 @@ def model_job(brain,ident,packet,features,cfg,candidates=None):
  cid=config_id(cfg)+'-'+digest([allowed,candidates,VERSION,PROMPT_VERSION,GENERATION_SCHEMA_VERSION]);day=now()[:10];clock=time.time();backoff_key='provider_backoff:'+digest([cfg['endpoint'],cfg['model']])
  with brain.connect() as db:
   db.execute('BEGIN IMMEDIATE')
+  if should_stop and should_stop():return 'cancelled'
   previous=db.execute('SELECT status,expires FROM assessments WHERE packet_id=? AND config_id=? ORDER BY created DESC,rowid DESC LIMIT 1',(ident,cid)).fetchone()
   if previous and previous['expires']>now():
    db.execute("INSERT INTO analysis_counters VALUES(?,'cached',1) ON CONFLICT(hour,kind) DO UPDATE SET count=count+1",(now(),));return 'cached'
@@ -502,7 +503,8 @@ def model_job(brain,ident,packet,features,cfg,candidates=None):
   used=db.execute('SELECT requests FROM usage WHERE day=?',(day,)).fetchone()
   if cfg['daily_budget'] is not None and used and used[0]>=cfg['daily_budget']:return 'budget'
   db.execute('INSERT INTO usage VALUES(?,1) ON CONFLICT(day) DO UPDATE SET requests=requests+1',(day,))
-  db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?) ON CONFLICT(packet_id,config_id) DO UPDATE SET state=excluded.state,lease=excluded.lease,attempts=jobs.attempts+1,updated=excluded.updated',(str(uuid.uuid4()),ident,cid,'running',clock+cfg['timeout']+30,1,now()))
+  owner=str(uuid.uuid4())
+  db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?) ON CONFLICT(packet_id,config_id) DO UPDATE SET id=excluded.id,state=excluded.state,lease=excluded.lease,attempts=jobs.attempts+1,updated=excluded.updated',(owner,ident,cid,'running',clock+cfg['timeout']+30,1,now()))
  secret=pathlib.Path(brain.store.path).parent/'behavior-provider.json'
  try:
   key=json.loads(secret.read_text()).get('key','') if secret.exists() else ''
@@ -511,17 +513,59 @@ def model_job(brain,ident,packet,features,cfg,candidates=None):
  except Exception as exc:
   result={'metadata':exc.metadata} if isinstance(exc,ModelOutputError) else {};status='failed';error=exc.code if isinstance(exc,ModelOutputError) else type(exc).__name__;hours=1
  with brain.connect() as db:
+  db.execute('BEGIN IMMEDIATE')
+  if not db.execute("SELECT 1 FROM jobs WHERE id=? AND packet_id=? AND config_id=? AND state='running'",(owner,ident,cid)).fetchone():return 'lease_lost'
   current=db.execute('SELECT packet_id FROM current_packets WHERE ip=(SELECT ip FROM packets WHERE id=?)',(ident,)).fetchone()
   if current and current['packet_id']!=ident:status='superseded'
   expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=hours)).isoformat(timespec='seconds')
   db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',(str(uuid.uuid4()),ident,cid,now(),expires,status,json.dumps(result),error,round(time.time()-clock,3)))
-  db.execute('UPDATE jobs SET state=?,lease=0,updated=? WHERE packet_id=? AND config_id=?',(status,now(),ident,cid))
+  db.execute('UPDATE jobs SET state=?,lease=0,updated=? WHERE id=?',(status,now(),owner))
   previous=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
   failures=min(5,(json.loads(previous[0]).get('failures',0) if previous else 0)+1) if error else 0
   db.execute('INSERT OR REPLACE INTO retention_state VALUES(?,?)',(backoff_key,json.dumps({'failures':failures,'until':time.time()+min(900,30*2**failures) if failures else 0})))
  return status
 
-def run(store,index_only=False,source_cfg=None):
+def drain_queue(brain,store,cfg,retrieved=None,should_stop=None,refresh_index=None):
+ """Drain in scheduler pages; page bounds are memory/query bounds, not quotas."""
+ from behavior_scheduling import schedule
+ stopped=should_stop or (lambda:False);retrieved=retrieved or {};skipped=set();results={};calls=0;examined=0;next_index=time.monotonic()+60
+ while True:
+  if stopped():return results,examined,'cancelled'
+  cfg=settings(store)
+  if not cfg['enabled'] or not cfg['model_enabled']:return results,examined,'disabled'
+  if cfg['daily_budget'] is not None and calls>=2:return results,examined,'finite_cycle_limit'
+  with brain.connect() as db:pending=schedule(db,excluded=skipped)
+  if not pending:return results,examined,'idle'
+  for queued in pending:
+   if stopped():return results,examined,'cancelled'
+   cfg=settings(store)
+   if not cfg['enabled'] or not cfg['model_enabled']:return results,examined,'disabled'
+   if cfg['daily_budget'] is not None and calls>=2:return results,examined,'finite_cycle_limit'
+   # Indexing/maintenance remains live during a long drain; no request pacing.
+   if refresh_index and time.monotonic()>=next_index:
+    refresh_index();next_index=time.monotonic()+60
+    if stopped():return results,examined,'cancelled'
+    cfg=settings(store)
+    if not cfg['enabled'] or not cfg['model_enabled']:return results,examined,'disabled'
+    if cfg['daily_budget'] is not None and calls>=2:return results,examined,'finite_cycle_limit'
+   packet=json.loads(queued['content']);clock=dt.datetime.now(dt.timezone.utc)
+   waiting=max(0,(clock-timestamp(queued['queued'])).total_seconds())
+   fresh=any(timestamp(e.get('seen')) and clock-dt.timedelta(days=cfg['window_days'])<=timestamp(e.get('seen'))<=clock+dt.timedelta(minutes=5) for e in packet.get('events',[]))
+   status=model_job(brain,queued['packet_id'],packet,set(json.loads(queued['features'])),cfg,candidates=retrieved.get(queued['packet_id']),should_stop=stopped) if fresh else 'stale_evidence'
+   results[status]=results.get(status,0)+1;examined+=1
+   if status in ('budget','backoff','cancelled'):return results,examined,status
+   if status in ('leased_or_exhausted','lease_lost'):
+    skipped.add((queued['ip'],queued['packet_id']))
+   else:
+    with brain.connect() as db:
+     db.execute('DELETE FROM analysis_queue WHERE ip=? AND packet_id=?',(queued['ip'],queued['original_packet_id']))
+     db.execute('INSERT INTO queue_samples(created,wait_seconds,status) VALUES(?,?,?)',(now(),waiting,status))
+   if status not in ('cached','leased_or_exhausted','stale_evidence'):calls+=1
+  # Unlimited immediately takes another page, including work beyond blocked rows.
+  if cfg['daily_budget'] is not None:return results,examined,'finite_page_complete'
+
+def run(store,index_only=False,source_cfg=None,should_stop=None):
+ if should_stop and should_stop():return {'status':'cancelled'}
  cfg=settings(store)
  if not cfg['enabled']:return {'status':'disabled'}
  brain=Brain(store);backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
@@ -536,7 +580,7 @@ def run(store,index_only=False,source_cfg=None):
  changed=sorted((r for r in rows if r['ip'] not in indexed or latest(r)>indexed[r['ip']]),key=lambda r:(latest(r),r['ip']),reverse=True)
  priority=changed[:cfg['batch_size']//2];seen={r['ip'] for r in priority}
  fair=rows[offset:offset+cfg['batch_size']-len(priority)]
- chosen=(priority+[r for r in fair if r['ip'] not in seen])[:cfg['batch_size']];results={};calls=0;palo_calls=0;palo_results={};history_results={};retrieved={}
+ chosen=(priority+[r for r in fair if r['ip'] not in seen])[:cfg['batch_size']];results={};palo_calls=0;palo_results={};history_results={};retrieved={}
  from behavior_retention import cleanup as retention_cleanup
  from behavior_intelligence import cleanup as intelligence_cleanup
  with brain.connect() as db:intelligence_cleanup(db)
@@ -550,6 +594,7 @@ def run(store,index_only=False,source_cfg=None):
    status=refresh(brain,history_row['ip'],source_cfg,dt.datetime.now(dt.timezone.utc));history_results[status]=history_results.get(status,0)+1
   store.state('behavior_history_cursor',(history_offset+min(2,len(rows)))%len(rows))
  for row in chosen:
+  if should_stop and should_stop():break
   if source_cfg is not None and cfg['palo_context_enabled'] and palo_calls<2:
    from behavior_context import refresh_palo
    p=refresh_palo(store,source_cfg,row['ip'],cfg['palo_daily_budget']);palo_results[p]=palo_results.get(p,0)+1
@@ -561,27 +606,14 @@ def run(store,index_only=False,source_cfg=None):
   if cfg['model_enabled'] and packet['events']:
    with brain.connect() as db:db.execute('INSERT INTO analysis_queue SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM analysis_queue WHERE ip=?) OR (SELECT count(*) FROM analysis_queue)<10000 ON CONFLICT(ip) DO UPDATE SET packet_id=excluded.packet_id',(row['ip'],ident,now(),row['ip']))
  # An oldest-first fairness slot plus diverse evidence candidates within the oldest 100
- # decouples indexing from the two-call cap and optional daily request ceiling.
+ # decouples indexing from model execution; finite settings retain optional quotas.
  # Changed windows replace pending content without losing their original place.
- scheduled_candidates=0
- if cfg['model_enabled'] and not index_only:
-  from behavior_scheduling import schedule
-  with brain.connect() as db:pending=schedule(db)
-  scheduled_candidates=len(pending)
-  for queued in pending:
-   packet=json.loads(queued['content']);clock=dt.datetime.now(dt.timezone.utc)
-   waiting=max(0,(clock-timestamp(queued['queued'])).total_seconds())
-   fresh=any(timestamp(e.get('seen')) and clock-dt.timedelta(days=cfg['window_days'])<=timestamp(e.get('seen'))<=clock+dt.timedelta(minutes=5) for e in packet.get('events',[]))
-   status=model_job(brain,queued['packet_id'],packet,set(json.loads(queued['features'])),cfg,candidates=retrieved.get(queued['packet_id'])) if fresh else 'stale_evidence';results[status]=results.get(status,0)+1
-   if status in ('budget','backoff'):break
-   if status!='leased_or_exhausted':
-    with brain.connect() as db:
-     db.execute('DELETE FROM analysis_queue WHERE ip=? AND packet_id=?',(queued['ip'],queued['original_packet_id']))
-     db.execute('INSERT INTO queue_samples(created,wait_seconds,status) VALUES(?,?,?)',(now(),waiting,status))
-   if status not in ('cached','leased_or_exhausted','stale_evidence'):calls+=1
-   if calls>=2:break
  store.state('behavior_cursor',{'offset':offset+len(fair)})
- status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ scheduled_candidates=0;analysis_stop='index_only' if index_only else 'disabled'
+ if cfg['model_enabled'] and not index_only:
+  refresh=lambda:run(store,index_only=True,source_cfg=source_cfg,should_stop=should_stop)
+  results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
+ status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  store.state('behavior_worker',status);return status
 
 

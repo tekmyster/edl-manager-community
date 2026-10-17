@@ -39,16 +39,25 @@ def backfill(brain,limit=200):
   partial=bool(db.execute('SELECT 1 FROM packets WHERE rowid>? LIMIT 1',(cursor,)).fetchone())
  return {'scanned':len(rows),'bound':200,'partial':partial}
 
-def schedule(db,limit=100):
+def schedule(db,limit=100,excluded=None):
  """Oldest 100 + indexed richest 64 + indexed most-recent 64; at most 228 IDs.
 
  The first slot is oldest. Remaining age and priority slots alternate, so leased
  or cached candidates do not consume the sole fairness position. Actual jobs
- still enforce the unchanged leases, daily quota, retry and two-request caps.
+ still enforce ownership/leases and retries; only finite mode has request quotas.
  """
- age=[r[0] for r in db.execute('SELECT ip FROM analysis_queue ORDER BY queued,ip LIMIT 100')]
- rich=[r[0] for r in db.execute('SELECT ip FROM queue_priority INDEXED BY queue_priority_rich WHERE richness>0 ORDER BY richness DESC,last_seen DESC,queued,ip LIMIT 64')]
- recent=[r[0] for r in db.execute("SELECT ip FROM queue_priority INDEXED BY queue_priority_recent WHERE last_seen>'' ORDER BY last_seen DESC,richness DESC,queued,ip LIMIT 64")]
+ # A temporary per-drain skip set avoids leased/exhausted work hiding later
+ # eligible rows. Exact packet binding lets newer windows of the same IP proceed.
+ if excluded:
+  db.execute('CREATE TEMP TABLE IF NOT EXISTS analysis_skipped(ip TEXT,packet_id TEXT,PRIMARY KEY(ip,packet_id))')
+  db.execute('DELETE FROM analysis_skipped');db.executemany('INSERT OR IGNORE INTO analysis_skipped VALUES(?,?)',excluded)
+  age=[r[0] for r in db.execute('SELECT q.ip FROM analysis_queue q LEFT JOIN current_packets c ON c.ip=q.ip WHERE NOT EXISTS(SELECT 1 FROM analysis_skipped s WHERE s.ip=q.ip AND s.packet_id=coalesce(c.packet_id,q.packet_id)) ORDER BY q.queued,q.ip LIMIT 100')]
+  rich=[r[0] for r in db.execute('SELECT p.ip FROM queue_priority p INDEXED BY queue_priority_rich WHERE richness>0 AND NOT EXISTS(SELECT 1 FROM analysis_skipped s WHERE s.ip=p.ip AND s.packet_id=p.packet_id) ORDER BY richness DESC,last_seen DESC,queued,p.ip LIMIT 64')]
+  recent=[r[0] for r in db.execute("SELECT p.ip FROM queue_priority p INDEXED BY queue_priority_recent WHERE last_seen>'' AND NOT EXISTS(SELECT 1 FROM analysis_skipped s WHERE s.ip=p.ip AND s.packet_id=p.packet_id) ORDER BY last_seen DESC,richness DESC,queued,p.ip LIMIT 64")]
+ else:
+  age=[r[0] for r in db.execute('SELECT ip FROM analysis_queue ORDER BY queued,ip LIMIT 100')]
+  rich=[r[0] for r in db.execute('SELECT ip FROM queue_priority INDEXED BY queue_priority_rich WHERE richness>0 ORDER BY richness DESC,last_seen DESC,queued,ip LIMIT 64')]
+  recent=[r[0] for r in db.execute("SELECT ip FROM queue_priority INDEXED BY queue_priority_recent WHERE last_seen>'' ORDER BY last_seen DESC,richness DESC,queued,ip LIMIT 64")]
  pool=list(dict.fromkeys(age+rich+recent));rows={}
  for address in pool:
   row=db.execute('SELECT q.ip,q.queued,q.packet_id original_packet_id,p.id packet_id,p.content,p.features FROM analysis_queue q LEFT JOIN current_packets c ON c.ip=q.ip JOIN packets p ON p.id=coalesce(c.packet_id,q.packet_id) WHERE q.ip=?',(address,)).fetchone()

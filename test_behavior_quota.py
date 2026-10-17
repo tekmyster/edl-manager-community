@@ -91,14 +91,15 @@ def test_unlimited_concurrent_same_packet_still_uses_lease(sample,monkeypatch):
   assert future.result(timeout=10)=='completed'
 
 @pytest.mark.parametrize('limit',[24,None])
-def test_worker_keeps_two_calls_per_cycle_with_optional_daily_limit(tmp_path,monkeypatch,limit):
+def test_worker_finite_cap_and_unlimited_drain(tmp_path,monkeypatch,limit):
  s=Store(tmp_path/'manager.sqlite3');cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://127.0.0.1','model':'synthetic','daily_budget':limit};s.state('behavior_settings',cfg)
  for i in range(3):s.evidence('8.8.8.'+str(i+1),'nginx','synthetic',now(),'http',0,details={'activity':{'events':[{'id':'e'+str(i),'seen':now(),'action':'HTTP request','method':'GET','path':'/example'}]}})
  calls=[]
  def infer(cfg,p,*args):calls.append(p['packet_id']);return example(p),{}
  monkeypatch.setattr('behavior_ai.infer',infer)
- result=run(s);assert len(calls)==2 and result['analysis']=={'completed':2}
- with Brain(s).connect() as db:assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==1
+ expected=2 if limit is not None else 3
+ result=run(s);assert len(calls)==expected and result['analysis']=={'completed':expected}
+ with Brain(s).connect() as db:assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==3-expected
 
 @pytest.fixture
 def web(tmp_path):
@@ -117,7 +118,7 @@ def test_save_reload_warning_consumed_usage_and_history_preserved(web):
  form={'csrf':'csrf','daily_budget_mode':'unlimited','daily_budget':''}
  response=c.post('/settings/behavior',data=form,base_url='https://localhost',follow_redirects=True)
  assert response.status_code==200;html=response.get_data(as_text=True)
- assert html.count('Using a paid provider can incur substantial charges')==1 and 'without provider token fees' in html
+ assert html.count('Using a paid provider can incur substantial charges')==1 and 'Local inference has no provider token fees' in html
  assert '96 / Unlimited' in html and '<option value="unlimited" selected>Unlimited</option>' in html
  assert app.store.state('behavior_settings')['daily_budget'] is None
  page=c.get('/behavior',base_url='https://localhost').get_data(as_text=True)

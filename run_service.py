@@ -10,8 +10,9 @@ def main():
   cert=os.environ.get('EDL_TLS_CERT','/data/tls/server.crt');key=os.environ.get('EDL_TLS_KEY','/data/tls/server.key')
   if not pathlib.Path(cert).is_file() or not pathlib.Path(key).is_file():raise SystemExit('Configure an HTTPS certificate and key before starting the web service.')
   os.execv(sys.executable,[sys.executable,'-m','gunicorn','--bind',os.environ.get('EDL_BIND','127.0.0.1:9445'),'--workers','1','--threads','4','--certfile',cert,'--keyfile',key,'app:app'])
+ if args.service=='behavior':os.execv(sys.executable,[sys.executable,'behavior_worker.py','--continuous'])
  while True:
-  result=subprocess.run([sys.executable,'behavior_worker.py'] if args.service=='behavior' else [sys.executable,'worker.py','--ingest-only' if args.service=='ingest' else '--enrich-only'])
+  result=subprocess.run([sys.executable,'worker.py','--ingest-only' if args.service=='ingest' else '--enrich-only'])
   if result.returncode:print('Background task failed; retrying on the next interval.',flush=True)
-  time.sleep(30 if args.service=='ingest' else 60 if args.service=='behavior' else 300)
+  time.sleep(30 if args.service=='ingest' else 300)
 if __name__=='__main__':main()

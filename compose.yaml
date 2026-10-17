@@ -29,6 +29,7 @@ services:
     command: [python, run_service.py, enrich]
   behavior:
     <<: *common
+    stop_grace_period: 240s
     command: [python, run_service.py, behavior]
   setup:
     <<: *common

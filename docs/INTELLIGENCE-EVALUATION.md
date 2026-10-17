@@ -62,8 +62,10 @@ slot remains available if the oldest job is leased or cached. Queue metadata
 follows current packet changes. Deleted queue items and packets release metadata.
 Legacy metadata backfills in restartable rowid pages of at most 200 per pass;
 partial backfill is exposed in worker state. Selection returns at most 100
-candidates, not 100 requests. The existing two-call cap, daily budget, provider
-backoff, leases, cache and per-job attempt limits remain authoritative. No item
+candidates per scheduler page, not a request ceiling. Finite mode retains its
+two-call cap and configured daily budget. Unlimited immediately drains further
+pages without either request-count ceiling; provider backoff, ownership/leases,
+cache and failed-job retry handling remain authoritative. No item
 is dequeued merely because it shares a fingerprint. This does not make 96 daily
 requests cover thousands of pending IPs; candidate scheduling is not a measured
 live latency or coverage improvement.
@@ -274,8 +276,10 @@ Sufficiency matching examines at most24supported signal events and276pairs, offe
 
 ### Optional unlimited daily analysis
 
-Daily model analysis defaults to 24 requests. Existing finite settings retain their meaning. Choose **Unlimited** under Analysis limits to remove only the daily model-request ceiling; the saved `daily_budget` is JSON `null`, rather than zero or a large finite sentinel. Palo context and history-query quotas remain separate and finite. Usage continues to count each attempted model request, including failed requests; cache hits and active leases do not consume another request. Changing this ceiling does not invalidate saved model results or reset usage/history.
+Daily model analysis defaults to 24 requests. Existing finite settings retain their meaning. Choose **Unlimited** under Analysis limits to remove daily and per-cycle model-request ceilings; the saved `daily_budget` is JSON `null`, rather than zero or a large finite sentinel. Palo context and history-query quotas remain separate and finite. Usage continues to count each attempted model request, including failed requests; cache hits and active leases do not consume another request. Changing this ceiling does not invalidate saved model results or reset usage/history.
 
-Every successful settings save with Unlimited selected shows one warning on the redirected page, consumed after that display. Refreshing or navigating does not repeat it. The warning explains potentially substantial paid-provider charges and the need to understand the implications. Local inference consumes GPU capacity and electricity, without provider token fees. This setting does not add support for new provider endpoints or change routing. No additional confirmation is required.
+Every successful settings save with Unlimited selected shows one warning on the redirected page, consumed after that display. Refreshing or navigating does not repeat it. The warning explains potentially substantial paid-provider charges and the need to understand the implications. Local inference has no provider token fees. This setting does not add support for new provider endpoints or change routing. No additional confirmation is required.
 
-Per-cycle model-call limits, concurrency/leases, timeouts, retries/backoff, bounded evidence, native scoring, pilot safeguards and edition defaults remain unchanged. Settings and AI performance show actual daily requests against Unlimited without a utilization percentage. Collector diversity, session provenance and file-capture semantics remain separate pending work.
+Unlimited drains scheduler pages immediately until no eligible work remains, shutdown is requested, inspection is disabled, or provider backoff applies. It skips leased/exhausted packets without hiding later work or spinning; newer windows remain eligible. Source indexing runs between requests during long drains. Finite mode retains its two-request-per-cycle option. Ownership/leases, timeouts, retries/backoff, bounded evidence, native scoring, pilot safeguards and edition defaults remain unchanged. Settings and AI performance show actual daily requests against Unlimited without a utilization percentage. Collector diversity, session provenance and file-capture semantics remain separate pending work.
+
+Unlimited is a drain, not a large fixed batch: scheduler pages remain bounded for query/memory work, then continue immediately. Leased/exhausted packet windows are excluded for that drain without deleting them; new windows of the same IP can still proceed. A shutdown request stops before another job is claimed; an in-flight owned request finishes within its transport timeout and cannot clear another owner's lease. Indexing is interleaved between requests during a long drain. Private systemd has no start deadline, CPU quota or memory ceiling for this worker; existing process priority and filesystem isolation remain. The stop grace period permits an owned request to finish. Community runs the behavior process directly with cooperative signals and a matching stop grace period. No thermal-risk warning or request pacing is added.
