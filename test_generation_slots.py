@@ -82,15 +82,48 @@ def test_foreign_missing_cross_role_or_legacy_structures_reject(mutation):
  with pytest.raises(ModelOutputError):transport(p,w)
 
 
-def test_count_bounds_still_reject_instead_of_filtering_selections(catalog):
+def test_all_offered_slots_fit_accepted_counts_without_filtering(catalog):
  p={'packet_id':'bounds','coverage':'saved_samples','events':[event('a','powershell execution'),event('b','network service discovery'),event('c','credential dump attempt')],'context':[]}
  w=example(p,registry=catalog);w['observations']={k:'finding' for k in w['observations']};before=copy.deepcopy(w)
- with pytest.raises(ChoiceError,match='Invalid generation choice'):decode(w,p,[],catalog)
+ value=decode(w,p,[],catalog);validate_result(value,p,[],catalog)
+ assert len(value['findings'])==len(w['observations'])>2 and w==before
+ w['attack_techniques']={k:'include' for k in w['attack_techniques']}
+ w['d3fend_context']={k:'include' for k in w['d3fend_context']}
+ before=copy.deepcopy(w);value=decode(w,p,[],catalog);validate_result(value,p,[],catalog)
+ assert len(value['attack_techniques'])==len(w['attack_techniques'])>=3
+ assert len(value['d3fend_context'])==len(w['d3fend_context'])>1 and w==before
+
+
+def test_maximum_source_offers_are_structurally_count_safe(catalog):
+ from behavior_generation import SELECTION_BOUNDS
+ p={'packet_id':'maximum','coverage':'saved_samples','context':[]}
+ # Plain actions exercise every supported detector.
+ actions=['password guessing','password spraying','credential stuffing','scanning ip blocks','vulnerability scanning','wordlist scanning','network service discovery','public-facing application exploit attempt','credential dump attempt','powershell execution','windows command shell execution','unix shell execution','system information discovery','file and directory discovery','system network configuration discovery','process discovery','system owner/user discovery','ingress tool transfer','web shell execution','network denial of service']
+ p['events']=[event(str(i),action) for i,action in enumerate(actions)]
+ t,_=offers(p,[],catalog);schema,prompt=prepare(p,[],catalog)
+ assert {k:len(t[k]) for k in SELECTION_BOUNDS}==SELECTION_BOUNDS
+ assert prompt['grounding']['selection_bounds']==SELECTION_BOUNDS
+ w=example(p,registry=catalog)
+ w['observations']={k:'finding' for k in t['facts']}
+ for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:w[field]={k:'include' for k in t[kind]}
+ before=copy.deepcopy(w);shape(schema,w);v=decode(w,p,[],catalog);validate_result(v,p,[],catalog)
+ assert (len(v['findings']),len(v['attack_techniques']),len(v['d3fend_context']))==(12,12,6)
  assert w==before
- observation_roles(w);w['attack_techniques']={k:'include' for k in w['attack_techniques']}
- assert len(w['attack_techniques'])>=3
- with pytest.raises(ChoiceError) as caught:decode(w,p,[],catalog)
- assert caught.value.reason=='selection_bound' and caught.value.field=='attack_techniques'
+ for field in ('observations','attack_techniques','d3fend_context'):
+  bad=copy.deepcopy(w);bad[field]['foreign']='finding' if field=='observations' else 'include'
+  with pytest.raises(ValueError):decode(bad,p,[],catalog)
+ bad=copy.deepcopy(v);bad['findings']*=2
+ with pytest.raises(ValueError):validate_result(bad,p,[],catalog)
+
+
+def test_offer_bound_regression_fails_closed(monkeypatch):
+ import behavior_generation as g
+ p=positive();real=g.contract
+ def over(*args):
+  c=real(*args);c['facts']=c['facts']*13;return c
+ monkeypatch.setattr(g,'contract',over)
+ with pytest.raises(ChoiceError) as caught:offers(p,[],{})
+ assert caught.value.reason=='offer_bound'
 
 
 def test_old_canonical_duplicate_mapping_and_cross_role_claims_are_not_new_wire():

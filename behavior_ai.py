@@ -2,8 +2,8 @@
 import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.12'
-GENERATION_SCHEMA_VERSION='grounded-choices-3'
+PROMPT_VERSION='behavior-3.13'
+GENERATION_SCHEMA_VERSION='grounded-choices-4'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -554,9 +554,14 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
   expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=hours)).isoformat(timespec='seconds')
   db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',(str(uuid.uuid4()),ident,cid,now(),expires,status,json.dumps(result),error,round(time.time()-clock,3)))
   db.execute('UPDATE jobs SET state=?,lease=0,updated=? WHERE id=?',(status,now(),owner))
-  previous=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
-  failures=min(5,(json.loads(previous[0]).get('failures',0) if previous else 0)+1) if error else 0
-  db.execute('INSERT OR REPLACE INTO retention_state VALUES(?,?)',(backoff_key,json.dumps({'failures':failures,'until':time.time()+min(900,30*2**failures) if failures else 0})))
+  # A completed response with rejected content is local to this packet's
+  # one-hour failed cache and bounded job retries. It is not an endpoint outage.
+  # Leave any existing provider guard intact; only success resets it. Unknown
+  # errors, incomplete streams, HTTP rejection and timeouts retain backoff.
+  if error not in ('invalid_assessment','output_limit'):
+   previous=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
+   failures=min(5,(json.loads(previous[0]).get('failures',0) if previous else 0)+1) if error else 0
+   db.execute('INSERT OR REPLACE INTO retention_state VALUES(?,?)',(backoff_key,json.dumps({'failures':failures,'until':time.time()+min(900,30*2**failures) if failures else 0})))
  from behavior_telemetry import recover
  recover(brain)
  return status
