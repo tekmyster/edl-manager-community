@@ -488,6 +488,8 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
  with brain.connect() as db:
   db.execute('BEGIN IMMEDIATE')
   if should_stop and should_stop():return 'cancelled'
+  current=db.execute('SELECT packet_id FROM current_packets WHERE ip=(SELECT ip FROM packets WHERE id=?)',(ident,)).fetchone()
+  if current and current['packet_id']!=ident:return 'superseded_before_request'
   previous=db.execute('SELECT status,expires FROM assessments WHERE packet_id=? AND config_id=? ORDER BY created DESC,rowid DESC LIMIT 1',(ident,cid)).fetchone()
   if previous and previous['expires']>now():
    db.execute("INSERT INTO analysis_counters VALUES(?,'cached',1) ON CONFLICT(hour,kind) DO UPDATE SET count=count+1",(now(),));return 'cached'
@@ -554,13 +556,13 @@ def drain_queue(brain,store,cfg,retrieved=None,should_stop=None,refresh_index=No
    status=model_job(brain,queued['packet_id'],packet,set(json.loads(queued['features'])),cfg,candidates=retrieved.get(queued['packet_id']),should_stop=stopped) if fresh else 'stale_evidence'
    results[status]=results.get(status,0)+1;examined+=1
    if status in ('budget','backoff','cancelled'):return results,examined,status
-   if status in ('leased_or_exhausted','lease_lost'):
+   if status in ('leased_or_exhausted','lease_lost','superseded_before_request'):
     skipped.add((queued['ip'],queued['packet_id']))
    else:
     with brain.connect() as db:
      db.execute('DELETE FROM analysis_queue WHERE ip=? AND packet_id=?',(queued['ip'],queued['original_packet_id']))
      db.execute('INSERT INTO queue_samples(created,wait_seconds,status) VALUES(?,?,?)',(now(),waiting,status))
-   if status not in ('cached','leased_or_exhausted','stale_evidence'):calls+=1
+   if status not in ('cached','leased_or_exhausted','stale_evidence','superseded_before_request'):calls+=1
   # Unlimited immediately takes another page, including work beyond blocked rows.
   if cfg['daily_budget'] is not None:return results,examined,'finite_page_complete'
 

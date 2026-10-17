@@ -111,6 +111,22 @@ def test_lost_owner_cannot_publish_result_or_clear_successor_lease(tmp_path,monk
   row=db.execute('SELECT id,state,lease FROM jobs').fetchone();assert tuple(row)==('successor-owner','running',9999999999)
   assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
 
+def test_index_refresh_superseded_window_is_reselected_without_request_or_lost_work(tmp_path,monkeypatch):
+ s,b,cfg=queue(tmp_path,1);calls=[];clock=[0]
+ def tick():clock[0]+=61;return clock[0]
+ def refresh():
+  with b.connect() as db:
+   if db.execute("SELECT 1 FROM packets WHERE id='new-window'").fetchone():return
+   row=db.execute("SELECT * FROM packets WHERE id='packet0'").fetchone();values=list(row);values[0]='new-window';p=json.loads(values[3]);p['packet_id']='new-window';values[3]=json.dumps(p);db.execute('INSERT INTO packets VALUES(?,?,?,?,?,?)',values)
+   db.execute("UPDATE current_packets SET packet_id='new-window'")
+ def infer(cfg,p,*args):calls.append(p['packet_id']);return example(p),{}
+ monkeypatch.setattr('behavior_ai.time.monotonic',tick);monkeypatch.setattr('behavior_ai.infer',infer)
+ results,_,reason=drain_queue(b,s,cfg,refresh_index=refresh)
+ assert results=={'superseded_before_request':1,'completed':1} and calls==['new-window'] and reason=='idle'
+ with b.connect() as db:
+  assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==0
+  assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
+
 @pytest.mark.skipif(os.name!='posix',reason='Native worker uses Linux flock')
 def test_worker_signal_is_cooperative_and_handlers_restored(tmp_path,monkeypatch):
  import behavior_worker
