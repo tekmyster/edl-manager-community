@@ -25,6 +25,8 @@ def send_result(packet,catalog,value,candidates=None):
    if set(entry)=={'support_id','explanation'} and isinstance(entry['support_id'],str) and entry['support_id'].startswith(kind+':'):
     ident=entry['support_id'].split(':',1)[1]
     if ident in catalog.get(kind,{}):entry['explanation']=mapping_text(kind,ident,catalog[kind][ident])
+ from test_generation_fixtures import wire_or_invalid_legacy
+ value=wire_or_invalid_legacy(packet,value,candidates,catalog)
  calls=[]
  class Response:
   status_code=200
@@ -36,17 +38,17 @@ def send_result(packet,catalog,value,candidates=None):
 
 def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,catalog):
  wire=result(mixed);wire['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':'Unconfirmed detector observation'},{'support_id':'attack:T1046','explanation':'Separate observation'}];wire['d3fend_context']=[{'support_id':'d3fend:D3-ANET','explanation':'Defensive context only'}]
- (value,metadata),calls=send_result(mixed,catalog,wire);payload=calls[0];prompt=json.loads(payload['messages'][1]['content']);choices=prompt['allowed_mappings'];schema=payload['format']['properties']
+ (value,metadata),calls=send_result(mixed,catalog,wire);payload=calls[0];prompt=json.loads(payload['messages'][1]['content']);choices={kind:{kind+':'+v['technique_id']:v for v in prompt['offered'][kind].values()} for kind in ('attack','d3fend')};schema=payload['format']['properties']
  assert value['attack_techniques'][0]['evidence_ids']==['ps']
  assert value['attack_techniques'][1]['evidence_ids']==['net']
  assert value['d3fend_context'][0]['evidence_ids']==['f1','f2']
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
-  spec=schema[field]['items']['properties'];assert set(spec)=={'support_id','explanation'}
-  assert spec['support_id']['enum']==list(choices[kind])
+  spec=schema[field]['items'];assert spec['type']=='string'
+  assert spec['enum']==list(prompt['offered'][kind])
   for claim in choices[kind].values():
    assert 'context-only' not in claim['evidence_ids'];validate_mapping(kind,claim,select(catalog,mixed),mixed)
  assert choices['attack']['attack:T1110']['evidence_ids']==['f1','f2']
- assert metadata['prompt_version']=='behavior-3.9' and metadata['generation_schema_version']=='grounded-observations-3'
+ assert metadata['prompt_version']=='behavior-3.10' and metadata['generation_schema_version']=='grounded-choices-1'
  assert len(payload['messages'][1]['content'].encode())<=18000 and payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
 
 @pytest.mark.parametrize('entry',[
@@ -69,7 +71,7 @@ def test_invalid_or_altered_wire_claim_rejects_whole_assessment(mixed,catalog,en
 def test_duplicate_choices_reject_instead_of_silently_deduplicating(mixed,catalog):
  wire=result(mixed);entry={'support_id':'attack:T1046','explanation':'Observation'};wire['attack_techniques']=[entry,entry]
  with pytest.raises(ai.ModelOutputError) as e:send_result(mixed,catalog,wire)
- assert e.value.metadata['validation_diagnostic']=={'stage':'taxonomy_choices','reason':'taxonomy_choice_duplicate'}
+ assert e.value.metadata['validation_diagnostic']=={'stage':'response_schema','reason':'object_fields','field':'$'}
 
 def test_decoder_rejects_extra_citations_and_does_not_partially_mutate(mixed,catalog):
  choices=ai.taxonomy_choices(mixed,select(catalog,mixed));wire=result(mixed)
@@ -87,14 +89,14 @@ def test_canonical_malformed_unknown_refs_remain_rejected(mixed,catalog,refs):
 def test_empty_unsupported_mapping_is_offered_and_remains_empty(catalog):
  packet={'packet_id':'ordinary','coverage':'saved_samples','events':[event()],'context':[{'id':'ctx'}]}
  (value,_),calls=send_result(packet,catalog,result(packet));prompt=json.loads(calls[0]['messages'][1]['content'])
- assert prompt['allowed_mappings']=={'attack':{},'d3fend':{}}
+ assert not prompt['offered']['attack'] and not prompt['offered']['d3fend']
  assert not value['attack_techniques'] and not value['d3fend_context']
  assert all(calls[0]['format']['properties'][f]['maxItems']==0 for f in ['attack_techniques','d3fend_context'])
 
 def test_single_failed_login_never_offers_bruteforce_choice(catalog):
  packet={'packet_id':'one','coverage':'saved_samples','events':[event(action='authentication failure')],'context':[]}
  (_,metadata),calls=send_result(packet,catalog,result(packet));prompt=json.loads(calls[0]['messages'][1]['content'])
- assert not prompt['allowed_mappings']['attack']
+ assert not prompt['offered']['attack']
 
 def test_bruteforce_pair_is_not_borrowed_from_another_mapping(catalog):
  packet={'packet_id':'different-pairs','coverage':'saved_samples','events':[event('f0','authentication failure',seen='2026-10-16T14:00:00+00:00'),event('f1','authentication failure'),event('f2','authentication failure')],'context':[]}
@@ -132,7 +134,7 @@ def test_selected_registry_recomputation_and_tampered_support_are_consistent(mix
  with pytest.raises(ValueError):ai.taxonomy_choices(mixed,tampered)
  # Inference recomputes eligibility from observations even for an already selected registry.
  (_,unused),calls=send_result(mixed,tampered,result(mixed));prompt=json.loads(calls[0]['messages'][1]['content'])
- assert prompt['allowed_mappings']==full
+ assert {kind:{kind+':'+v['technique_id']:{k:x for k,x in v.items() if k!='explanation'} for v in prompt['offered'][kind].values()} for kind in ('attack','d3fend')}==full
 
 def test_complete_claim_normalization_still_invokes_canonical_validation(mixed,catalog,monkeypatch):
  original=ai.validate_result;seen=[]
@@ -141,12 +143,12 @@ def test_complete_claim_normalization_still_invokes_canonical_validation(mixed,c
  monkeypatch.setattr(ai,'validate_result',guard)
  wire=result(mixed);wire['attack_techniques']=[{'support_id':'attack:T1110','explanation':'Sampled failures only'}]
  (value,_),_=send_result(mixed,catalog,wire)
- assert seen==[value] and value['attack_techniques'][0]['evidence_ids']==['f1','f2']
+ assert seen==[value,value] and value['attack_techniques'][0]['evidence_ids']==['f1','f2']
 
 def test_malicious_verdict_missing_findings_is_not_salvaged(mixed,catalog):
  wire=result(mixed);wire.update(classification='malicious',analysis_summary=SUMMARIES['malicious']);wire['findings']=[];wire['attack_techniques']=[{'support_id':'attack:T1110','explanation':'Unconfirmed'}]
  with pytest.raises(ai.ModelOutputError) as e:send_result(mixed,catalog,wire)
- assert e.value.metadata['validation_diagnostic']=={'stage':'evidence_validation','reason':'missing_findings'}
+ assert e.value.metadata['validation_diagnostic']=={'stage':'response_schema','reason':'object_fields','field':'$'}
 
 def test_prompt_and_wire_schema_versions_invalidate_cache_without_native_changes(tmp_path,mixed,catalog,monkeypatch):
  from core import Store,now

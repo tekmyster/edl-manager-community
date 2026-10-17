@@ -56,7 +56,7 @@ def test_actual_transport_bounded_redacted_sequence(data):
   status_code=200
   def close(self):pass
   def iter_content(self,n):
-   from test_behavior_ai import result
+   from behavior_generation import example as result
    yield json.dumps({'done':True,'model':'test','message':{'content':json.dumps(result(packet))}}).encode()
  def send(url,**kwargs):captured.append(kwargs['json']['messages'][1]['content']);return Response()
  infer({**DEFAULTS,'endpoint':'https://127.0.0.1','model':'test'},packet,[],{},'test-only-key',requester=send)

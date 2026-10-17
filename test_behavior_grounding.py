@@ -8,6 +8,8 @@ from test_behavior_taxonomy import catalog,event
 def packet(*events,context=None):return {'packet_id':'grounding-fixture','coverage':'saved_samples','events':list(events),'context':context or []}
 
 def transport(p,value,registry=None,candidates=None):
+ from test_generation_fixtures import wire_or_invalid_legacy
+ value=wire_or_invalid_legacy(p,value,candidates,registry)
  calls=[]
  class Response:
   status_code=200
@@ -60,7 +62,7 @@ def test_fact_text_and_citation_must_match_even_when_both_exist_in_schema():
  failure=next(f for f in contract(p,{})['facts'] if f['evidence_ids']==['failure'])
  bad['findings']=[{**failure,'evidence_ids':['connection']}]
  with pytest.raises(ai.ModelOutputError) as error:transport(p,bad)
- assert error.value.metadata['validation_diagnostic']=={'stage':'evidence_validation','category':'grounding_contract','reason':'citation_binding','field':'findings.evidence_ids','index':0}
+ assert error.value.metadata['validation_diagnostic']['stage']=='response_schema' # Legacy text/citation wire is rejected, never repaired.
 
 @pytest.mark.parametrize('sentence',[
  'No clear malicious activity detected. Multiple authentication failures may indicate a brute-force attack, but without additional context, this is not conclusive.',
@@ -131,7 +133,7 @@ def test_coherent_reported_command_and_transfer_can_permit_an_interpretation_not
  assert transport(p,value)[0][0]['classification']=='malicious'
  value['findings']=[]
  with pytest.raises(ai.ModelOutputError) as error:transport(p,value)
- assert error.value.metadata['validation_diagnostic']['reason']=='missing_findings'
+ assert error.value.metadata['validation_diagnostic']['reason']=='object_fields' # Invalid legacy wire is not converted.
 
 def test_fact_budget_and_existing_small_model_resource_limits(catalog):
  p=packet(*(event(str(i),action='connection observed') for i in range(100)))

@@ -161,15 +161,15 @@ def test_small_gpu_budget_and_validated_display_metadata(catalog):
  r=result(packet);r['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':mapping_text('attack','T1059.001',catalog['attack']['T1059.001'])}]
  class Response:
   status_code=200
-  def iter_content(self,n):yield json.dumps({'done':True,'model':'example','message':{'content':json.dumps(r)}}).encode()
+  def iter_content(self,n):yield json.dumps({'done':True,'model':'example','message':{'content':json.dumps(__import__('test_generation_fixtures').wire_or_invalid_legacy(packet,r,registry=catalog))}}).encode()
   def close(self):pass
  def send(*args,**kwargs):captured.append(kwargs['json']);return Response()
  assessment,metadata=infer(cfg,packet,[],catalog,'unused',requester=send)
  payload=captured[0];prompt=json.loads(payload['messages'][1]['content'])
- assert len(prompt['allowed_mappings']['attack'])<=MAX_ATTACK and len(prompt['allowed_mappings']['d3fend'])<=MAX_DEFEND
+ assert len(prompt['offered']['attack'])<=MAX_ATTACK and len(prompt['offered']['d3fend'])<=MAX_DEFEND
  assert len(payload['messages'][1]['content'].encode())<=18000
  assert payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
- assert prompt['allowed_mappings']['attack']['attack:T1059.001']['evidence_ids']==['one']
+ assert next(v for v in prompt['offered']['attack'].values() if v['technique_id']=='T1059.001')['evidence_ids']==['one']
  assert metadata['taxonomy_mappings']['attack_techniques'][0]['name']==catalog['attack']['T1059.001']
  assert metadata['taxonomy_registry_sha256']==catalog['registry_sha256']
  r['attack_techniques'][0]['evidence_ids']=['ctx'];packet['context']=[{'id':'ctx'}]
@@ -228,7 +228,7 @@ def test_authenticated_detail_renders_mapping_and_preserves_native_policy(catalo
   r['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':mapping_text('attack','T1059.001',catalog['attack']['T1059.001'])}]
   class Response:
    status_code=200
-   def iter_content(self,n):yield json.dumps({'done':True,'model':'fixture','message':{'content':json.dumps(r)}}).encode()
+   def iter_content(self,n):yield json.dumps({'done':True,'model':'fixture','message':{'content':json.dumps(__import__('test_generation_fixtures').wire_or_invalid_legacy(packet,r,registry=catalog))}}).encode()
    def close(self):pass
   return infer(*args[:5],requester=lambda *a,**k:Response(),attempt=args[6] if len(args)>6 else None)
  monkeypatch.setattr(behavior_ai,'infer',fake)

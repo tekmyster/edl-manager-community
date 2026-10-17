@@ -188,7 +188,7 @@ def test_finish_without_known_dispatch_does_not_invent_history(tmp_path):
 @pytest.mark.parametrize('rejected',[True,False])
 def test_inference_recovers_failed_start_with_final_validation_and_ttfr(tmp_path,terminator,streaming,rejected):
     import json
-    from test_behavior_ai import result
+    from behavior_generation import example as result
     packet,_,_=request_fixture(tmp_path,{})
     b=Brain(Store(tmp_path/'manager'));native,behavior=dump(b.store),dump(b)
     with ledger.connect(b.store,True):pass

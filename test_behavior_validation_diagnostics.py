@@ -2,13 +2,13 @@
 import json,pytest
 from behavior_ai import DEFAULTS,infer,ModelOutputError
 from test_behavior_backend_telemetry import request_fixture
-from test_behavior_ai import result
+from behavior_generation import example as result
 
 @pytest.mark.parametrize('change,stage,reason,field',[
  (lambda r:r.update(classification='PRIVATE-REJECTED-LABEL'),'response_schema','label_or_enum','classification'),
  (lambda r:r.update(maliciousness_confidence=90),'response_schema','confidence','maliciousness_confidence'),
  (lambda r:r.update(**{'PRIVATE-UNEXPECTED-KEY':'PRIVATE-CONTENT'}),'response_schema','object_fields','$'),
- (lambda r:r['findings'][0].update(evidence_ids=['PRIVATE-CITATION']),'response_schema','label_or_enum','findings.*.evidence_ids.*'),
+ (lambda r:r['findings'].__setitem__(0,'PRIVATE-CITATION'),'response_schema','label_or_enum','findings.*'),
  (lambda r:r.update(classification='malicious',findings=[]),'response_schema','label_or_enum','classification'),
 ])
 def test_rejections_record_only_fixed_codes_and_schema_paths(tmp_path,change,stage,reason,field):

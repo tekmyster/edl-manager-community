@@ -102,7 +102,7 @@ def test_packet_byte_bound_keeps_rare_file_original_connection_and_support(tmp_p
  import datetime as dt
  from core import Store
  from behavior_ai import Brain,DEFAULTS,infer
- from behavior_grounding import example
+ from behavior_generation import example
  original=linked_packet()['events'];samples=[]
  for e in original:
   sample={'id':e['provenance']['upstream_id'],'seen':e['seen'],'action':e['action'],'source_observation':e['source_observation']}

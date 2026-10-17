@@ -78,12 +78,12 @@ def test_transport_pins_tls_disables_redirects_and_restricts_output(evidence):
  packet=Brain(evidence).packet(evidence.describe('8.8.8.8'))[1];cfg={**DEFAULTS,'endpoint':'https://127.0.0.1','model':'test','ca_file':'/trusted/ca.pem'};calls=[]
  class Response:
   status_code=200
-  def iter_content(self,n):yield json.dumps({'done':True,'model':'test','message':{'content':json.dumps(result(packet))}}).encode()
+  def iter_content(self,n):yield json.dumps({'done':True,'model':'test','message':{'content':json.dumps(__import__('behavior_generation').example(packet))}}).encode()
   def close(self):calls.append('closed')
  def send(url,**kwargs):
   assert url=='https://127.0.0.1/api/chat' and kwargs['verify']=='/trusted/ca.pem' and kwargs['allow_redirects'] is False
   schema=kwargs['json']['format']['properties'];assert schema['maliciousness_confidence']['enum'][0]==0 and schema['maliciousness_confidence']['enum'][-1]==1
-  assert schema['automation']['properties']['confidence']['enum']==schema['maliciousness_confidence']['enum']
+  assert schema['automation']['items']['properties']['confidence']['enum']==schema['maliciousness_confidence']['enum']
   assert schema['attack_techniques']['maxItems']==0 and schema['actor_correlation']['maxItems']==0
   assert 'tools' not in kwargs['json']
   return Response()
@@ -126,13 +126,13 @@ def test_small_gpu_response_is_compact_and_truncation_is_rejected(evidence):
  class Response:
   status_code=200
   def iter_content(self,n):
-   yield json.dumps({'done':True,'done_reason':'length','model':'test','message':{'content':json.dumps(result(packet))}}).encode()
+   yield json.dumps({'done':True,'done_reason':'length','model':'test','message':{'content':json.dumps(__import__('behavior_generation').example(packet))}}).encode()
   def close(self):pass
  def send(*args,**kwargs):
   schema=kwargs['json']['format']['properties']
   assert schema['findings']['maxItems']==2
-  assert schema['findings']['items']['properties']['evidence_ids']['maxItems']==2
-  assert schema['analysis_summary']['maxLength']==240
+  assert schema['findings']['items']['type']=='string'
+  assert 'analysis_summary' not in schema
   return Response()
  with pytest.raises(ValueError,match='output_limit'):
   infer(cfg,packet,[],{},'',requester=send)
@@ -161,11 +161,11 @@ def test_inference_separates_current_and_historical_references(evidence):
   def iter_content(self,n):
    r=result(packet)
    r['actor_correlation']=[{'candidate_id':'peer','confidence':.5,'current_evidence_ids':[packet['events'][0]['id']],'historical_evidence_ids':['remote-event'],'explanation':RELATION,'alternative_explanations':[ALTERNATIVE]}]
-   yield json.dumps({'done':True,'model':'test','message':{'content':json.dumps(r)}}).encode()
+   yield json.dumps({'done':True,'model':'test','message':{'content':json.dumps(__import__('test_generation_fixtures').wire_or_invalid_legacy(packet,r,[candidate]))}}).encode()
   def close(self):pass
  def send(*args,**kw):
   fields=kw['json']['format']['properties']['actor_correlation']['items']['properties']
-  assert fields['historical_evidence_ids']['items']['enum']==['remote-event']
+  assert len(fields['choice_id']['enum'])==1
   assert 'evidence_ids' not in fields
   return Response()
  r,meta=infer(cfg,packet,[candidate],{},'',requester=send)

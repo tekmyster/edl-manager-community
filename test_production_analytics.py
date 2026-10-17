@@ -96,7 +96,7 @@ def test_supervisor_three_earlier_hits_and_current_miss_are_seventy_five_percent
 @pytest.mark.parametrize('terminator',[b'',b'\n',b'\r\n'])
 @pytest.mark.parametrize('byte_chunks',[False,True])
 def test_complete_nonstreaming_fallback_never_becomes_first_content_timing(tmp_path,terminator,byte_chunks):
-    from test_behavior_ai import result
+    from behavior_generation import example as result
     packet,_,_=request_fixture(tmp_path,{})
     body=json.dumps({'model':'test','done':True,'message':{'content':json.dumps(result(packet))},
                      'prompt_eval_count':123,'eval_count':45}).encode()+terminator
@@ -120,7 +120,7 @@ def test_complete_nonstreaming_fallback_never_becomes_first_content_timing(tmp_p
 
 
 def test_empty_interim_frame_then_final_only_content_has_unknown_first_content_time(tmp_path):
-    from test_behavior_ai import result
+    from behavior_generation import example as result
     packet,_,_=request_fixture(tmp_path,{})
     frames=[{'model':'test','done':False,'message':{'content':''}},
             {'model':'test','done':True,'message':{'content':json.dumps(result(packet))}}]
@@ -134,7 +134,7 @@ def test_empty_interim_frame_then_final_only_content_has_unknown_first_content_t
 
 
 def test_stream_measures_first_content_and_validates_final_output(tmp_path):
-    from test_behavior_ai import result
+    from behavior_generation import example as result
     packet,_,_=request_fixture(tmp_path,{})
     full=json.dumps(result(packet));parts=[full[:50],full[50:]];calls=[]
     class Response:

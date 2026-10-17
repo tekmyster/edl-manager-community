@@ -2,7 +2,7 @@
 import json,pytest
 from core import Store,now
 from behavior_ai import Brain,DEFAULTS,infer,ModelOutputError
-from test_behavior_ai import result
+from behavior_generation import example as result
 
 def request_fixture(tmp_path,fields):
  s=Store(tmp_path/'native');s.evidence('8.8.8.8','waf','fixture',now(),'http',50,details={'activity':{'events':[{'id':'one','seen':now(),'path':'/login','method':'GET','action':'sample'}]}})

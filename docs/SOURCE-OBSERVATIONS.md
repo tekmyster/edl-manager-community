@@ -56,7 +56,7 @@ Packet selection prefers bounded complete linkage groups and retains the existin
 24-signal and six-support-bundle bounds. These bound evidence size and work;
 Unlimited inference has no daily or per-cycle request-count ceiling.
 
-`grounded-observations-3` / `behavior-3.9` adds fixed grounding rejection reasons,
+`grounded-observations-3` / `behavior-3.9` added fixed grounding rejection reasons,
 schema field paths and zero-based array indexes where applicable. Diagnostics
 retain no rejected text, labels, citation values or exception messages. Invalid
 assessments remain failed; no partial verdict is salvaged. Old generic rejection
@@ -67,3 +67,6 @@ The Private lab adapter is intentionally excluded from Community. Integrators
 must implement their own bounded, authenticated source reads and may use the
 portable contract without that adapter. Changes here do not establish ground
 truth, calibrate confidence or change native scoring, retention or enforcement.
+
+The staged `behavior-3.10` generation protocol selects scoped offered objects
+without copying text/citations; see [generation choices](GENERATION-CHOICES.md).
