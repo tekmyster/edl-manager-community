@@ -38,8 +38,16 @@ def summary(brain, timezone='UTC', at=None):
             recovery_table=bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='request_recovery'").fetchone())
             extra=',request_recovery.saved_at recovery_saved_at' if recovery_table else ''
             join=' LEFT JOIN request_recovery ON request_recovery.id=requests.id' if recovery_table else ''
-            attempts=[dict(r) for r in db.execute('SELECT requests.*'+extra+' FROM requests'+join+' WHERE (started>=? OR finished>=?) AND started<? ORDER BY started DESC',(stamp(min(start,midnight)),stamp(min(start,midnight)),stamp(at)))]
+            cohort=min(start,midnight)
+            recovery_scope=' OR (request_recovery.saved_at>=? AND request_recovery.saved_at<?)' if recovery_table else ''
+            # Legacy saved times have seconds; read an indexed superset then
+            # compare aware instants so '+' / '.' ordering cannot lose a boundary.
+            recovery_bounds=(stamp(cohort-dt.timedelta(seconds=1)),stamp(at+dt.timedelta(seconds=1))) if recovery_table else ()
+            attempts=[dict(r) for r in db.execute('SELECT requests.*'+extra+' FROM requests'+join+' WHERE (started>=? OR finished>=?'+recovery_scope+') AND started<? ORDER BY started DESC',(stamp(cohort),stamp(cohort),*recovery_bounds,stamp(at)))]
             recovered={r['id']:value for r in attempts if (value:=r.pop('recovery_saved_at',None))}
+            attempts=[r for r in attempts if parse(r['started']) and parse(r['started'])<at and
+                      (parse(r['started'])>=cohort or (parse(r['finished']) and parse(r['finished'])>=cohort) or
+                       (parse(recovered.get(r['id'])) and cohort<=parse(recovered[r['id']])<at))]
             bounds=(stamp(start),stamp(at))
             counters=[dict(r) for r in db.execute('SELECT hour,provider,kind,sum(n) n,max(last) last FROM counters WHERE hour>=? AND hour<? GROUP BY hour,provider,kind',bounds)]
             for r in db.execute("SELECT provider,count(distinct nullif(ip,'')) touched,count(distinct CASE WHEN kind='outbound' THEN nullif(ip,'') END) outbound,count(distinct CASE WHEN kind='usable' THEN nullif(ip,'') END) usable,count(distinct CASE WHEN kind='local_query' THEN nullif(ip,'') END) local_query FROM counters WHERE hour>=? AND hour<? GROUP BY provider",bounds):unique_ips[r['provider']]=dict(r)
