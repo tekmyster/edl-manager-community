@@ -27,6 +27,7 @@ def metadata(collector,address,session,semantic):
  return {'version':VERSION,'collector_ref':scope,'source_ref':source,'session_ref':reference(scope+'|'+source+'|'+str(session)), 'semantic':semantic}
 
 def sanitize(value,address):
+ if isinstance(value,dict) and value.get('conflict') is True:return {'conflict':True}
  if not isinstance(value,dict) or value.get('version')!=VERSION:return {}
  if value.get('semantic') not in SEMANTICS or value.get('source_ref')!=source_reference(address):return {}
  keys=('collector_ref','source_ref','session_ref')

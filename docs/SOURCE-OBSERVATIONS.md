@@ -6,6 +6,17 @@ Metadata is additive: original sample IDs, event timestamps, destinations and
 ports retain their meaning and the historical event ID formula is unchanged.
 Historical assessments and rejection records are never rewritten.
 
+Cached observations merge monotonically using the same conflict rule as packet
+assembly. Missing legacy metadata can be enriched; differing nonempty reports
+become a fixed `{"conflict": true}` marker. Save/reload, later original copies,
+legacy copies and provenance enrichment cannot clear that marker. If a timestamp
+or target disagreement creates another historical ID for the same original
+record, both IDs remain, and all cached variants are marked conflicting. Exact
+original-record lookups use a derived-history index scoped by IP, source, sensor
+and configured collection scope. Generic records without observation metadata
+retain existing behavior. Markers live with derived history under its existing
+retention rules; this is not an unbounded identity ledger.
+
 Collectors may attach `source_observation` to a sampled event:
 
 | Field | Meaning |

@@ -7,6 +7,7 @@ from web_client import request_structure
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS event_history(id TEXT NOT NULL,ip TEXT NOT NULL,source TEXT NOT NULL,sensor TEXT NOT NULL,seen TEXT NOT NULL,received TEXT NOT NULL,scope TEXT NOT NULL,content TEXT NOT NULL,PRIMARY KEY(id,scope));
 CREATE INDEX IF NOT EXISTS event_history_ip_time ON event_history(ip,seen,id);
+CREATE INDEX IF NOT EXISTS event_history_origin ON event_history(ip,source,sensor,scope,json_extract(content,'$.provenance.upstream_id'));
 CREATE TABLE IF NOT EXISTS history_queries(ip TEXT PRIMARY KEY,scope TEXT NOT NULL,fetched TEXT NOT NULL,content TEXT NOT NULL);
 '''
 
@@ -52,16 +53,31 @@ def save(brain,address,source,sensor,samples,received,scope=""):
    event=normalize(address,source,sensor,sample,received)
    if event:
     db.execute('INSERT OR IGNORE INTO event_history VALUES(?,?,?,?,?,?,?,?)',(event['id'],address,event['source'],event['sensor'],event['seen'],received,scope,json.dumps(event)))
-    from behavior_references import index_event
-    index_event(db,address,event,scope)
+    # Merge the persisted report, never just the current input. First receipt,
+    # event identity and original event fields stay immutable.
+    prior=json.loads(db.execute('SELECT content FROM event_history WHERE id=? AND scope=?',(event['id'],scope)).fetchone()[0])
+    changed=False
     if event.get('source_observation'):
-     prior=json.loads(db.execute('SELECT content FROM event_history WHERE id=? AND scope=?',(event['id'],scope)).fetchone()[0])
-     if prior.get('source_observation')!=event['source_observation']:
-      prior['source_observation']=event['source_observation'];db.execute('UPDATE event_history SET content=? WHERE id=? AND scope=?',(json.dumps(prior),event['id'],scope))
+     from source_observations import merge_reports
+     observation=merge_reports(prior.get('source_observation'),event['source_observation'])
+     if prior.get('source_observation')!=observation:prior['source_observation']=observation;changed=True
     if event['provenance']['record_id']:
-     prior=json.loads(db.execute('SELECT content FROM event_history WHERE id=? AND scope=?',(event['id'],scope)).fetchone()[0])
      if not prior['provenance'].get('record_id'):
-      prior['provenance']=event['provenance'];db.execute('UPDATE event_history SET content=? WHERE id=? AND scope=?',(json.dumps(prior),event['id'],scope))
+      prior['provenance']=event['provenance'];changed=True
+    if changed:db.execute('UPDATE event_history SET content=? WHERE id=? AND scope=?',(json.dumps(prior),event['id'],scope))
+    # A changed native timestamp/target creates a separate historical ID. Keep
+    # both identities, but never select a coherent copy of a disputed original.
+    # This indexed exact-origin lookup does not scan/truncate a sample window.
+    origin=event['provenance']['upstream_id']
+    if origin:
+     where="ip=? AND source=? AND sensor=? AND scope=? AND json_extract(content,'$.provenance.upstream_id')=?"
+     args=(address,event['source'],event['sensor'],scope,origin)
+     observed=bool(prior.get('source_observation')) or db.execute('SELECT 1 FROM event_history WHERE '+where+" AND json_type(content,'$.source_observation')='object' LIMIT 1",args).fetchone()
+     if observed and db.execute('SELECT 1 FROM event_history WHERE '+where+' AND id<>? LIMIT 1',(*args,event['id'])).fetchone():
+      db.execute('UPDATE event_history SET content=json_set(content,\'$.source_observation\',json(\'{"conflict":true}\')) WHERE '+where,args)
+      prior['source_observation']={'conflict':True}
+    from behavior_references import index_event
+    index_event(db,address,prior,scope)
 
 def cache_rows(brain,row,at,source_cfg=None):
  received=at.isoformat(timespec='seconds');scope=collection_scope(brain,source_cfg)
