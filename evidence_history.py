@@ -61,6 +61,9 @@ def save(brain,address,source,sensor,samples,received,scope=""):
      from source_observations import merge_reports
      observation=merge_reports(prior.get('source_observation'),event['source_observation'])
      if prior.get('source_observation')!=observation:prior['source_observation']=observation;changed=True
+    old_agent=prior['provenance'].get('collector_agent');new_agent=event['provenance'].get('collector_agent')
+    if prior.get('source_observation') and old_agent and new_agent and old_agent!=new_agent:
+     prior['source_observation']={'conflict':True};changed=True
     if event['provenance']['record_id']:
      if not prior['provenance'].get('record_id'):
       prior['provenance']=event['provenance'];changed=True

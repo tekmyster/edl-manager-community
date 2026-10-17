@@ -104,3 +104,15 @@ def test_conflicts_are_scoped_and_original_lookup_is_indexed(tmp_path):
  with brain.connect() as db:
   plan=db.execute("EXPLAIN QUERY PLAN SELECT id FROM event_history WHERE ip=? AND source=? AND sensor=? AND scope=? AND json_extract(content,'$.provenance.upstream_id')=? AND id<>? LIMIT 1",(ADDRESS,'tpot','Cowrie','old-index','cmd','other')).fetchall()
  assert any('event_history_origin' in row['detail'] for row in plan)
+
+def test_known_index_collector_disagreement_persists_after_later_original(tmp_path):
+ store=Store(tmp_path/'native');brain=Brain(store);original=[{**e,'_agent':'collector-A','_index_id':'forwarded-record'} for e in samples()]
+ save(brain,ADDRESS,'tpot','Cowrie',original,AT.isoformat())
+ assert 'malicious' in contract(packet(reload(store)),{})['classifications']
+ changed={**copy.deepcopy(original[1]),'_agent':'collector-B'}
+ save(brain,ADDRESS,'tpot','Cowrie',[changed],(AT+dt.timedelta(minutes=1)).isoformat())
+ save(reload(store),ADDRESS,'tpot','Cowrie',original,(AT+dt.timedelta(minutes=2)).isoformat())
+ p=packet(reload(store),original)
+ assert 'malicious' not in contract(p,{})['classifications']
+ command=next(e for e in p['events'] if e['action']=='cowrie.command.input')
+ assert command['source_observation']=={'conflict':True} and command['provenance']['collector_agent']=='collector-A'
