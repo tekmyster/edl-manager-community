@@ -63,7 +63,7 @@ META={'request_id':'b028bf3ea16e4055bf8215f59af9e054','first_content_seconds':1.
       'input_tokens':2981,'output_tokens':181,'request_seconds':3.651241}
 
 
-def test_known_legacy_pending_completion_recovers_without_inventing_times_or_rows(tmp_path):
+def test_known_legacy_pending_completion_recovers_without_inventing_times_or_rows(tmp_path,monkeypatch):
     b=Brain(Store(tmp_path/'native'));meta=dict(META)
     with ledger.connect(b.store,True) as db:
         db.execute("INSERT INTO requests(id,packet,started,state) VALUES(?,?,?,'pending')",(meta['request_id'],'packet','2026-10-17T19:08:53.548300+00:00'))
@@ -87,6 +87,9 @@ def test_known_legacy_pending_completion_recovers_without_inventing_times_or_row
     app.testing=True;client=app.test_client()
     with app.store.connect() as db:db.execute('INSERT INTO users VALUES(?,?,?)',('fixture','hash',1))
     with client.session_transaction() as session:session.update(user='fixture',version=1,expires_at=time.time()+3600,csrf='test-only')
+    # Keep the routed report on the same observation clock as this fixed cohort.
+    import functools
+    monkeypatch.setattr('production_analytics.summary',functools.partial(summary,at=dt.datetime(2026,10,17,20,tzinfo=dt.timezone.utc)))
     response=client.get('/analytics',base_url='https://localhost');assert response.status_code==200
     assert b'Recovered completion timing: 1 without exact finish times.' in response.data
     assert b'Token charts use saved assessment times.' in response.data
