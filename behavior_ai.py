@@ -612,7 +612,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  brain=Brain(store)
  from behavior_telemetry import recover
  telemetry_recovery=recover(brain)
- from source_handoff import deliver,ready,indexed as handoff_indexed
+ from source_handoff import deliver,ready
  handoff=getattr(store,'_source_handoff_status',{'status':'starting'}) if getattr(store,'_source_handoff_background',False) else deliver(brain,should_stop=should_stop)
  backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
  store._behavior_index_addresses=tuple(r['ip'] for r in rows)
@@ -630,7 +630,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  metadata_priority=[metadata_rows[a] for a in pending_metadata if a in metadata_rows]
  priority=(metadata_priority+[r for r in changed if r['ip'] not in pending_metadata])[:cfg['batch_size']//2];seen={r['ip'] for r in priority}
  fair=rows[offset:offset+cfg['batch_size']-len(priority)]
- chosen=(priority+[r for r in fair if r['ip'] not in seen])[:cfg['batch_size']];results={};palo_calls=0;palo_results={};history_results={};retrieved={}
+ chosen=(priority+[r for r in fair if r['ip'] not in seen])[:cfg['batch_size']];results={};palo_calls=0;palo_results={};history_results={};retrieved={};indexed_count=0
  from behavior_retention import cleanup as retention_cleanup
  from behavior_intelligence import cleanup as intelligence_cleanup
  with brain.connect() as db:intelligence_cleanup(db)
@@ -649,10 +649,12 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
    from behavior_context import refresh_palo
    p=refresh_palo(store,source_cfg,row['ip'],cfg['palo_daily_budget']);palo_results[p]=palo_results.get(p,0)+1
    if p in ('refreshed','failed'):palo_calls+=1
-  from packet_indexing import index_packet,lock as index_lock
-  with index_lock(store):
-   ident,candidates=index_packet(brain,store,row['ip'],cfg,source_cfg);retrieved[ident]=candidates
-   if row['ip'] in pending_metadata:handoff_indexed(brain,row['ip'],pending_metadata[row['ip']],source_cfg)
+  from packet_indexing import index_packet,lock as index_lock,Cancelled as IndexCancelled
+  try:
+   with index_lock(store):
+    ident,candidates=index_packet(brain,store,row['ip'],cfg,source_cfg,revision=pending_metadata.get(row['ip']),should_stop=should_stop)
+    if ident is not None:retrieved[ident]=candidates;indexed_count+=1
+  except IndexCancelled:break
  # An oldest-first fairness slot plus diverse evidence candidates within the oldest 100
  # decouples indexing from model execution; finite settings retain optional quotas.
  # Changed windows replace pending content without losing their original place.
@@ -661,7 +663,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  if cfg['model_enabled'] and not index_only:
   refresh=lambda:run(store,index_only=True,source_cfg=source_cfg,should_stop=should_stop)
   results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
- status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ status={'completed':now(),'indexed':indexed_count,'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  status['packet_readiness']=getattr(store,'_packet_index_status',{'status':'inline'})
  store.state('behavior_worker',status);return status
 

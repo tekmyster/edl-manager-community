@@ -55,13 +55,14 @@ def test_arriving_revision_survives_ack_and_old_packet_is_immutable(tmp_path,mon
   for r in packets:assert tuple(db.execute('SELECT * FROM packets WHERE id=?',(r[0],)).fetchone())==r
 
 
-def test_restart_after_packet_commit_before_ack_and_cancel(tmp_path,monkeypatch):
+def test_failed_atomic_packet_and_ack_roll_back_then_restart(tmp_path,monkeypatch):
  import source_handoff
  s,b,addresses=fixture(tmp_path);original=source_handoff.indexed
  def interrupted(*a,**kw):raise RuntimeError('isolated interruption after packet commit')
  monkeypatch.setattr(source_handoff,'indexed',interrupted)
  with pytest.raises(RuntimeError):indexing.page(b,s,None)
  with b.connect() as db:before=[tuple(r) for r in db.execute('SELECT * FROM packets')]
+ assert before==[]
  assert addresses[0] in ready(b)
  monkeypatch.setattr(source_handoff,'indexed',original)
  assert indexing.page(b,s,None,lambda:True)['status']=='cancelled'
@@ -71,6 +72,33 @@ def test_restart_after_packet_commit_before_ack_and_cancel(tmp_path,monkeypatch)
  assert not ready(b)
  with b.connect() as db:
   for r in before:assert tuple(db.execute('SELECT * FROM packets WHERE id=?',(r[0],)).fetchone())==r
+
+
+def test_cancel_after_packet_preparation_rolls_back_queue_and_ack(tmp_path,monkeypatch):
+ from behavior_ai import settings
+ s,b,addresses=fixture(tmp_path);address=addresses[0];revision=ready(b)[address];stop=threading.Event();original=Brain.packet
+ def preparing(self,*a,**kw):
+  value=original(self,*a,**kw);stop.set();return value
+ monkeypatch.setattr(Brain,'packet',preparing)
+ with pytest.raises(indexing.Cancelled):indexing.index_packet(b,s,address,{**settings(s),'model_enabled':True},revision=revision,should_stop=stop.is_set)
+ with b.connect() as db:
+  for table in ('packets','current_packets','analysis_queue'):assert db.execute('SELECT count(*) FROM '+table).fetchone()[0]==0
+ assert ready(b)[address]==revision
+ monkeypatch.setattr(Brain,'packet',original);stop.clear()
+ indexing.index_packet(b,s,address,{**settings(s),'model_enabled':True},revision=revision,should_stop=stop.is_set)
+ assert address not in ready(b)
+ with b.connect() as db:assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==1
+
+
+def test_stale_page_revision_cannot_publish_or_clear_newer_work(tmp_path):
+ from behavior_ai import settings
+ s,b,addresses=fixture(tmp_path);address=addresses[0];old=ready(b)[address]
+ s.source_activity(address,'tpot','Cowrie',AT.isoformat(),{'activity':{'events':proven(at=AT+dt.timedelta(minutes=1))}});deliver(b)
+ newer=ready(b)[address];assert newer>old
+ assert indexing.index_packet(b,s,address,settings(s),revision=old)==(None,[])
+ with b.connect() as db:assert db.execute('SELECT count(*) FROM current_packets').fetchone()[0]==0
+ assert ready(b)[address]==newer
+ assert indexing.page(b,s,None)['indexed']==1 and address not in ready(b)
 
 
 def test_readiness_runs_while_existing_worker_serial_work_waits(tmp_path,monkeypatch):

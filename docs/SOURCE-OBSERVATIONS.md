@@ -148,7 +148,11 @@ behavior process. A successful 100-row read page immediately takes another page;
 model work and the native fairness batch do not impose a delivery quota. Only
 addresses in the ordinary native score snapshot are eligible. Packet preparation
 is serialized with ordinary indexing, one packet at a time, and acknowledgement
-compares the exact ready revision. New receipts during preparation remain ready.
+compares the exact ready revision. History merges, packet/index publication,
+queue update and that acknowledgement share one bounded packet transaction.
+Native reads reuse a packet-local read-only connection; no native writer lock is
+held. A stale revision skips publication, and cancellation/failure rolls back the
+whole packet transaction. New receipts during preparation remain ready.
 This path reads saved evidence only; it issues no history, collector or model
 requests. Behavior Off, source scope, queue age, provider leases/backoff, pilot
 guards and the existing native fairness sweep retain their usual behavior.
