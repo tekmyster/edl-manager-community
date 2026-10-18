@@ -103,6 +103,8 @@ class Store:
    CREATE INDEX IF NOT EXISTS offender_returns_ip_time ON offender_returns(ip,seen);
    CREATE TABLE IF NOT EXISTS api_tokens(id TEXT PRIMARY KEY,name TEXT NOT NULL,digest TEXT NOT NULL UNIQUE,created TEXT NOT NULL,expires TEXT NOT NULL,actor TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1);
   ''')
+  from source_handoff import initialize as initialize_handoff
+  with self.connect() as d:initialize_handoff(d)
   from new_ips import initialize
   initialize(self)
   from event_history import SCHEMA
@@ -246,7 +248,7 @@ class Store:
    prior_return=d.execute('SELECT * FROM offender_returns WHERE ip=? AND policy_event=1 AND seen>=? ORDER BY seen DESC LIMIT 1',(address,cut)).fetchone()
    activity=[dict(x) for x in d.execute('SELECT * FROM source_activity WHERE ip=? AND seen>=? ORDER BY seen DESC',(address,cut))]
   return {**self.score(address,json.loads(meta[0]) if meta else {},evidence,caches,dict(retention) if retention else None,dict(prior_return) if prior_return else None),'activity':activity}
- def source_activity(self,address,source,sensor,seen,details):
+ def source_activity(self,address,source,sensor,seen,details,source_cfg=None):
   address=str(ip(address));t=dt.datetime.fromisoformat(seen.replace('Z','+00:00'))
   if t.tzinfo is None:raise ValueError('Native activity time must include timezone')
   t=t.astimezone(UTC);cut=dt.datetime.now(UTC)-dt.timedelta(days=30)
@@ -257,6 +259,8 @@ class Store:
    from offenders import returned
    returned(d,address,source,sensor,t.isoformat(timespec='seconds'))
    d.execute('INSERT INTO source_activity VALUES(?,?,?,?,?) ON CONFLICT(ip,source,sensor) DO UPDATE SET seen=excluded.seen,details=excluded.details WHERE excluded.seen>=source_activity.seen',(address,source,sensor,t.isoformat(timespec='seconds'),json.dumps(details)))
+   from source_handoff import capture
+   capture(d,address,source,sensor,details,now(),source_cfg)
  def score(self,address,meta,evidence,caches,retention=None,prior_return=None):
   configuration=getattr(self,'_source_configuration',None)
   if configuration is not None:

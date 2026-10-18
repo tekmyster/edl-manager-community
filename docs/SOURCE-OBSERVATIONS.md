@@ -96,3 +96,29 @@ truth, calibrate confidence or change native scoring, retention or enforcement.
 
 The staged `behavior-3.10` generation protocol selects scoped offered objects
 without copying text/citations; see [generation choices](GENERATION-CHOICES.md).
+
+Native sample delivery uses a local transactional handoff. Each distinct
+normalized sample revision is retained in `source_sample_handoff` in the same
+native SQLite transaction as `source_activity`, before later bounded bucket
+snapshots can replace that row. The handoff stores the existing redacted event
+allowlist and configured collection-scope hash; no raw commands, sessions,
+credentials, query values or new source queries are introduced. Original event
+time and the first actual local receipt are separate. Counters, native scores,
+retention and source attribution remain on their existing paths.
+
+The behavior worker consumes at most 500 revisions per indexing pass. It commits
+history, source receipts, an idempotency ledger and packet-readiness revisions
+together, then acknowledges only those exact native revisions. A busy or
+unavailable derived store cannot block native ingestion. A crash before native
+acknowledgement safely replays already committed revisions. Complete nonunique
+receipts still invalidate cached siblings even when later native subsets omit
+the file; no legacy conflict is automatically recovered.
+
+Readiness uses a separate real content revision, not a rewritten event timestamp.
+Eligible changed addresses use the existing half-batch priority allocation;
+normal round-robin slots, packet bounds, inference guards and Unlimited settings
+are unchanged. Readiness is cleared only for the revision successfully indexed,
+so a concurrent newer delivery remains pending. Handoff and delivery bookkeeping
+expire on original event time after 30 days, with at most 5,000 deletions per
+cleanup. This retains ingested sampled reports; it does not turn upstream
+summaries into a complete raw event archive or recover reports never ingested.

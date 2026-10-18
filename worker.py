@@ -59,9 +59,9 @@ def strength(source,detector):
  if 'dionaea' in d:return 'transport',10
  if 'mailoney' in d:return 'mail',10
  return 'http',5
-def ingest_source(s,k,d,updated,records):
+def ingest_source(s,k,d,updated,records,source_cfg=None):
  if d.get('edl_activity_json','{}')!='{}':
-  try:s.source_activity(k['ip'],k['source'],k['detector'].split(':')[0],d['edl_seen_utc'],{'activity':d['edl_activity_json'],'deterministic_qualifying':d.get('edl_qualifying')!='no',**({'native_event_count':int(d['edl_native_event_count'])} if 'edl_native_event_count' in d else {}),**({'native_attempt_count':int(d['edl_native_attempt_count'])} if 'edl_native_attempt_count' in d else {}),**({'destination_ports':d['edl_dst_ports'].split(',')} if 'edl_dst_ports' in d else {})})
+  try:s.source_activity(k['ip'],k['source'],k['detector'].split(':')[0],d['edl_seen_utc'],{'activity':d['edl_activity_json'],'deterministic_qualifying':d.get('edl_qualifying')!='no',**({'native_event_count':int(d['edl_native_event_count'])} if 'edl_native_event_count' in d else {}),**({'native_attempt_count':int(d['edl_native_attempt_count'])} if 'edl_native_attempt_count' in d else {}),**({'destination_ports':d['edl_dst_ports'].split(',')} if 'edl_dst_ports' in d else {})},**({'source_cfg':source_cfg} if source_cfg is not None else {}))
   except ValueError:return False
  if d.get('edl_qualifying')=='no':return False
  from permanent_policy import source_provenance
@@ -113,7 +113,7 @@ def collect(s,cfg,include_palo=True,palo_only=False):
    k=b['key'];d=b['last']['hits']['hits'][0]['_source']['data'];family,points=strength(k['source'],k['detector'])
    agent=b['last']['hits']['hits'][0]['_source'].get('agent',{}).get('name','')
    if enabled.get(k['source']) not in ('*',agent):continue
-   ingest_source(s,k,d,b['last']['hits']['hits'][0]['_source']['timestamp'],b['doc_count'])
+   ingest_source(s,k,d,b['last']['hits']['hits'][0]['_source']['timestamp'],b['doc_count'],cfg)
    processed+=1
   after=a.get('after_key')
   if not after or not a['buckets']:break

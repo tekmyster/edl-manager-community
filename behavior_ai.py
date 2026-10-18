@@ -612,7 +612,10 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  brain=Brain(store)
  from behavior_telemetry import recover
  telemetry_recovery=recover(brain)
+ from source_handoff import deliver,ready,indexed as handoff_indexed
+ handoff=deliver(brain)
  backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
+ pending_metadata=ready(brain,source_cfg,addresses=[r['ip'] for r in rows])
  from behavior_scheduling import backfill as backfill_schedule
  schedule_backfill=backfill_schedule(brain)
  from behavior_references import backfill as backfill_references
@@ -622,7 +625,9 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  with brain.connect() as db:indexed={r['ip']:r['created'] for r in db.execute('SELECT c.ip,p.created FROM current_packets c JOIN packets p ON p.id=c.packet_id')}
  latest=lambda row:max((e.get('seen','') for e in row.get('evidence',[])),default='')
  changed=sorted((r for r in rows if r['ip'] not in indexed or latest(r)>indexed[r['ip']]),key=lambda r:(latest(r),r['ip']),reverse=True)
- priority=changed[:cfg['batch_size']//2];seen={r['ip'] for r in priority}
+ metadata_rows={r['ip']:r for r in rows}
+ metadata_priority=[metadata_rows[a] for a in pending_metadata if a in metadata_rows]
+ priority=(metadata_priority+[r for r in changed if r['ip'] not in pending_metadata])[:cfg['batch_size']//2];seen={r['ip'] for r in priority}
  fair=rows[offset:offset+cfg['batch_size']-len(priority)]
  chosen=(priority+[r for r in fair if r['ip'] not in seen])[:cfg['batch_size']];results={};palo_calls=0;palo_results={};history_results={};retrieved={}
  from behavior_retention import cleanup as retention_cleanup
@@ -649,6 +654,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
   if cfg['correlation_enabled']:inspect_intelligence(brain,ident,retrieved[ident],load_catalog(pathlib.Path(store.path).parent/'behavior-references.json'))
   if cfg['model_enabled'] and packet['events']:
    with brain.connect() as db:db.execute('INSERT INTO analysis_queue SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM analysis_queue WHERE ip=?) OR (SELECT count(*) FROM analysis_queue)<10000 ON CONFLICT(ip) DO UPDATE SET packet_id=excluded.packet_id',(row['ip'],ident,now(),row['ip']))
+  if row['ip'] in pending_metadata:handoff_indexed(brain,row['ip'],pending_metadata[row['ip']],source_cfg)
  # An oldest-first fairness slot plus diverse evidence candidates within the oldest 100
  # decouples indexing from model execution; finite settings retain optional quotas.
  # Changed windows replace pending content without losing their original place.
@@ -657,7 +663,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  if cfg['model_enabled'] and not index_only:
   refresh=lambda:run(store,index_only=True,source_cfg=source_cfg,should_stop=should_stop)
   results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
- status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  store.state('behavior_worker',status);return status
 
 

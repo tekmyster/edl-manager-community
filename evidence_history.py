@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS history_queries(ip TEXT PRIMARY KEY,scope TEXT NOT NU
 
 def initialize(db):
  from source_binding_recovery import SCHEMA as BINDING_SCHEMA
- db.executescript(SCHEMA+BINDING_SCHEMA)
+ from source_handoff import DERIVED_SCHEMA
+ db.executescript(SCHEMA+BINDING_SCHEMA+DERIVED_SCHEMA)
 
 def normalize(address,source,sensor,sample,received):
  if not isinstance(sample,dict):return None
@@ -56,9 +57,12 @@ def normalize(address,source,sensor,sample,received):
  return value
 
 def save(brain,address,source,sensor,samples,received,scope=""):
+ events=[normalize(address,source,sensor,sample,received) for sample in samples[:500]]
+ save_events(brain,address,events,received,scope)
+
+def save_events(brain,address,events,received,scope=''):
  with brain.connect() as db:
-  for sample in samples[:500]:
-   event=normalize(address,source,sensor,sample,received)
+  for event in events[:500]:
    if event:
     from source_binding_recovery import receive,audit
     receive(db,address,event,scope,received)
