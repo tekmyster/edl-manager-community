@@ -613,7 +613,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  from behavior_telemetry import recover
  telemetry_recovery=recover(brain)
  from source_handoff import deliver,ready,indexed as handoff_indexed
- handoff=deliver(brain)
+ handoff=getattr(store,'_source_handoff_status',{'status':'starting'}) if getattr(store,'_source_handoff_background',False) else deliver(brain,should_stop=should_stop)
  backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
  pending_metadata=ready(brain,source_cfg,addresses=[r['ip'] for r in rows])
  from behavior_scheduling import backfill as backfill_schedule

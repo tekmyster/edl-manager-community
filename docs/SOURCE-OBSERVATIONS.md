@@ -106,7 +106,7 @@ credentials, query values or new source queries are introduced. Original event
 time and the first actual local receipt are separate. Counters, native scores,
 retention and source attribution remain on their existing paths.
 
-The behavior worker consumes at most 500 revisions per indexing pass. It commits
+The handoff commits at most 500 revisions per transaction. It commits
 history, source receipts, an idempotency ledger and packet-readiness revisions
 together, then acknowledges only those exact native revisions. A busy or
 unavailable derived store cannot block native ingestion. A crash before native
@@ -122,3 +122,23 @@ so a concurrent newer delivery remains pending. Handoff and delivery bookkeeping
 expire on original event time after 30 days, with at most 5,000 deletions per
 cleanup. This retains ingested sampled reports; it does not turn upstream
 summaries into a complete raw event archive or recover reports never ingested.
+
+Delivery runs independently of serial model work in a thread inside the existing
+behavior process. Each transaction still reads at most 500 rows, but a successful
+nonempty transaction immediately proceeds to the next; there is no per-cycle
+delivery quota. Only empty/unavailable storage waits. Cancellation rolls back an
+unfinished transaction; an already committed batch can replay safely before its
+native acknowledgement. One-shot behavior invocations finish their pending
+delivery before exiting, unless cancelled or storage is busy. Behavior Off stays
+Off, and model enablement, budgets, inference guards and ordinary packet-indexing
+fairness are unchanged. No extra service, timer or collector query is introduced.
+
+For an identical coherent unique full proof, `complete` versus `not_selected`
+describes the current selection, not new source evidence. The handoff recognizes
+these aliases while retaining the first actual body/receipt. A derived semantic
+ledger also prevents redundant merges/readiness when older queued aliases are
+delivered. Existing native rows remain intact and receive exact individual
+acknowledgements. Genuine proof checked times/windows, hashes, original IDs,
+scope, targets, counts and other fields remain part of the revision identity.
+Partial/error reports and nonunique/missing-connection proofs are never coalesced
+by this rule. All ledgers expire on original event age using bounded cleanup.
