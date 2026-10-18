@@ -309,7 +309,9 @@ class Store:
   honeypot_score=min(100,sum(HONEYPOT_FLOOR*endpoints+HONEYPOT_REPEAT_BONUS*max(0,sample[2]-endpoints) for sample,endpoints in zip(native.values(),endpoint_counts))) if native else (HONEYPOT_FLOOR if sources & HONEYPOT_SOURCES else 0)
   floor_bonus=max(0,honeypot_score-behavior_score)
   score=behavior_score+floor_bonus
-  payloads={r['provider']:json.loads(r['payload']) for r in caches if r['expires']>now() and r['status']=='ok'}
+  # Decode once for policy and display details; never cache freshness decisions.
+  decoded=[(r,json.loads(r['payload'])) for r in caches if r['provider']!='source_type' or (r['expires']>now() and r['status']=='ok')]
+  payloads={r['provider']:payload for r,payload in decoded if r['expires']>now() and r['status']=='ok'}
   signals=[]
   def recent(value):
    try:
@@ -371,10 +373,10 @@ class Store:
   ports=sorted({p for row in source_details for p in row['ports']})
   display={'source_details':source_details,'source_labels':[row['label'] for row in source_details],'ports':ports}
   enrichment_details=[]
-  for cached in sorted(caches,key=lambda r:r['provider']):
+  for cached,payload in sorted(decoded,key=lambda item:item[0]['provider']):
    provider=cached['provider']
    if provider=='source_type':continue
-   payload=json.loads(cached['payload']);status=cached['status'] if cached['expires']>now() else 'expired'
+   status=cached['status'] if cached['expires']>now() else 'expired'
    label={'asn':'ASN','misp':'MISP','palo':'Palo','crawler':'Crawler','abuseipdb':'AbuseIPDB','virustotal':'VirusTotal','greynoise':'GreyNoise'}.get(provider,provider)
    if status!='ok':summary=status.capitalize()
    elif provider=='misp':summary=str(payload.get('matches',0))+' actionable'+(' · '+str(payload['context_matches'])+' context' if payload.get('context_matches') else '')+(' · '+', '.join(payload.get('sources',[])) if payload.get('sources') else '')
@@ -389,7 +391,8 @@ class Store:
    enrichment_details.append({'provider':provider,'label':label,'status':status,'summary':summary,'fetched':cached['fetched'],'expires':cached['expires']})
   enrichment_text=' · '.join(r['label']+': '+r['summary'] for r in enrichment_details) or 'Pending enrichment'
   gn_cache=next((r for r in caches if r['provider']=='greynoise'),None)
-  intelligence=assessment(json.loads(gn_cache['payload']) if gn_cache else {},score-enrichment_bonus,bool(sources),valid=bool(gn_cache and gn_cache['status']=='ok' and gn_cache['expires']>now()))
+  gn_payload=next((payload for cached,payload in decoded if cached['provider']=='greynoise'),{})
+  intelligence=assessment(gn_payload,score-enrichment_bonus,bool(sources),valid=bool(gn_cache and gn_cache['status']=='ok' and gn_cache['expires']>now()))
   return {**display,'intelligence':intelligence,'source_identity':payloads.get('source_type',{}),'client_types':payloads.get('source_type',{}).get('types',['Unknown']),'enrichment_details':enrichment_details,'enrichment_text':enrichment_text,'source_count':len({'tpot' if v=='owapot' else v for v in sources}),'honeypot_count':len({r['label'] for r in source_details if r['source'] in HONEYPOT_SOURCES}),'retention':retention,'ip':address,'score':score,'prior_return':prior_return,'score_breakdown':{'strongest_behavior':base,'independent_family_bonus':independent,'additional_sensor_bonus':sensor_bonus,'distinct_malicious_path_bonus':url_bonus,'honeypot_floor_bonus':floor_bonus,'enrichment_bonus':enrichment_bonus,'palo_drop_bonus':0,'retention_floor_bonus':retention_bonus,'previous_block_return_floor':history_floor,'previous_block_score':prior_return['previous_score'] if prior_return else 0,'previous_block_bonus':prior_return['bonus'] if prior_return else 0},'honeypot_native_events':event_count,'honeypot_attempts':event_count,'honeypot_endpoints':sum(endpoint_counts),'enrichment_signals':signals,'sources':sorted(sources),'sensors':sorted(sensors),'distinct_paths':len(urls),'asn':asn,'organization':owner.get('organization',meta.get('organization','')),'verified_crawler':verified,'auto_candidate':auto,'holds':holds,'review_notes':reasons,'palo_context_records':palo,'metadata':meta,'cache':payloads,'cache_status':[{k:r[k] for k in ['provider','status','fetched','expires']} for r in caches],'evidence':evidence}
  def all_scores(self):
   self._greynoise_settings=self.state('greynoise_settings') or {}

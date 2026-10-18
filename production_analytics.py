@@ -4,6 +4,7 @@ import json
 import math
 import sqlite3
 from collections import Counter
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 from analytics_store import connect, stamp, path, PROVIDERS, PROVIDER_FILTER
 
@@ -22,7 +23,12 @@ def mean(values):
     return round(sum(valid)/len(valid),3) if valid else None
 
 
-def summary(brain, timezone='UTC', at=None):
+def summary(brain, timezone='UTC', at=None, *, include_providers=True):
+    # Only immutable timestamp parsing is memoized, within this one read. Bounds,
+    # expiry, outcomes and all measurements are recomputed for every request.
+    cached_parse=lru_cache(maxsize=4096)(parse)
+    def read_time(value):
+        return cached_parse(value) if isinstance(value,(str,type(None))) else parse(value)
     at=(at or dt.datetime.now(UTC)).astimezone(UTC)
     zone=UTC if timezone=='UTC' else ZoneInfo(timezone)
     hour=at.astimezone(zone).replace(minute=0,second=0,microsecond=0).astimezone(UTC)
@@ -45,18 +51,19 @@ def summary(brain, timezone='UTC', at=None):
             recovery_bounds=(stamp(cohort-dt.timedelta(seconds=1)),stamp(at+dt.timedelta(seconds=1))) if recovery_table else ()
             attempts=[dict(r) for r in db.execute('SELECT requests.*'+extra+' FROM requests'+join+' WHERE (started>=? OR finished>=?'+recovery_scope+') AND started<? ORDER BY started DESC',(stamp(cohort),stamp(cohort),*recovery_bounds,stamp(at)))]
             recovered={r['id']:value for r in attempts if (value:=r.pop('recovery_saved_at',None))}
-            attempts=[r for r in attempts if parse(r['started']) and parse(r['started'])<at and
-                      (parse(r['started'])>=cohort or (parse(r['finished']) and parse(r['finished'])>=cohort) or
-                       (parse(recovered.get(r['id'])) and cohort<=parse(recovered[r['id']])<at))]
+            attempts=[r for r in attempts if read_time(r['started']) and read_time(r['started'])<at and
+                      (read_time(r['started'])>=cohort or (read_time(r['finished']) and read_time(r['finished'])>=cohort) or
+                       (read_time(recovered.get(r['id'])) and cohort<=read_time(recovered[r['id']])<at))]
             bounds=(stamp(start),stamp(at))
-            counters=[dict(r) for r in db.execute('SELECT hour,provider,kind,sum(n) n,max(last) last FROM counters WHERE '+PROVIDER_FILTER+' AND hour>=? AND hour<? GROUP BY provider,hour,kind',bounds)]
-            for r in db.execute("SELECT provider,count(distinct nullif(ip,'')) touched,count(distinct CASE WHEN kind='outbound' THEN nullif(ip,'') END) outbound,count(distinct CASE WHEN kind='usable' THEN nullif(ip,'') END) usable,count(distinct CASE WHEN kind='local_query' THEN nullif(ip,'') END) local_query FROM counters WHERE "+PROVIDER_FILTER+" AND hour>=? AND hour<? GROUP BY provider",bounds):unique_ips[r['provider']]=dict(r)
+            if include_providers:
+                counters=[dict(r) for r in db.execute('SELECT hour,provider,kind,sum(n) n,max(last) last FROM counters WHERE '+PROVIDER_FILTER+' AND hour>=? AND hour<? GROUP BY provider,hour,kind',bounds)]
+                for r in db.execute("SELECT provider,count(distinct nullif(ip,'')) touched,count(distinct CASE WHEN kind='outbound' THEN nullif(ip,'') END) outbound,count(distinct CASE WHEN kind='usable' THEN nullif(ip,'') END) usable,count(distinct CASE WHEN kind='local_query' THEN nullif(ip,'') END) local_query FROM counters WHERE "+PROVIDER_FILTER+" AND hour>=? AND hour<? GROUP BY provider",bounds):unique_ips[r['provider']]=dict(r)
     except (sqlite3.Error,OSError): error=path(brain.store).exists()
     for r in attempts:
-        if (r['finished'] and parse(r['finished'])>=at) or (not r['finished'] and parse(recovered.get(r['id'])) and parse(recovered[r['id']])>=at):
+        if (r['finished'] and read_time(r['finished'])>=at) or (not r['finished'] and read_time(recovered.get(r['id'])) and read_time(recovered[r['id']])>=at):
             r.update(finished=None,state='pending',first_seconds=None,input_tokens=None,output_tokens=None,total_seconds=None)
     def bucket(when):
-        t=parse(when)
+        t=read_time(when)
         i=int((t-start).total_seconds()//3600) if t else -1
         return bins[i] if 0<=i<24 and t<at else None
     for r in attempts:
@@ -73,15 +80,15 @@ def summary(brain, timezone='UTC', at=None):
     # '+' versus '.' ordering must not move an event across a boundary.
     lower=stamp(cohort_start-dt.timedelta(seconds=1));upper=stamp(at+dt.timedelta(seconds=1))
     with brain.connect() as db:
-        rows=[r for r in db.execute('SELECT packet_id,created,status,result FROM assessments WHERE created>=? AND created<?',(lower,upper)) if parse(r['created']) and cohort_start<=parse(r['created'])<at]
-        cached=sum(r['count'] for r in db.execute("SELECT hour,count FROM analysis_counters WHERE kind='cached' AND hour>=? AND hour<?",(lower,upper)) if parse(r['hour']) and start<=parse(r['hour'])<at)
-        publications=[r for r in db.execute('SELECT * FROM publication_samples WHERE created>=? AND created<? ORDER BY created',(lower,upper)) if parse(r['created']) and start<=parse(r['created'])<at]
+        rows=[r for r in db.execute('SELECT packet_id,created,status,result FROM assessments WHERE created>=? AND created<?',(lower,upper)) if read_time(r['created']) and cohort_start<=read_time(r['created'])<at]
+        cached=sum(r['count'] for r in db.execute("SELECT hour,count FROM analysis_counters WHERE kind='cached' AND hour>=? AND hour<?",(lower,upper)) if read_time(r['hour']) and start<=read_time(r['hour'])<at)
+        publications=[r for r in db.execute('SELECT * FROM publication_samples WHERE created>=? AND created<? ORDER BY created',(lower,upper)) if read_time(r['created']) and start<=read_time(r['created'])<at]
     classifications=Counter()
     # New assessments carry request timing. They are already represented by ledger.
     ledger_ids={r['id'] for r in attempts};completion_time_unknown=0
     for r in rows:
         result=json.loads(r['result']);v=result.get('metadata',{})
-        if r['status']=='completed' and parse(r['created'])>=start:classifications[result.get('classification','unknown')]+=1
+        if r['status']=='completed' and read_time(r['created'])>=start:classifications[result.get('classification','unknown')]+=1
         if v.get('request_id') in ledger_ids:continue
         historical+=1
         token_records.append((r['created'],v.get('input_tokens'),v.get('output_tokens')))
@@ -99,7 +106,7 @@ def summary(brain, timezone='UTC', at=None):
         if b is not None:
             if known:b['input']+=inp;b['output']+=out;b['token_reports']+=1
             else:b['unknown_tokens']+=1
-        if parse(when) and midnight<=parse(when)<at:
+        if read_time(when) and midnight<=read_time(when)<at:
             if known:day_input+=inp;day_output+=out;day_known+=1
             else:day_unknown+=1
     publication_bins={}
@@ -113,14 +120,14 @@ def summary(brain, timezone='UTC', at=None):
     for b in bins:
         b['first_samples']=len(b['first']);b['first_seconds']=mean(b.pop('first'))
         b['tokens']=b['input']+b['output']
-        b['covered']=bool(coverage.get('ai') and parse(b['start'])>=parse(coverage['ai']))
-        b['label']=parse(b['start']).astimezone(zone).strftime('%H:%M %z')
+        b['covered']=bool(coverage.get('ai') and read_time(b['start'])>=read_time(coverage['ai']))
+        b['label']=read_time(b['start']).astimezone(zone).strftime('%H:%M %z')
         saved=publication_bins.get(b['start'],[])
         b.update(points=saved[-1]['points'] if saved else None,blocks=saved[-1]['blocks'] if saved else None,publication_samples=len(saved))
-    current=[r for r in attempts if parse(r['started'])>=hour]
-    measured=[r['first_seconds'] for r in attempts if parse(r['started'])>=midnight and r['first_seconds'] is not None]
+    current=[r for r in attempts if read_time(r['started'])>=hour]
+    measured=[r['first_seconds'] for r in attempts if read_time(r['started'])>=midnight and r['first_seconds'] is not None]
     providers=[]
-    for provider in PROVIDERS:
+    for provider in PROVIDERS if include_providers else ():
         own=[r for r in counters if r['provider']==provider]
         kinds=Counter()
         for r in own:kinds[r['kind']]+=r['n']
@@ -139,22 +146,23 @@ def summary(brain, timezone='UTC', at=None):
         return math.ceil(v/step/2)*step*2
     peaks={key:ceiling(max((b[key] or 0) for b in bins)) for key in ('requests','tokens','first_seconds','points','blocks')}
     cache_snapshot=[]
-    with brain.store.connect() as db:
+    if include_providers:
+      with brain.store.connect() as db:
         for provider in ('greynoise','misp'):
             saved=db.execute('SELECT status,expires,fetched,payload FROM cache WHERE provider=?',(provider,)).fetchall()
-            fresh=[r for r in saved if parse(r['expires']) and parse(r['expires'])>at and r['status']=='ok']
+            fresh=[r for r in saved if read_time(r['expires']) and read_time(r['expires'])>at and r['status']=='ok']
             payloads=[json.loads(r['payload']) for r in fresh]
             matched=sum(v.get('found') is True for v in payloads) if provider=='greynoise' else sum(v.get('matches',0)+v.get('context_matches',0)>0 for v in payloads)
             indicators={str(i) for v in payloads for i in v.get('attribute_ids',[]) if isinstance(i,(str,int))}
-            cache_snapshot.append(dict(provider=provider,entries=len(saved),fresh=len(fresh),stale=sum(bool(parse(r['expires']) and parse(r['expires'])<=at) for r in saved),matched=matched,indicator_ids=len(indicators),latest=max((r['fetched'] for r in saved),default=None)))
+            cache_snapshot.append(dict(provider=provider,entries=len(saved),fresh=len(fresh),stale=sum(bool(read_time(r['expires']) and read_time(r['expires'])<=at) for r in saved),matched=matched,indicator_ids=len(indicators),latest=max((r['fetched'] for r in saved),default=None)))
     from behavior_feedback import report as feedback_report
     try:usefulness=feedback_report(brain)
     except (sqlite3.Error,OSError):usefulness={'available':False,'helpful_rate':None}
     return dict(usefulness=usefulness,start=stamp(start),end=stamp(at),day_start=stamp(midnight),hour_start=stamp(hour),timezone=timezone,bins=bins,peaks=peaks,cache_snapshot=cache_snapshot,classifications=dict(classifications),
                 day_input=day_input,day_output=day_output,day_tokens=day_input+day_output,day_known=day_known,day_unknown=day_unknown,
-                first_seconds=mean(measured),first_samples=len(measured),day_attempts=sum(parse(r['started'])>=midnight for r in attempts),
+                first_seconds=mean(measured),first_samples=len(measured),day_attempts=sum(read_time(r['started'])>=midnight for r in attempts),
                 hour_requests=len(current),hour_outcomes=dict(Counter(r['state'] for r in current)),coverage=coverage,error=error,
-                requests=sum(start<=parse(r['started'])<at for r in attempts),outcomes=dict(Counter(r['state'] for r in attempts if start<=parse(r['started'])<at)),cached=cached,historical_completions=historical,completion_time_unknown=completion_time_unknown,
+                requests=sum(start<=read_time(r['started'])<at for r in attempts),outcomes=dict(Counter(r['state'] for r in attempts if start<=read_time(r['started'])<at)),cached=cached,historical_completions=historical,completion_time_unknown=completion_time_unknown,
                 providers=providers,recent=attempts[:30])
 
 

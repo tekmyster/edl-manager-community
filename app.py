@@ -669,7 +669,7 @@ def create_app(config=None):
   try:
    from production_analytics import summary as analytics_summary
    from behavior_ai import brain as analytics_brain
-   analytics=analytics_summary(analytics_brain(store),display_timezone())
+   analytics=analytics_summary(analytics_brain(store),display_timezone(),include_providers=False)
   except (OSError,__import__('sqlite3').Error):analytics=None
   return render_template('dashboard.html',analytics=analytics,intelligence_metrics=__import__('greynoise_enrichment').metrics(store,scores),report=report,stats=stats,trends=tile_trends(store,stats,report,new_report=new_report),evidence=evidence,column_options=column_options,table_url=table_url,table_state=state,query=query,view=view,rules=rules,audit=audit,providers=store.state('provider_status') or {})
 

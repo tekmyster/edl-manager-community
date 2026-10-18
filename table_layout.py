@@ -29,15 +29,17 @@ def policy_rows(store,rows,rules):
  from permanent_policy import active
  permanent=active(store)
 
- compiled=[]
+ compiled=[];exact={};by_asn={}
 
- for rule in rules:
+ for position,rule in enumerate(rules):
 
   if rule['kind']=='asn':nets=[]
 
   else:nets=selector(rule['value'])[2]
 
-  compiled.append((rule,nets))
+  if rule['kind']=='ip' and len(nets)==1 and nets[0].num_addresses==1:exact.setdefault(nets[0].network_address,[]).append((position,rule))
+  elif rule['kind']=='asn':by_asn.setdefault(rule['value'][2:],[]).append((position,rule))
+  else:compiled.append((position,rule,nets))
 
  owners={}
 
@@ -53,17 +55,15 @@ def policy_rows(store,rows,rules):
 
  for row in rows:
 
-  address=ipaddress.ip_address(row['ip']);matched=[]
+  address=ipaddress.ip_address(row['ip']);matches=list(exact.get(address,()))
 
-  for rule,nets in compiled:
-
-   if rule['kind']=='asn':
-
-    owner=owners.get(row['ip'],{});hit=rule['value'][2:] in str(owner.get('asn','')).split() and owner.get('database_build_epoch',epoch)>epoch-30*86400
-
-   else:hit=any(address in n for n in nets)
-
-   if hit:matched.append(rule)
+  owner=owners.get(row['ip'],{})
+  if by_asn:
+   asn_matches=[item for value in set(str(owner.get('asn','')).split()) for item in by_asn.get(value,())]
+   if asn_matches and owner.get('database_build_epoch',epoch)>epoch-30*86400:matches.extend(asn_matches)
+  for position,rule,nets in compiled:
+   if any(address in n for n in nets):matches.append((position,rule))
+  matched=[rule for _,rule in sorted(matches,key=lambda item:item[0])]
 
   emergency=next((r for r in matched if r['emergency']),None)
 

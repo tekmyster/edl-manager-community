@@ -9,8 +9,9 @@ import json
 import math
 import re
 import sqlite3
+import contextlib
 
-from analytics_store import connect, warning
+from analytics_store import write, retry_busy, warning
 
 
 def receipt(row):
@@ -37,15 +38,16 @@ def receipt(row):
 
 
 def recover(brain,limit=50):
-    """At most 50 assessment metadata rows and one 25ms analytics transaction.
+    """At most 50 rows; independent short ledger/cursor transactions.
 
     Both databases use short independent connections. Commit the analytics page
     before its behavior cursor; a crash between commits is safe to replay.
     Nothing on this path changes assessments, reviews, usage or scheduling.
     """
     limit=max(1,min(50,limit));result={'scanned':0,'bound':50,'recovered':0,'partial':False}
+    phase='assessment_read'
     try:
-        with sqlite3.connect(str(brain.path),timeout=.025) as db:
+        with contextlib.closing(sqlite3.connect(str(brain.path),timeout=.025)) as db:
             db.row_factory=sqlite3.Row
             row=db.execute("SELECT value FROM retention_state WHERE name='telemetry_cursor'").fetchone()
             saved_cursor=row[0] if row else None
@@ -64,7 +66,9 @@ def recover(brain,limit=50):
         if not rows:return result
         values=[(row,v) for row in rows if (v:=receipt(row))]
         if values:
-            with connect(brain.store,True) as db:
+            phase='ledger_write'
+            def persist(db):
+                recovered=0
                 for source,value in values:
                     ident,packet,start,finish,state,first,inp,out,total=value
                     old=db.execute('SELECT packet,started,state,finished FROM requests WHERE id=?',(ident,)).fetchone()
@@ -78,14 +82,26 @@ def recover(brain,limit=50):
                     else:
                         db.execute("UPDATE requests SET finished=?,state=?,first_seconds=?,input_tokens=?,output_tokens=?,total_seconds=? WHERE id=? AND state='pending' AND finished IS NULL",(finish,state,first,inp,out,total,ident))
                     db.execute('INSERT OR IGNORE INTO request_recovery VALUES(?,?,?)',(ident,source['id'],source['created']))
-                    result['recovered']+=1
-        with sqlite3.connect(str(brain.path),timeout=.025) as db:
-            next_cursor=json.dumps({'rowid':rows[-1]['rowid'],'id':rows[-1]['id']},sort_keys=True)
-            db.execute("INSERT INTO retention_state VALUES('telemetry_cursor',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value WHERE value=?",(next_cursor,saved_cursor))
-            result['partial']=bool(db.execute('SELECT 1 FROM assessments WHERE rowid>? LIMIT 1',(rows[-1]['rowid'],)).fetchone())
+                    recovered+=1
+                result['recovered']=recovered
+            write(brain.store,persist)
+        result['ledger_recovered']=result['recovered']
+        phase='cursor_write'
+        next_cursor=json.dumps({'rowid':rows[-1]['rowid'],'id':rows[-1]['id']},sort_keys=True)
+        def advance():
+            # Close and roll back before retry sleep; never retain the behavior
+            # writer lock while waiting for another packet transaction.
+            with contextlib.closing(sqlite3.connect(str(brain.path),timeout=.025)) as db,db:
+                changed=db.execute("INSERT INTO retention_state VALUES('telemetry_cursor',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value WHERE value=?",(next_cursor,saved_cursor)).rowcount
+                partial=bool(db.execute('SELECT 1 FROM assessments WHERE rowid>? LIMIT 1',(rows[-1]['rowid'],)).fetchone())
+                return bool(changed),partial
+        result['cursor_advanced'],result['partial']=retry_busy(advance)
         return result
     except (sqlite3.Error,OSError,ValueError,TypeError) as exc:
-        warning('ai_recover',exc)
-        # On a failed analytics transaction the page is retried, not discarded.
-        result.update(recovered=0,partial=True,status='retry')
+        warning('ai_recover',exc,phase=phase)
+        code=(getattr(exc,'sqlite_errorcode',0) or 0)&255
+        retryable=isinstance(exc,sqlite3.OperationalError) and code in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED)
+        # A committed ledger page can safely replay if its cursor is busy.
+        # Permanent errors stay visible; they must not be reported as health.
+        result.update(recovered=0,partial=True,status='retry' if retryable else 'failed',phase=phase)
         return result

@@ -41,14 +41,15 @@ def path(store):
     return pathlib.Path(store.path).resolve().with_name('analytics.sqlite3')
 
 
-def warning(operation, exc):
+def warning(operation, exc, phase=None):
     # Exception text can contain paths or supplied values. Fixed operation names
     # and numeric SQLite/OS codes are enough to distinguish busy/read-only/etc.
     code = getattr(exc, 'sqlite_errorcode', None)
     errno = getattr(exc, 'errno', None)
-    logging.warning('Analytics persistence failed operation=%s sqlite_code=%s os_errno=%s',
-                    operation, code if type(code) is int else None,
-                    errno if type(errno) is int else None)
+    message='Analytics persistence failed operation=%s sqlite_code=%s os_errno=%s'
+    args=(operation,code if type(code) is int else None,errno if type(errno) is int else None)
+    if phase is not None:message+=' phase=%s';args+=(phase,)
+    logging.warning(message,*args)
 
 
 @contextlib.contextmanager
@@ -115,7 +116,7 @@ def connect(store, write=False):
         if not write:db.close()
 
 
-def write(store, operation):
+def retry_busy(operation):
     """Retry a rolled-back busy transaction in a 250ms retry window.
 
     The connection still waits only 25ms per attempt. Sleep holds no writer
@@ -126,13 +127,18 @@ def write(store, operation):
     deadline=time.monotonic()+.25
     while True:
         try:
-            with connect(store,True) as db:operation(db)
-            return
+            return operation()
         except sqlite3.OperationalError as exc:
             code=(getattr(exc,'sqlite_errorcode',0) or 0)&255
             remaining=deadline-time.monotonic()
             if code not in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED) or remaining<=0:raise
             time.sleep(min(.005,remaining))
+
+
+def write(store, operation):
+    def persist():
+        with connect(store,True) as db:operation(db)
+    return retry_busy(persist)
 
 
 def event(store, provider, kind, address='', at=None, n=1):
