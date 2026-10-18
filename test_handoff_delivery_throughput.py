@@ -117,6 +117,10 @@ def test_existing_behavior_process_delivers_while_serial_work_waits_and_finishes
   assert observed.get('during_serial_wait',0)>=500
   return {'status':'isolated_serial_work_no_model_request'}
  monkeypatch.setattr(behavior_worker,'run',serial_wait)
- behavior_worker.main()
- assert all(r[-1] for r in counts(s))
+ before=counts(s);behavior_worker.main()
+ assert sum(r[-1] for r in counts(s))>=observed['during_serial_wait']
+ assert [r[:3] for r in counts(s)]==[r[:3] for r in before]
  assert not any(t.name=='source-sample-delivery' for t in threading.enumerate())
+ # Foreground completion now yields at a committed batch, preserving the rest.
+ done=threading.Event();done.set();handoff.consume(s,threading.Event(),done)
+ assert all(r[-1] for r in counts(s))

@@ -53,49 +53,56 @@ def lock(store):
  return getattr(store,'_behavior_index_lock',None) or contextlib.nullcontext()
 
 
-def page(brain,store,source_cfg,should_stop=None):
+def page(brain,store,source_cfg,should_stop=None,should_yield=None):
  """Page size bounds reads/memory; successful pages have no drain quota."""
  from behavior_ai import settings
  from source_handoff import ready
  stop=should_stop or (lambda:False)
+ yielding=should_yield or (lambda:False)
+ if yielding():return {'status':'yielded','indexed':0}
  addresses=getattr(store,'_behavior_index_addresses',())
  if not addresses:return {'status':'waiting_for_native_snapshot','indexed':0}
  pending=ready(brain,source_cfg,addresses=addresses)
  count=0;started=time.monotonic();maximum=0
+ def outcome(status):
+  return {'status':status,'indexed':count,'page_rows':len(pending),'page_bound':100,'seconds':round(time.monotonic()-started,6),'max_packet_seconds':round(maximum,6)}
  for address,revision in pending.items():
   if stop():return {'status':'cancelled','indexed':count}
+  if yielding():return outcome('yielded')
   cfg=settings(store)
   if not cfg['enabled']:return {'status':'disabled','indexed':count}
   with lock(store):
    if stop():return {'status':'cancelled','indexed':count}
+   # Quiescence never enters index_packet's rollback-oriented cancellation.
+   if yielding():return outcome('yielded')
    item_started=time.monotonic()
    try:ident,_=index_packet(brain,store,address,cfg,source_cfg,revision=revision,should_stop=stop)
    except Cancelled:return {'status':'cancelled','indexed':count}
    if ident is None:continue
    maximum=max(maximum,time.monotonic()-item_started);count+=1
- return {'status':'indexed' if pending else 'idle','indexed':count,'page_rows':len(pending),'page_bound':100,'seconds':round(time.monotonic()-started,6),'max_packet_seconds':round(maximum,6)}
+ return outcome('indexed' if pending else 'idle')
 
 
-def consume(store,source_cfg,stopped,finished):
+def consume(store,source_cfg,stopped,finished,quiesce=None):
  from behavior_ai import Brain,settings
  brain=None;totals={'pages':0,'indexed':0,'max_packet_seconds':0}
- while not stopped.is_set():
+ while not stopped.is_set() and not (quiesce and quiesce.is_set()):
   try:
    if not settings(store)['enabled']:result={'status':'disabled','indexed':0}
    else:
     if brain is None:brain=Brain(store)
-    result=page(brain,store,source_cfg,stopped.is_set)
+    result=page(brain,store,source_cfg,stopped.is_set,quiesce.is_set if quiesce else None)
   except sqlite3.OperationalError as exc:
    if (getattr(exc,'sqlite_errorcode',0) or 0)&255 not in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED):
     store._packet_index_status={'status':'failed','error':type(exc).__name__};stopped.set();return
    result={'status':'busy_retry','indexed':0}
   except Exception as exc:
    store._packet_index_status={'status':'failed','error':type(exc).__name__};stopped.set();return
-  if result['status']=='indexed':
+  if result['status']=='indexed' or result['status']=='yielded' and result['indexed']:
    totals['pages']+=1;totals['indexed']+=result['indexed']
    totals['max_packet_seconds']=max(totals['max_packet_seconds'],result['max_packet_seconds'])
   store._packet_index_status={**result,'totals':dict(totals),'at':dt.datetime.now(dt.timezone.utc).isoformat()}
-  if result['status']=='cancelled':return
+  if result['status'] in ('cancelled','yielded'):return
   if result['status']!='indexed':
    if finished.is_set():return
    stopped.wait(1)

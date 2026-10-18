@@ -108,21 +108,23 @@ def deliver(brain,limit=500,at=None,should_stop=None):
  except sqlite3.OperationalError:
   return {'status':'busy_retry_next_pass','bound':500}
 
-def consume(store,stopped,finished=None):
+def consume(store,stopped,finished=None,quiesce=None):
  """Drain successive bounded commits independently of serial model work.
 
  This runs inside the existing behavior process. Only idle/unavailable storage
  waits; a nonempty successful batch immediately proceeds to the next batch.
- One-shot callers finish their backlog before exiting, unless cancelled/busy.
+ An optional lifecycle signal yields only between complete deliver/ack batches.
+ Without that signal, callers retain the existing drain-until-idle behavior.
  """
  from behavior_ai import Brain,settings
  brain=None;totals={'transactions':0,'read':0,'applied':0,'merged':0,'equivalent':0,'max_transaction_seconds':0}
- while not stopped.is_set():
+ while not stopped.is_set() and not (quiesce and quiesce.is_set()):
   try:
    if not settings(store)['enabled']:
     if finished and finished.is_set():break
     stopped.wait(1);continue
    if brain is None:brain=Brain(store)
+   if quiesce and quiesce.is_set():break
    result=deliver(brain,should_stop=stopped.is_set)
   except sqlite3.OperationalError:result={'status':'busy_retry_next_pass','bound':500}
   except Exception as exc:
