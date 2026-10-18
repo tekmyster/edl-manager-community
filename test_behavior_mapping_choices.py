@@ -48,7 +48,7 @@ def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,c
   for claim in choices[kind].values():
    assert 'context-only' not in claim['evidence_ids'];validate_mapping(kind,claim,select(catalog,mixed),mixed)
  assert choices['attack']['attack:T1110']['evidence_ids']==['f1','f2']
- assert metadata['prompt_version']=='behavior-3.14' and metadata['generation_schema_version']=='grounded-choices-5'
+ assert metadata['prompt_version']=='behavior-3.15' and metadata['generation_schema_version']=='grounded-synthesis-6'
  assert len(payload['messages'][1]['content'].encode())<=18000 and payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
 
 @pytest.mark.parametrize('entry',[
@@ -141,7 +141,7 @@ def test_complete_claim_normalization_still_invokes_canonical_validation(mixed,c
  def guard(value,packet,candidates,registry):
   seen.append(copy.deepcopy(value));return original(value,packet,candidates,registry)
  monkeypatch.setattr(ai,'validate_result',guard)
- wire=result(mixed);wire['attack_techniques']=[{'support_id':'attack:T1110','explanation':'Sampled failures only'}]
+ wire=result(mixed);wire['observable_synthesis']=[];wire['attack_techniques']=[{'support_id':'attack:T1110','explanation':'Sampled failures only'}]
  (value,_),_=send_result(mixed,catalog,wire)
  assert seen==[value,value] and value['attack_techniques'][0]['evidence_ids']==['f1','f2']
 

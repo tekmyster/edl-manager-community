@@ -2,8 +2,8 @@
 import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.14'
-GENERATION_SCHEMA_VERSION='grounded-choices-5'
+PROMPT_VERSION='behavior-3.15'
+GENERATION_SCHEMA_VERSION='grounded-synthesis-6'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -322,7 +322,12 @@ def shape(spec,value,path=()):
   if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=1 or ('enum' in spec and value not in spec['enum']):raise AssessmentShapeError('Invalid confidence','confidence',path)
 
 def validate_result(value,packet,candidates,registry):
- shape(RESPONSE_SCHEMA,value)
+ schema=RESPONSE_SCHEMA
+ if 'observable_synthesis' in value:
+  from behavior_synthesis import schema as synthesis_schema
+  schema={**RESPONSE_SCHEMA,'properties':{**RESPONSE_SCHEMA['properties'],'observable_synthesis':synthesis_schema(packet)},'required':RESPONSE_SCHEMA['required']+['observable_synthesis']}
+  schema['properties']['analysis_summary']={**schema['properties']['analysis_summary'],'maxLength':2400}
+ shape(schema,value)
  if value['packet_id']!=packet['packet_id']:raise ValueError('Incorrect evidence packet')
  native={e['id'] for e in packet['events']};references=native|{e['id'] for e in packet.get('context',[])};candidate_ids={c['candidate_id'] for c in candidates}
  for field in ('findings','attack_techniques','d3fend_context','actor_correlation','contradictory_evidence'):

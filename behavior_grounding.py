@@ -190,7 +190,13 @@ def validate(value,packet,candidates,registry):
  for key in ('automation','intent'):
   if value[key]['classification'] not in c[key]:reject('Unsupported interpretation label','label_not_supported',key+'.classification')
   if value[key]['classification']=='unknown' and value[key]['confidence']!=0:reject('Unknown interpretation requires zero confidence','unknown_confidence_nonzero',key+'.confidence')
- if value['analysis_summary']!=SUMMARIES[value['classification']]:reject('Unsupported assessment narrative','assessment_summary_mismatch','analysis_summary')
+ summary=SUMMARIES[value['classification']]
+ if 'observable_synthesis' in value:
+  from behavior_synthesis import validate as validate_synthesis,render
+  validate_synthesis(value['observable_synthesis'],packet)
+  if value['observable_synthesis'] and not set(c['positive_ids'])<=cited:reject('Positive context must remain visible','synthesis_positive_context_omitted','contradictory_evidence')
+  summary=(render(value['observable_synthesis'])+' '+summary).strip()
+ if value['analysis_summary']!=summary:reject('Unsupported assessment narrative','assessment_summary_mismatch','analysis_summary')
  if value['limitations']!=LIMITS:
   index=next((i for i,(a,b) in enumerate(zip(value['limitations'],LIMITS)) if a!=b),min(len(value['limitations']),len(LIMITS)))
   reject('Unsupported assessment narrative','limitations_mismatch','limitations',index)
