@@ -5,7 +5,7 @@ import math
 import sqlite3
 from collections import Counter
 from zoneinfo import ZoneInfo
-from analytics_store import connect, stamp, path
+from analytics_store import connect, stamp, path, PROVIDERS, PROVIDER_FILTER
 
 UTC=dt.timezone.utc
 
@@ -49,8 +49,8 @@ def summary(brain, timezone='UTC', at=None):
                       (parse(r['started'])>=cohort or (parse(r['finished']) and parse(r['finished'])>=cohort) or
                        (parse(recovered.get(r['id'])) and cohort<=parse(recovered[r['id']])<at))]
             bounds=(stamp(start),stamp(at))
-            counters=[dict(r) for r in db.execute('SELECT hour,provider,kind,sum(n) n,max(last) last FROM counters WHERE hour>=? AND hour<? GROUP BY hour,provider,kind',bounds)]
-            for r in db.execute("SELECT provider,count(distinct nullif(ip,'')) touched,count(distinct CASE WHEN kind='outbound' THEN nullif(ip,'') END) outbound,count(distinct CASE WHEN kind='usable' THEN nullif(ip,'') END) usable,count(distinct CASE WHEN kind='local_query' THEN nullif(ip,'') END) local_query FROM counters WHERE hour>=? AND hour<? GROUP BY provider",bounds):unique_ips[r['provider']]=dict(r)
+            counters=[dict(r) for r in db.execute('SELECT hour,provider,kind,sum(n) n,max(last) last FROM counters WHERE '+PROVIDER_FILTER+' AND hour>=? AND hour<? GROUP BY provider,hour,kind',bounds)]
+            for r in db.execute("SELECT provider,count(distinct nullif(ip,'')) touched,count(distinct CASE WHEN kind='outbound' THEN nullif(ip,'') END) outbound,count(distinct CASE WHEN kind='usable' THEN nullif(ip,'') END) usable,count(distinct CASE WHEN kind='local_query' THEN nullif(ip,'') END) local_query FROM counters WHERE "+PROVIDER_FILTER+" AND hour>=? AND hour<? GROUP BY provider",bounds):unique_ips[r['provider']]=dict(r)
     except (sqlite3.Error,OSError): error=path(brain.store).exists()
     for r in attempts:
         if (r['finished'] and parse(r['finished'])>=at) or (not r['finished'] and parse(recovered.get(r['id'])) and parse(recovered[r['id']])>=at):
@@ -102,17 +102,25 @@ def summary(brain, timezone='UTC', at=None):
         if parse(when) and midnight<=parse(when)<at:
             if known:day_input+=inp;day_output+=out;day_known+=1
             else:day_unknown+=1
+    publication_bins={}
+    for r in publications:
+        b=bucket(r['created'])
+        if b is not None:publication_bins.setdefault(b['start'],[]).append(r)
+    provider_bins={}
+    for r in counters:
+        b=bucket(r['hour'])
+        if b is not None:provider_bins.setdefault((r['provider'],b['start']),Counter())[r['kind']]+=r['n']
     for b in bins:
         b['first_samples']=len(b['first']);b['first_seconds']=mean(b.pop('first'))
         b['tokens']=b['input']+b['output']
         b['covered']=bool(coverage.get('ai') and parse(b['start'])>=parse(coverage['ai']))
         b['label']=parse(b['start']).astimezone(zone).strftime('%H:%M %z')
-        saved=[r for r in publications if parse(b['start'])<=parse(r['created'])<parse(b['end'])]
+        saved=publication_bins.get(b['start'],[])
         b.update(points=saved[-1]['points'] if saved else None,blocks=saved[-1]['blocks'] if saved else None,publication_samples=len(saved))
     current=[r for r in attempts if parse(r['started'])>=hour]
     measured=[r['first_seconds'] for r in attempts if parse(r['started'])>=midnight and r['first_seconds'] is not None]
     providers=[]
-    for provider in ('greynoise','misp','asn','crawler','abuseipdb','virustotal'):
+    for provider in PROVIDERS:
         own=[r for r in counters if r['provider']==provider]
         kinds=Counter()
         for r in own:kinds[r['kind']]+=r['n']
@@ -120,9 +128,7 @@ def summary(brain, timezone='UTC', at=None):
         aggregate_hits=kinds['hit']+kinds['negative_hit']
         timeline=[]
         for b in bins:
-            hour_counts=Counter()
-            for r in own:
-                if parse(b['start'])<=parse(r['hour'])<parse(b['end']):hour_counts[r['kind']]+=r['n']
+            hour_counts=provider_bins.get((provider,b['start']),Counter())
             bucket_hits=hour_counts['hit']+hour_counts['negative_hit'];bucket_misses=hour_counts['miss']+hour_counts['stale']+hour_counts['cached_error']
             timeline.append(dict(start=b['start'],label=b['label'],hits=bucket_hits,misses=bucket_misses,total=bucket_hits+bucket_misses,outbound=hour_counts['outbound']))
         unique=lambda kind:unique_ips.get(provider,{}).get(kind,0)

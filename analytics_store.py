@@ -12,14 +12,20 @@ import sqlite3
 import uuid
 import threading
 import weakref
+import time
 
 UTC = dt.timezone.utc
 _ready = set()
 _pruned = {}
 _handles_lock = threading.Lock()
+PROVIDERS=('greynoise','misp','asn','crawler','abuseipdb','virustotal')
+# This partial covering index serves only providers actually displayed by the UI.
+# All other original operational counters remain collected and retained.
+PROVIDER_FILTER="provider IN ('greynoise','misp','asn','crawler','abuseipdb','virustotal')"
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS coverage(name TEXT PRIMARY KEY,started TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS counters(hour TEXT NOT NULL,provider TEXT NOT NULL,kind TEXT NOT NULL,ip TEXT NOT NULL,n INTEGER NOT NULL,last TEXT NOT NULL,PRIMARY KEY(hour,provider,kind,ip));
+CREATE INDEX IF NOT EXISTS counters_ui ON counters(provider,hour,kind,ip,n,last) WHERE provider IN ('greynoise','misp','asn','crawler','abuseipdb','virustotal');
 CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,packet TEXT NOT NULL,started TEXT NOT NULL,finished TEXT,state TEXT NOT NULL,first_seconds REAL,input_tokens INTEGER,output_tokens INTEGER,total_seconds REAL);
 CREATE INDEX IF NOT EXISTS requests_started ON requests(started);
 CREATE TABLE IF NOT EXISTS request_recovery(id TEXT PRIMARY KEY,assessment_id TEXT NOT NULL,saved_at TEXT NOT NULL);
@@ -78,8 +84,8 @@ def connect(store, write=False):
             # timeout; an unsuccessful initializer can try again at completion.
             if db.execute('PRAGMA journal_mode').fetchone()[0].lower() != 'wal':
                 db.execute('PRAGMA journal_mode=WAL')
-            names={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE name IN ('coverage','counters','requests','requests_started','request_recovery','request_recovery_delete')")}
-            if len(names) != 6:db.executescript(SCHEMA)
+            names={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE name IN ('coverage','counters','requests','requests_started','request_recovery','request_recovery_delete','counters_ui')")}
+            if len(names) != 7:db.executescript(SCHEMA)
             _ready.add(str(target))
         if write:
             day = stamp()[:10]
@@ -109,18 +115,40 @@ def connect(store, write=False):
         if not write:db.close()
 
 
+def write(store, operation):
+    """Retry a rolled-back busy transaction in a 250ms retry window.
+
+    The connection still waits only 25ms per attempt. Sleep holds no writer
+    transaction, timestamps/IDs are frozen by callers, and permanent failures
+    retain the existing visible warning contract. Native work never waits for
+    an unbounded telemetry drain.
+    """
+    deadline=time.monotonic()+.25
+    while True:
+        try:
+            with connect(store,True) as db:operation(db)
+            return
+        except sqlite3.OperationalError as exc:
+            code=(getattr(exc,'sqlite_errorcode',0) or 0)&255
+            remaining=deadline-time.monotonic()
+            if code not in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED) or remaining<=0:raise
+            time.sleep(min(.005,remaining))
+
+
 def event(store, provider, kind, address='', at=None, n=1):
     events(store, [(provider,kind,address,n)],at)
 
 
 def events(store, records, at=None):
     when = stamp(at)
+    records=list(records)
     try:
-        with connect(store, True) as db:
+        def persist(db):
             db.executemany('INSERT OR IGNORE INTO coverage VALUES(?,?)', [(p,when) for p in {r[0] for r in records}])
             db.executemany('INSERT OR IGNORE INTO coverage VALUES(?,?)', [(p+':'+k,when) for p,k,_,_ in records])
             db.executemany('INSERT INTO counters VALUES(?,?,?,?,?,?) ON CONFLICT(hour,provider,kind,ip) DO UPDATE SET n=n+excluded.n,last=excluded.last',
                           [(when[:13]+':00:00.000000+00:00',p,k,a,n,when) for p,k,a,n in records])
+        write(store,persist)
     except (sqlite3.Error, OSError) as exc:
         warning('counters', exc)
 
@@ -137,9 +165,10 @@ class Attempt:
     def start(self):
         if self.started is None:self.started = stamp()
         try:
-            with connect(self.store, True) as db:
+            def persist(db):
                 self.coverage(db)
                 db.execute("INSERT OR IGNORE INTO requests(id,packet,started,state) VALUES(?,?,?,'pending')", (self.id,self.packet,self.started))
+            write(self.store,persist)
             return True
         except (sqlite3.Error, OSError) as exc:
             warning('ai_start', exc)
@@ -157,7 +186,7 @@ class Attempt:
             self._outcome = (stamp(),state,number('first_content_seconds'),number('input_tokens',True),number('output_tokens',True),number('request_seconds'))
         metadata.update(request_started_at=self.started,request_finished_at=self._outcome[0],request_transport_state=self._outcome[1])
         try:
-            with connect(self.store, True) as db:
+            def persist(db):
                 self.coverage(db)
                 # Recover this actual in-memory dispatch when its INSERT failed.
                 # Completed records are immutable on duplicate/retried finishes.
@@ -167,6 +196,7 @@ class Attempt:
                     output_tokens=excluded.output_tokens,total_seconds=excluded.total_seconds
                     WHERE requests.finished IS NULL''',
                     (self.id,self.packet,self.started,*self._outcome))
+            write(self.store,persist)
             return True
         except (sqlite3.Error, OSError) as exc:
             warning('ai_finish', exc)

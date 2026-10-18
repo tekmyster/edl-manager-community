@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS source_sample_equivalence(id TEXT PRIMARY KEY,seen TE
 CREATE INDEX IF NOT EXISTS source_sample_equivalence_expiry ON source_sample_equivalence(seen);
 CREATE TABLE IF NOT EXISTS source_sample_ready(ip TEXT NOT NULL,scope TEXT NOT NULL,revision INTEGER NOT NULL,seen TEXT NOT NULL,PRIMARY KEY(ip,scope));
 CREATE INDEX IF NOT EXISTS source_sample_ready_expiry ON source_sample_ready(seen);
+CREATE INDEX IF NOT EXISTS source_sample_ready_order ON source_sample_ready(scope,revision,ip);
 '''
 
 def scope(cfg):

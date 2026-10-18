@@ -183,6 +183,29 @@ def test_finish_without_known_dispatch_does_not_invent_history(tmp_path):
     assert not ledger.path(store).exists()
 
 
+def test_short_real_writer_contention_retries_once_without_loss_or_duplicate(tmp_path,caplog):
+    import time
+    store=LedgerStore(path=str(tmp_path/'native'))
+    with ledger.connect(store,True):pass
+    def contended(operation):
+        lock=sqlite3.connect(ledger.path(store),check_same_thread=False);lock.execute('BEGIN IMMEDIATE')
+        release=threading.Timer(.075,lock.rollback);release.start();started=time.monotonic()
+        try:result=operation();assert .05<=time.monotonic()-started<.5;return result
+        finally:release.join();lock.close()
+    a=ledger.Attempt(store,'isolated-actual-dispatch')
+    assert contended(a.start)
+    dispatch=a.started
+    assert contended(lambda:a.finish('rejected',dict(META)))
+    outcome=a._outcome
+    contended(lambda:ledger.events(store,[('misp','hit','11.0.0.1',3)]))
+    assert a.finish('accepted',{'input_tokens':999})
+    row=rows(store)[0]
+    assert row['started']==dispatch and row['finished']==outcome[0] and row['state']=='rejected'
+    assert row['input_tokens']==11 and row['output_tokens']==7
+    with ledger.connect(store) as db:assert db.execute('SELECT sum(n) FROM counters').fetchone()[0]==3
+    assert not caplog.records
+
+
 @pytest.mark.parametrize('terminator',[b'\n',b''])
 @pytest.mark.parametrize('streaming',[True,False])
 @pytest.mark.parametrize('rejected',[True,False])

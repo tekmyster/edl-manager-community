@@ -142,3 +142,24 @@ acknowledgements. Genuine proof checked times/windows, hashes, original IDs,
 scope, targets, counts and other fields remain part of the revision identity.
 Partial/error reports and nonunique/missing-connection proofs are never coalesced
 by this rule. All ledgers expire on original event age using bounded cleanup.
+
+Packet readiness drains in a companion thread inside that same single-flight
+behavior process. A successful 100-row read page immediately takes another page;
+model work and the native fairness batch do not impose a delivery quota. Only
+addresses in the ordinary native score snapshot are eligible. Packet preparation
+is serialized with ordinary indexing, one packet at a time, and acknowledgement
+compares the exact ready revision. New receipts during preparation remain ready.
+This path reads saved evidence only; it issues no history, collector or model
+requests. Behavior Off, source scope, queue age, provider leases/backoff, pilot
+guards and the existing native fairness sweep retain their usual behavior.
+
+The operational analytics read model queries only its six displayed providers
+through an additive partial covering index; all original counters remain stored
+and retained. Provider totals, unique addresses, time boundaries and unknown
+measurements keep their existing definitions. Timeline bucketing uses one pass.
+Telemetry retries only rolled-back SQLite busy/locked operations in a 250ms
+retry window, with the existing 25ms per-attempt busy timeout, no transaction held
+during retry sleep, and the original timestamps/IDs frozen. Persistent failures
+remain visible warnings and do not block native work indefinitely. The new
+analytics index needs a measured one-time schema initialization before resuming
+normal workers during deployment; no source data or human reviews are backfilled.

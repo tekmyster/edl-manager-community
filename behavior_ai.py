@@ -615,7 +615,8 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  from source_handoff import deliver,ready,indexed as handoff_indexed
  handoff=getattr(store,'_source_handoff_status',{'status':'starting'}) if getattr(store,'_source_handoff_background',False) else deliver(brain,should_stop=should_stop)
  backfilled=brain.backfill_features();rows=store.all_scores();cursor=store.state('behavior_cursor') or {'offset':0}
- pending_metadata=ready(brain,source_cfg,addresses=[r['ip'] for r in rows])
+ store._behavior_index_addresses=tuple(r['ip'] for r in rows)
+ pending_metadata={} if getattr(store,'_packet_index_background',False) else ready(brain,source_cfg,addresses=store._behavior_index_addresses)
  from behavior_scheduling import backfill as backfill_schedule
  schedule_backfill=backfill_schedule(brain)
  from behavior_references import backfill as backfill_references
@@ -648,13 +649,10 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
    from behavior_context import refresh_palo
    p=refresh_palo(store,source_cfg,row['ip'],cfg['palo_daily_budget']);palo_results[p]=palo_results.get(p,0)+1
    if p in ('refreshed','failed'):palo_calls+=1
-  detailed=store.describe(row['ip']);ident,packet,features=brain.packet(detailed,cfg,source_cfg=source_cfg)
-  retrieved[ident]=brain.candidates(ident,features) if cfg['correlation_enabled'] else []
-  from behavior_intelligence import inspect as inspect_intelligence,load_catalog
-  if cfg['correlation_enabled']:inspect_intelligence(brain,ident,retrieved[ident],load_catalog(pathlib.Path(store.path).parent/'behavior-references.json'))
-  if cfg['model_enabled'] and packet['events']:
-   with brain.connect() as db:db.execute('INSERT INTO analysis_queue SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM analysis_queue WHERE ip=?) OR (SELECT count(*) FROM analysis_queue)<10000 ON CONFLICT(ip) DO UPDATE SET packet_id=excluded.packet_id',(row['ip'],ident,now(),row['ip']))
-  if row['ip'] in pending_metadata:handoff_indexed(brain,row['ip'],pending_metadata[row['ip']],source_cfg)
+  from packet_indexing import index_packet,lock as index_lock
+  with index_lock(store):
+   ident,candidates=index_packet(brain,store,row['ip'],cfg,source_cfg);retrieved[ident]=candidates
+   if row['ip'] in pending_metadata:handoff_indexed(brain,row['ip'],pending_metadata[row['ip']],source_cfg)
  # An oldest-first fairness slot plus diverse evidence candidates within the oldest 100
  # decouples indexing from model execution; finite settings retain optional quotas.
  # Changed windows replace pending content without losing their original place.
@@ -664,6 +662,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
   refresh=lambda:run(store,index_only=True,source_cfg=source_cfg,should_stop=should_stop)
   results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
  status={'completed':now(),'indexed':len(chosen),'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ status['packet_readiness']=getattr(store,'_packet_index_status',{'status':'inline'})
  store.state('behavior_worker',status);return status
 
 
