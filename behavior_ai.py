@@ -547,12 +547,16 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
  registry=load(registry_file)
  allowed=select(registry,packet)
  cid=config_id(cfg)+'-'+digest([allowed,candidates,VERSION,PROMPT_VERSION,GENERATION_SCHEMA_VERSION]);day=now()[:10];clock=time.time();backoff_key='provider_backoff:'+digest([cfg['endpoint'],cfg['model']])
- from behavior_persistence import directory,location,persist,stage,reserve,resolve_dispatch
+ from behavior_persistence import directory,location,persist,stage,reserve,resolve_dispatch,review_key
  directory(brain,True)
  pending=location(brain,ident,cid)
  if pending.exists() or pending.is_symlink():
   saved=persist(brain,pending,should_stop)
   return 'persistence_review_required' if saved=='lease_lost' else saved
+ if review_key(brain,pending).exists():
+  import logging
+  logging.warning('Behavior assessment persistence requires review reason=retained_dispatch_evidence')
+  return 'persistence_review_required'
  if pending.with_suffix('.inflight').exists() or pending.with_suffix('.inflight').is_symlink():
   import logging
   status=resolve_dispatch(brain,pending.with_suffix('.inflight'))

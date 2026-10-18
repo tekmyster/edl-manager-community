@@ -34,14 +34,26 @@ def retry_busy(operation):
             time.sleep(min(.005,remaining))
 
 
-def directory(brain,create=False):
-    p=pathlib.Path(brain.path).with_suffix('.pending-assessments')
+def private_directory(p,create=False):
     if create:p.mkdir(mode=0o700,exist_ok=True)
     if p.exists():
         if p.is_symlink() or not p.is_dir():raise ValueError('Invalid assessment journal directory')
         if os.name=='posix' and (p.stat().st_uid!=os.geteuid() or stat.S_IMODE(p.stat().st_mode)&0o077):
             raise ValueError('Assessment journal directory must be private')
+        if create:sync_directory(p.parent)
     return p
+
+
+def directory(brain,create=False):
+    return private_directory(pathlib.Path(brain.path).with_suffix('.pending-assessments'),create)
+
+
+def review_directory(brain,create=False):
+    return private_directory(directory(brain,create)/'review',create)
+
+
+def review_key(brain,p,create=False):
+    return private_directory(review_directory(brain,create)/p.stem,create)
 
 
 def location(brain,ident,cid):
@@ -79,7 +91,8 @@ def read(p):
 def publish(p,body):
     parent=p.parent
     if len(body)>1048576:raise ValueError('Assessment journal record too large')
-    fd,name=tempfile.mkstemp(prefix='.result-',dir=parent)
+    staging=private_directory(private_directory(parent/'review',True)/'_staging',True)
+    fd,name=tempfile.mkstemp(prefix='.result-',dir=staging)
     temp=pathlib.Path(name)
     try:
         with os.fdopen(fd,'wb') as f:f.write(body);f.flush();os.fsync(f.fileno())
@@ -146,6 +159,36 @@ def resolve_dispatch(brain,marker):
     return row[2]
 
 
+def retain_review(brain,p):
+    """Durably retain opaque evidence outside the bounded pending work scan."""
+    if p.is_symlink():raise ValueError('Invalid assessment journal file')
+    try:
+        with p.open('rb') as f:body=f.read(1048577)
+    except FileNotFoundError:return
+    if len(body)>1048576:raise ValueError('Assessment journal record too large')
+    target_parent=review_key(brain,p,True)
+    target=target_parent/(hashlib.sha256(body).hexdigest()+p.suffix)
+    attention=review_directory(brain)/'attention'
+    try:
+        fd=os.open(attention,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    except FileExistsError:
+        if attention.is_symlink() or not attention.is_file():raise ValueError('Invalid assessment review indicator')
+    else:
+        with os.fdopen(fd,'wb') as f:f.write(b'Retained inference evidence requires review.\n');f.flush();os.fsync(f.fileno())
+        sync_directory(attention.parent)
+    try:os.link(p,target)
+    except FileExistsError:
+        if target.is_symlink():raise ValueError('Invalid assessment review file')
+        with target.open('rb') as f:prior=f.read(1048577)
+        if prior!=body:raise ValueError('Conflicting assessment review evidence')
+    except FileNotFoundError:
+        if not target.is_file():raise
+    # No evidence is discarded: the new link and its private parent are durable
+    # before removing the pending link. Same-content replay is idempotent.
+    sync_directory(target_parent)
+    p.unlink(missing_ok=True);sync_directory(p.parent)
+
+
 class Cancelled(Exception):pass
 
 
@@ -191,6 +234,12 @@ def persist(brain,p,should_stop=None):
         logging.warning('Behavior assessment persistence deferred sqlite_code=%s',exc.sqlite_errorcode)
         return 'persistence_deferred'
     if status=='lease_lost':
+        retain_review(brain,p)
+        marker=p.with_suffix('.inflight')
+        try:
+            with marker.open('rb') as f:owner=json.loads(f.read(4097)).get('owner')
+        except FileNotFoundError:owner=None
+        if owner==value['owner']:retain_review(brain,marker)
         logging.warning('Behavior assessment persistence requires review reason=lease_lost')
         return status
     # Also safe after a crash between commit and unlink: the same ID is checked.
@@ -200,22 +249,37 @@ def persist(brain,p,should_stop=None):
 
 
 def recover(brain,should_stop=None):
-    parent=directory(brain);out={'scanned':0,'dispatch_markers_scanned':0,'saved':0,'deferred':False,'review_required':0,'uncertain_dispatches':0,'bound_per_kind':50}
+    parent=directory(brain);out={'scanned':0,'dispatch_markers_scanned':0,'entries_scanned':0,'saved':0,'deferred':False,'review_required':0,'uncertain_dispatches':0,'bound_per_kind':50,'entry_bound':51,'review_retained':False}
     if not parent.exists():return out
+    out['review_retained']=(review_directory(brain)/'attention').is_file()
+    # One known review subdirectory plus at most 50 pending files. Never filter
+    # an unbounded directory stream looking for 50 matching filename suffixes.
+    work=0
     with os.scandir(parent) as entries:
-        for entry in itertools.islice((e for e in entries if e.name.endswith('.inflight')),50):
-            out['dispatch_markers_scanned']+=1
-            if not pathlib.Path(entry.path).with_suffix('.json').exists():
-                status=resolve_dispatch(brain,pathlib.Path(entry.path))
-                if status=='persistence_deferred':out['deferred']=True;return out
-                if status=='persistence_review_required':out['uncertain_dispatches']+=1
+        for entry in itertools.islice(entries,51):
+            out['entries_scanned']+=1
+            if entry.name=='review':continue
+            if work==50:break
+            if should_stop and should_stop():out['deferred']=True;break
+            p=pathlib.Path(entry.path)
+            if not p.exists() and not p.is_symlink():continue
+            work+=1
+            if entry.name.endswith('.inflight'):
+                out['dispatch_markers_scanned']+=1
+                result=p.with_suffix('.json')
+                if result.exists() or result.is_symlink():p=result
+                else:
+                    status=resolve_dispatch(brain,p)
+                    if status=='persistence_deferred':out['deferred']=True;break
+                    if status=='persistence_review_required':
+                        retain_review(brain,p);out['uncertain_dispatches']+=1;out['review_retained']=True
+                    continue
+            elif not entry.name.endswith('.json'):raise ValueError('Unexpected assessment journal entry')
+            out['scanned']+=1
+            status=persist(brain,p,should_stop)
+            if status=='persistence_deferred':out['deferred']=True;break
+            if status=='lease_lost':out['review_required']+=1;out['review_retained']=True;continue
+            out['saved']+=1
     if out['uncertain_dispatches']:
         logging.warning('Behavior assessment persistence requires review reason=dispatch_outcome_unknown')
-    with os.scandir(parent) as entries:
-        for entry in itertools.islice((e for e in entries if e.name.endswith('.json')),50):
-            out['scanned']+=1
-            status=persist(brain,pathlib.Path(entry.path),should_stop)
-            if status=='persistence_deferred':out['deferred']=True;break
-            if status=='lease_lost':out['review_required']+=1;continue
-            out['saved']+=1
     return out

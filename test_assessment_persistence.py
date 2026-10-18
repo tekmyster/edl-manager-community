@@ -164,8 +164,8 @@ def test_lost_lease_keeps_private_result_without_publishing_or_clearing_successo
  def after():
   with b.connect() as db:db.execute("UPDATE jobs SET id='successor',lease=9999999999")
  calls=fake(monkeypatch,b,after);assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='lease_lost'
- assert len(files(b))==1 and not records(b)['assessments'] and records(b)['jobs'][0][0]=='successor' and records(b)['jobs'][0][4]==9999999999
- result=pending.recover(b);assert result['review_required']==1 and not result['deferred'] and calls==[1] and not records(b)['assessments']
+ assert len(list(pending.review_directory(b).glob('*/*.json')))==1 and not files(b) and not records(b)['assessments'] and records(b)['jobs'][0][0]=='successor' and records(b)['jobs'][0][4]==9999999999
+ result=pending.recover(b);assert result['review_retained'] and not result['deferred'] and calls==[1] and not records(b)['assessments']
 
 
 def test_superseded_packet_saves_history_and_releases_only_own_lease(tmp_path,monkeypatch):
@@ -290,6 +290,7 @@ def test_result_journal_disk_failure_retains_dispatch_intent_without_repeat(tmp_
  with b.connect() as db:db.execute('UPDATE jobs SET lease=0')
  assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required' and calls==[1]
  assert pending.recover(b)['uncertain_dispatches']==1 and records(b)['assessments']==[]
+ assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required' and calls==[1]
  assert marker['request'] not in caplog.text
 
 
@@ -311,6 +312,7 @@ def test_uncertain_dispatch_skips_only_its_packet_and_keeps_other_work(tmp_path,
  monkeypatch.setattr(ai,'infer',infer)
  with pytest.raises(KeyboardInterrupt):ai.model_job(b,'packet0',packet(b),set(),cfg)
  with b.connect() as db:db.execute('UPDATE jobs SET lease=0')
+ assert pending.recover(b)['uncertain_dispatches']==1
  results,examined,reason=ai.drain_queue(b,s,cfg)
  assert reason=='idle' and results=={'persistence_review_required':1,'completed':1} and calls==['packet0','packet1']
  with b.connect() as db:assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==1
