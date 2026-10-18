@@ -23,6 +23,23 @@ def test_negative_misp_context_does_not_scan_unrelated_snapshot(evidence,monkeyp
  snapshot['attributes']=[]
  assert next(v for v in context(evidence,evidence.describe('8.8.8.8')) if v.get('provider')=='misp')==item
 
+
+def test_misp_index_preserves_legacy_order_duplicates_redaction_and_refresh(evidence,monkeypatch):
+ import behavior_context
+ from behavior_context import misp_indicators,count
+ from behavior_ai import safe_text
+ attributes=[{'id':str(i%9),'event_id':str(i),'source':'Origin','to_ids':i%2,'timestamp':i} for i in range(200)]
+ attributes.insert(2,{'id':'a'*40,'event_id':'private-token','source':'token=secret','to_ids':True})
+ snapshot={'attributes':attributes};ids={'3','7',safe_text('a'*40,60)}
+ expected=[{'attribute_id':safe_text(a.get('id'),60),'event_id':safe_text(a.get('event_id'),60),'origin':safe_text(a.get('source'),100),'to_ids':a.get('to_ids') in (True,1,'1'),'updated_epoch':count(a.get('timestamp'))} for a in attributes if safe_text(a.get('id'),60) in ids][:12]
+ assert misp_indicators(evidence,snapshot,ids)==expected
+ original=behavior_context.safe_text;calls=[]
+ def traced(value,*args):calls.append(value);return original(value,*args)
+ monkeypatch.setattr(behavior_context,'safe_text',traced)
+ assert misp_indicators(evidence,snapshot,ids)==expected and len(calls)<=36
+ replacement={'attributes':[{'id':'3','event_id':'replacement'}]}
+ assert misp_indicators(evidence,replacement,ids)[0]['event_id']=='replacement'
+
 def test_structured_intelligence_preserves_freshness_origin_and_contradictions(evidence):
  evidence.cache('8.8.8.8','misp',{'matches':1,'context_matches':2,'sources':['GreyNoise imported feed'],'attribute_ids':['101'],'fresh_to_ids_and_warninglists_enforced':True})
  evidence.cache('8.8.8.8','greynoise',{'classification':'benign','noise':True,'riot':True,'found':True,'last_seen':now(),'name':'Verified service'})

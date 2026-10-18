@@ -19,6 +19,25 @@ def destination(value):
 
 def reference(kind,value):return {'id':'ctx_'+digest([kind,value])[:24],'kind':kind,**value}
 
+def misp_indicators(store,snapshot,ids):
+ """Index the already cached snapshot once; preserve its first-match ordering.
+
+ Only the first twelve positions per sanitized ID can contribute to a twelve-
+ item result. A packet reads at most twelve ID groups, never the whole snapshot.
+ The shared index contains references to existing snapshot entries, not copies
+ of provider bodies; a newly loaded snapshot replaces it.
+ """
+ if not ids:return []
+ cached=getattr(store,'_behavior_misp_lookup',None)
+ if cached is None or cached[0] is not snapshot:
+  lookup={}
+  for position,attribute in enumerate(snapshot.get('attributes',[])):
+   group=lookup.setdefault(safe_text(attribute.get('id'),60),[])
+   if len(group)<12:group.append((position,attribute))
+  cached=(snapshot,lookup);store._behavior_misp_lookup=cached
+ matched=sorted((position,a) for ident in ids for position,a in cached[1].get(ident,()))[:12]
+ return [{'attribute_id':safe_text(a.get('id'),60),'event_id':safe_text(a.get('event_id'),60),'origin':safe_text(a.get('source'),100),'to_ids':a.get('to_ids') in (True,1,'1'),'updated_epoch':count(a.get('timestamp'))} for _,a in matched]
+
 def context(store,row,source_cfg=None,at=None):
  at=at or dt.datetime.now(dt.timezone.utc);current=at.isoformat(timespec='seconds');result=[]
  cache={};status={}
@@ -39,9 +58,9 @@ def context(store,row,source_cfg=None,at=None):
    value['warning_list_details']='not supplied by the existing cache'
    value['origin_independence']='unknown; an imported feed may duplicate another provider'
    if not hasattr(store,'_behavior_misp_snapshot') or time.monotonic()-getattr(store,'_behavior_misp_snapshot_at',0)>60:
-    store._behavior_misp_snapshot=store.state('misp_snapshot') or {};store._behavior_misp_snapshot_at=time.monotonic()
+    store._behavior_misp_snapshot=store.state('misp_snapshot') or {};store._behavior_misp_snapshot_at=time.monotonic();store._behavior_misp_lookup=None
    snapshot=store._behavior_misp_snapshot;ids=set(value['attribute_ids'])
-   value['indicators']=[{'attribute_id':safe_text(a.get('id'),60),'event_id':safe_text(a.get('event_id'),60),'origin':safe_text(a.get('source'),100),'to_ids':a.get('to_ids') in (True,1,'1'),'updated_epoch':count(a.get('timestamp'))} for a in snapshot.get('attributes',[]) if safe_text(a.get('id'),60) in ids][:12] if ids else []
+   value['indicators']=misp_indicators(store,snapshot,ids)
    value['snapshot_current']=bool(timestamp(snapshot.get('expires')) and timestamp(snapshot['expires'])>at and snapshot.get('generation')==p.get('snapshot_generation'))
   elif provider=='greynoise':
    from greynoise_enrichment import observed_fresh

@@ -152,9 +152,12 @@ compares the exact ready revision. New receipts during preparation remain ready.
 This path reads saved evidence only; it issues no history, collector or model
 requests. Behavior Off, source scope, queue age, provider leases/backoff, pilot
 guards and the existing native fairness sweep retain their usual behavior.
-Negative MISP context skips the unrelated snapshot-attribute scan when the saved
-cache supplies no attribute IDs; its context fields, IDs and byte limits are
-unchanged.
+MISP context indexes the already cached snapshot once per normal snapshot-cache
+refresh and skips lookup when no attribute IDs are supplied. It retains at most
+twelve original positions per sanitized ID and reads at most twelve ID groups
+per packet. Original ordering, duplicate matches, redaction, context fields, IDs
+and byte limits are unchanged. The shared lookup holds references to the retained
+snapshot entries and is replaced when that snapshot is reloaded.
 
 The operational analytics read model queries only its six displayed providers
 through an additive partial covering index; all original counters remain stored
