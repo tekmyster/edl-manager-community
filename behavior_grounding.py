@@ -195,7 +195,7 @@ def validate(value,packet,candidates,registry):
   from behavior_synthesis import validate as validate_synthesis,render
   validate_synthesis(value['observable_synthesis'],packet)
   if value['observable_synthesis'] and not set(c['positive_ids'])<=cited:reject('Positive context must remain visible','synthesis_positive_context_omitted','contradictory_evidence')
-  summary=(render(value['observable_synthesis'])+' '+summary).strip()
+  summary=(render(value['observable_synthesis'],packet)+' '+summary).strip()
  if value['analysis_summary']!=summary:reject('Unsupported assessment narrative','assessment_summary_mismatch','analysis_summary')
  if value['limitations']!=LIMITS:
   index=next((i for i,(a,b) in enumerate(zip(value['limitations'],LIMITS)) if a!=b),min(len(value['limitations']),len(LIMITS)))
