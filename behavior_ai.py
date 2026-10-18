@@ -671,7 +671,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  try:retention=retention_cleanup(brain,cfg)
  except sqlite3.OperationalError:retention={'status':'busy_retry_next_pass'}
  from evidence_history import refresh,cleanup
- cleanup(brain,dt.datetime.now(dt.timezone.utc))
+ history_cleanup=cleanup(brain,dt.datetime.now(dt.timezone.utc))
  if source_cfg is not None and rows:
   history_offset=(store.state('behavior_history_cursor') or 0)%len(rows)
   for history_row in (rows+rows)[history_offset:history_offset+min(2,len(rows))]:
@@ -697,7 +697,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  if cfg['model_enabled'] and not index_only:
   refresh=lambda:run(store,index_only=True,source_cfg=source_cfg,should_stop=should_stop)
   results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
- status={'completed':now(),'indexed':indexed_count,'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ status={'completed':now(),'indexed':indexed_count,'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'history_cleanup':history_cleanup,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  status['packet_readiness']=getattr(store,'_packet_index_status',{'status':'inline'})
  store.state('behavior_worker',status);return status
 

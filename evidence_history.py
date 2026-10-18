@@ -201,11 +201,20 @@ def refresh(brain,address,source_cfg,at,fetcher=None):
  finally:brain.store.state('ip_activity_pending:'+key,{})
 
 def cleanup(brain,at):
- # Bounded deletion, independent of native retention; no unbounded browser work.
- with brain.connect() as db:
-  db.execute('DELETE FROM event_history WHERE rowid IN (SELECT rowid FROM event_history WHERE seen<? ORDER BY seen LIMIT 5000)',((at-dt.timedelta(days=30)).isoformat(timespec='seconds'),))
-  db.execute('DELETE FROM source_binding_receipts WHERE rowid IN (SELECT rowid FROM source_binding_receipts r WHERE NOT EXISTS(SELECT 1 FROM event_history h WHERE h.id=r.event_id AND h.scope=r.scope) LIMIT 5000)')
-  db.execute('DELETE FROM source_binding_audit WHERE rowid IN (SELECT rowid FROM source_binding_audit a WHERE NOT EXISTS(SELECT 1 FROM event_history h WHERE h.id=a.event_id AND h.scope=a.scope) AND NOT EXISTS(SELECT 1 FROM source_binding_receipts r WHERE r.event_id=a.event_id AND r.scope=a.scope) LIMIT 5000)')
+ # One existing bounded transaction: connect rolls back before a busy deferral.
+ # Permanent/schema/IO errors still propagate; no message-based suppression.
+ import sqlite3,logging
+ try:
+  with brain.connect() as db:
+   events=db.execute('DELETE FROM event_history WHERE rowid IN (SELECT rowid FROM event_history WHERE seen<? ORDER BY seen LIMIT 5000)',((at-dt.timedelta(days=30)).isoformat(timespec='seconds'),)).rowcount
+   receipts=db.execute('DELETE FROM source_binding_receipts WHERE rowid IN (SELECT rowid FROM source_binding_receipts r WHERE NOT EXISTS(SELECT 1 FROM event_history h WHERE h.id=r.event_id AND h.scope=r.scope) LIMIT 5000)').rowcount
+   audit=db.execute('DELETE FROM source_binding_audit WHERE rowid IN (SELECT rowid FROM source_binding_audit a WHERE NOT EXISTS(SELECT 1 FROM event_history h WHERE h.id=a.event_id AND h.scope=a.scope) AND NOT EXISTS(SELECT 1 FROM source_binding_receipts r WHERE r.event_id=a.event_id AND r.scope=a.scope) LIMIT 5000)').rowcount
+ except sqlite3.OperationalError as exc:
+  code=getattr(exc,'sqlite_errorcode',None)
+  if type(code) is not int or code<0 or (code&255) not in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED):raise
+  logging.warning('Behavior history cleanup deferred sqlite_code=%s',code)
+  return {'status':'deferred','reason':'sqlite_contention','sqlite_code':code,'retry':'next_normal_pass','batch_bound_per_table':5000}
+ return {'status':'completed','scope':'bounded_pass','batch_bound_per_table':5000,'deleted':{'events':events,'receipts':receipts,'audit':audit}}
 
 
 def collection_scope(brain,source_cfg):
