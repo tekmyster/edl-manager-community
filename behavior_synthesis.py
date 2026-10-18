@@ -95,7 +95,7 @@ def offers(packet):
   conn=linked[shell['id']]
   for capture in detailed:
    if capture.get('action')!='cowrie.session.file_download' or (capture.get('source_observation') or {}).get('semantic')!='file_capture' or capture['id'] not in linked or linked[capture['id']]['id']!=conn['id']:continue
-   if not timestamp(conn['seen'])<=timestamp(shell['seen'])<=timestamp(capture['seen']):continue
+   if not timestamp(conn['seen'])<timestamp(shell['seen'])<timestamp(capture['seen']):continue
    from behavior_grounding import recorded_syntax
    syntax=recorded_syntax(shell.get('source_observation') or {}) or []
    meanings=['reported_session_sequence']+(['staging_compatible'] if any(v in syntax for v in ('permission_change','output_redirection','interpreter_input','relative_execution')) else [])
@@ -182,7 +182,9 @@ def elapsed(a,b):
 def describe(group):
  rows=group['source_tuples'];kind=group['kind'];start=rows[0]['seen'];end=rows[-1]['seen'];window=start if start==end else start+' to '+end
  if kind=='session_sequence':
-  connection,shell,capture=rows
+  connection=next(r for r in rows if r['action']=='cowrie.session.connect')
+  shell=next(r for r in rows if r['action']=='cowrie.command.input')
+  capture=next(r for r in rows if r['action']=='cowrie.session.file_download')
   return ('Bound source session: connection -> shell input -> file capture; shell input '+elapsed(connection['seen'],shell['seen'])+' seconds after connection, capture '+elapsed(shell['seen'],capture['seen'])+' seconds after input. Recorded shell syntax: '+(shell['syntax'] or 'unavailable')+'. Source time: '+window+'.')
  if kind=='authentication_failure':return str(len(clusters(rows,'auth')))+' sampled failed-login observation(s), after coalescing identical source-time/action representations. Source time: '+window+'.'
  if kind in ('http_navigation','resource_discovery'):

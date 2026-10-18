@@ -102,3 +102,9 @@ def test_duplicate_selected_group_or_authored_fields_reject_without_leaking_text
  wire=example(p);wire['observable_synthesis']=choose(p,'resource_discovery');wire['observable_synthesis']['analysis_summary']='PRIVATESECRET'
  with pytest.raises(ModelOutputError) as caught:transport(p,wire)
  assert 'PRIVATESECRET' not in json.dumps(caught.value.metadata)
+
+
+def test_equal_timestamps_do_not_establish_an_ordered_session():
+ p=linked_packet()
+ for e in p['events']:e['seen']=p['events'][0]['seen']
+ assert not any(v['kind']=='session_sequence' for v in offers(p).values())
