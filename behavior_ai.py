@@ -539,6 +539,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
   session.close()
 
 def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
+ if should_stop and should_stop():return 'cancelled'
  candidates=(brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else candidates[:1]
  registry_file=pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'
  from behavior_taxonomy import load
@@ -546,6 +547,17 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
  registry=load(registry_file)
  allowed=select(registry,packet)
  cid=config_id(cfg)+'-'+digest([allowed,candidates,VERSION,PROMPT_VERSION,GENERATION_SCHEMA_VERSION]);day=now()[:10];clock=time.time();backoff_key='provider_backoff:'+digest([cfg['endpoint'],cfg['model']])
+ from behavior_persistence import directory,location,persist,stage,reserve,resolve_dispatch
+ directory(brain,True)
+ pending=location(brain,ident,cid)
+ if pending.exists() or pending.is_symlink():
+  saved=persist(brain,pending,should_stop)
+  return 'persistence_review_required' if saved=='lease_lost' else saved
+ if pending.with_suffix('.inflight').exists() or pending.with_suffix('.inflight').is_symlink():
+  import logging
+  status=resolve_dispatch(brain,pending.with_suffix('.inflight'))
+  if status=='persistence_review_required':logging.warning('Behavior assessment persistence requires review reason=dispatch_outcome_unknown')
+  return status
  with brain.connect() as db:
   db.execute('BEGIN IMMEDIATE')
   if should_stop and should_stop():return 'cancelled'
@@ -568,34 +580,26 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
   db.execute('INSERT INTO usage VALUES(?,1) ON CONFLICT(day) DO UPDATE SET requests=requests+1',(day,))
   owner=str(uuid.uuid4())
   db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?) ON CONFLICT(packet_id,config_id) DO UPDATE SET id=excluded.id,state=excluded.state,lease=excluded.lease,attempts=jobs.attempts+1,updated=excluded.updated',(owner,ident,cid,'running',clock+cfg['timeout']+30,1,now()))
+ from analytics_store import Attempt
+ attempt=Attempt(brain.store,ident);assessment_id=str(uuid.uuid4())
+ reserve(brain,ident,cid,owner,assessment_id,attempt.id)
  secret=pathlib.Path(brain.store.path).parent/'behavior-provider.json'
  failure_phase='provider_configuration'
  try:
   key=json.loads(secret.read_text()).get('key','') if secret.exists() else ''
-  from analytics_store import Attempt
   failure_phase='request_preparation'
-  result,metadata=infer(cfg,packet,candidates,allowed,key,None,Attempt(brain.store,ident))
+  result,metadata=infer(cfg,packet,candidates,allowed,key,None,attempt)
   result={**result,'metadata':{**metadata,'supplied_packet_ids':[ident]+[c['candidate_id'] for c in candidates]}};status='completed';error='';hours=cfg['assessment_hours']
  except Exception as exc:
   metadata=exc.metadata if isinstance(exc,ModelOutputError) else getattr(exc,'_edl_failure_metadata',None)
   if metadata is None:metadata={'failure_diagnostic':failure_diagnostic(exc,failure_phase)}
   result={'metadata':metadata};status='failed';error=exc.code if isinstance(exc,ModelOutputError) else type(exc).__name__;hours=1
- with brain.connect() as db:
-  db.execute('BEGIN IMMEDIATE')
-  if not db.execute("SELECT 1 FROM jobs WHERE id=? AND packet_id=? AND config_id=? AND state='running'",(owner,ident,cid)).fetchone():return 'lease_lost'
-  current=db.execute('SELECT packet_id FROM current_packets WHERE ip=(SELECT ip FROM packets WHERE id=?)',(ident,)).fetchone()
-  if current and current['packet_id']!=ident:status='superseded'
-  expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=hours)).isoformat(timespec='seconds')
-  db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',(str(uuid.uuid4()),ident,cid,now(),expires,status,json.dumps(result),error,round(time.time()-clock,3)))
-  db.execute('UPDATE jobs SET state=?,lease=0,updated=? WHERE id=?',(status,now(),owner))
-  # A completed response with rejected content is local to this packet's
-  # one-hour failed cache and bounded job retries. It is not an endpoint outage.
-  # Leave any existing provider guard intact; only success resets it. Unknown
-  # errors, incomplete streams, HTTP rejection and timeouts retain backoff.
-  if error not in ('invalid_assessment','output_limit'):
-   previous=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
-   failures=min(5,(json.loads(previous[0]).get('failures',0) if previous else 0)+1) if error else 0
-   db.execute('INSERT OR REPLACE INTO retention_state VALUES(?,?)',(backoff_key,json.dumps({'failures':failures,'until':time.time()+min(900,30*2**failures) if failures else 0})))
+ created=now();expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=hours)).isoformat(timespec='seconds')
+ outcome={'version':1,'row':[assessment_id,ident,cid,created,expires,status,json.dumps(result),error,round(time.time()-clock,3)],'owner':owner,'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
+ pending=stage(brain,outcome)
+ saved=persist(brain,pending,should_stop)
+ if saved=='persistence_deferred':return saved
+ status=saved
  from behavior_telemetry import recover
  recover(brain)
  return status
@@ -628,14 +632,14 @@ def drain_queue(brain,store,cfg,retrieved=None,should_stop=None,refresh_index=No
    fresh=any(timestamp(e.get('seen')) and clock-dt.timedelta(days=cfg['window_days'])<=timestamp(e.get('seen'))<=clock+dt.timedelta(minutes=5) for e in packet.get('events',[]))
    status=model_job(brain,queued['packet_id'],packet,set(json.loads(queued['features'])),cfg,candidates=retrieved.get(queued['packet_id']),should_stop=stopped) if fresh else 'stale_evidence'
    results[status]=results.get(status,0)+1;examined+=1
-   if status in ('budget','backoff','cancelled'):return results,examined,status
-   if status in ('leased_or_exhausted','lease_lost','superseded_before_request'):
+   if status in ('budget','backoff','cancelled','persistence_deferred'):return results,examined,status
+   if status in ('leased_or_exhausted','lease_lost','superseded_before_request','persistence_review_required'):
     skipped.add((queued['ip'],queued['packet_id']))
    else:
     with brain.connect() as db:
      db.execute('DELETE FROM analysis_queue WHERE ip=? AND packet_id=?',(queued['ip'],queued['original_packet_id']))
      db.execute('INSERT INTO queue_samples(created,wait_seconds,status) VALUES(?,?,?)',(now(),waiting,status))
-   if status not in ('cached','leased_or_exhausted','stale_evidence','superseded_before_request'):calls+=1
+   if status not in ('cached','leased_or_exhausted','stale_evidence','superseded_before_request','persistence_review_required'):calls+=1
   # Unlimited immediately takes another page, including work beyond blocked rows.
   if cfg['daily_budget'] is not None:return results,examined,'finite_page_complete'
 
@@ -644,6 +648,8 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  cfg=settings(store)
  if not cfg['enabled']:return {'status':'disabled'}
  brain=Brain(store)
+ from behavior_persistence import recover as recover_assessments
+ assessment_persistence=recover_assessments(brain,should_stop)
  from behavior_telemetry import recover
  telemetry_recovery=recover(brain)
  from source_handoff import deliver,ready
@@ -694,10 +700,11 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  # Changed windows replace pending content without losing their original place.
  store.state('behavior_cursor',{'offset':offset+len(fair)})
  scheduled_candidates=0;analysis_stop='index_only' if index_only else 'disabled'
- if cfg['model_enabled'] and not index_only:
+ if assessment_persistence['deferred']:analysis_stop='persistence_review_required' if assessment_persistence['review_required'] else 'persistence_deferred'
+ if cfg['model_enabled'] and not index_only and not assessment_persistence['deferred']:
   refresh=lambda:run(store,index_only=True,source_cfg=source_cfg,should_stop=should_stop)
   results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
- status={'completed':now(),'indexed':indexed_count,'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'history_cleanup':history_cleanup,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
+ status={'completed':now(),'indexed':indexed_count,'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'history_cleanup':history_cleanup,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'assessment_persistence':assessment_persistence,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  status['packet_readiness']=getattr(store,'_packet_index_status',{'status':'inline'})
  store.state('behavior_worker',status);return status
 

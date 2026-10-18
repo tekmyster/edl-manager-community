@@ -11,7 +11,8 @@ import re
 import sqlite3
 import contextlib
 
-from analytics_store import write, retry_busy, warning
+from analytics_store import write, warning
+from behavior_persistence import retry_busy, contention
 
 
 def receipt(row):
@@ -100,9 +101,9 @@ def recover(brain,limit=50):
         return result
     except (sqlite3.Error,OSError,ValueError,TypeError) as exc:
         warning('ai_recover',exc,phase=phase)
-        code=(getattr(exc,'sqlite_errorcode',0) or 0)&255
-        retryable=isinstance(exc,sqlite3.OperationalError) and code in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED)
+        retryable=contention(exc)
         # A committed ledger page can safely replay if its cursor is busy.
         # Permanent errors stay visible; they must not be reported as health.
-        result.update(recovered=0,partial=True,status='retry' if retryable else 'failed',phase=phase)
+        result.update(recovered=result.get('ledger_recovered',0),cursor_advanced=False,partial=True,status='retry' if retryable else 'failed',phase=phase)
+        if retryable:result.update(sqlite_code=exc.sqlite_errorcode,retry='next_normal_pass')
         return result
