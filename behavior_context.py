@@ -41,7 +41,7 @@ def context(store,row,source_cfg=None,at=None):
    if not hasattr(store,'_behavior_misp_snapshot') or time.monotonic()-getattr(store,'_behavior_misp_snapshot_at',0)>60:
     store._behavior_misp_snapshot=store.state('misp_snapshot') or {};store._behavior_misp_snapshot_at=time.monotonic()
    snapshot=store._behavior_misp_snapshot;ids=set(value['attribute_ids'])
-   value['indicators']=[{'attribute_id':safe_text(a.get('id'),60),'event_id':safe_text(a.get('event_id'),60),'origin':safe_text(a.get('source'),100),'to_ids':a.get('to_ids') in (True,1,'1'),'updated_epoch':count(a.get('timestamp'))} for a in snapshot.get('attributes',[]) if safe_text(a.get('id'),60) in ids][:12]
+   value['indicators']=[{'attribute_id':safe_text(a.get('id'),60),'event_id':safe_text(a.get('event_id'),60),'origin':safe_text(a.get('source'),100),'to_ids':a.get('to_ids') in (True,1,'1'),'updated_epoch':count(a.get('timestamp'))} for a in snapshot.get('attributes',[]) if safe_text(a.get('id'),60) in ids][:12] if ids else []
    value['snapshot_current']=bool(timestamp(snapshot.get('expires')) and timestamp(snapshot['expires'])>at and snapshot.get('generation')==p.get('snapshot_generation'))
   elif provider=='greynoise':
    from greynoise_enrichment import observed_fresh

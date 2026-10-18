@@ -13,13 +13,13 @@ from test_binding_receipts import proven
 from test_source_observation_cache import AT
 
 
-def fixture(tmp_path,count=1):
+def fixture(tmp_path,count=1,source_cfg=None):
  s=Store(tmp_path/'native');b=Brain(s)
  s.state('behavior_settings',{'enabled':True,'model_enabled':False,'correlation_enabled':False})
  addresses=('8.8.8.8',)+tuple('11.0.'+str(i//250)+'.'+str(i%250+1) for i in range(1,count))
  for address in addresses:
   s.evidence(address,'tpot','Cowrie',AT.isoformat(),'ssh',50,'',{})
-  s.source_activity(address,'tpot','Cowrie',AT.isoformat(),{'activity':{'events':proven()},'native_event_count':17,'native_attempt_count':3})
+  s.source_activity(address,'tpot','Cowrie',AT.isoformat(),{'activity':{'events':proven()},'native_event_count':17,'native_attempt_count':3},source_cfg=source_cfg)
  while deliver(b)['read']:pass
  s._behavior_index_addresses=addresses;s._behavior_index_lock=threading.RLock()
  return s,b,addresses
@@ -72,13 +72,14 @@ def test_restart_after_packet_commit_before_ack_and_cancel(tmp_path,monkeypatch)
 
 def test_readiness_runs_while_existing_worker_serial_work_waits(tmp_path,monkeypatch):
  pytest.importorskip('fcntl');import behavior_worker
- s,b,addresses=fixture(tmp_path,30);config=tmp_path/'config.json';config.write_text(json.dumps({'database':s.path}))
+ cfg={'database':str(tmp_path/'native'),'index_url':'https://index.invalid','source_agents':{'tpot':'collector'}}
+ s,b,addresses=fixture(tmp_path,30,source_cfg=cfg);config=tmp_path/'config.json';config.write_text(json.dumps(cfg))
  monkeypatch.setenv('EDL_CONFIG',str(config));monkeypatch.setattr('sys.argv',['behavior_worker.py'])
  def waiting(store,**kw):
   store._behavior_index_addresses=addresses
   until=time.monotonic()+20
-  while ready(b) and time.monotonic()<until:time.sleep(.02)
-  assert not ready(b);return {'status':'simulated_serial_model_work_no_request'}
+  while ready(b,cfg) and time.monotonic()<until:time.sleep(.02)
+  assert not ready(b,cfg);return {'status':'simulated_serial_model_work_no_request'}
  monkeypatch.setattr(behavior_worker,'run',waiting);behavior_worker.main()
  assert not any(t.name in ('packet-readiness','source-sample-delivery') for t in threading.enumerate())
 

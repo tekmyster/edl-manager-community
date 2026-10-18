@@ -6,6 +6,23 @@ from behavior_ai import Brain,validate_result,DEFAULTS
 from behavior_context import context,destination
 from test_behavior_ai import evidence,result
 
+
+def test_negative_misp_context_does_not_scan_unrelated_snapshot(evidence,monkeypatch):
+ import behavior_context,time
+ evidence.cache('8.8.8.8','misp',{'matches':0,'attribute_ids':[],'snapshot_generation':'fixture-generation'})
+ snapshot={'generation':'fixture-generation','expires':(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(),'attributes':[{'id':'unrelated-'+str(i)} for i in range(10000)]}
+ evidence._behavior_misp_snapshot=snapshot;evidence._behavior_misp_snapshot_at=time.monotonic()
+ original=behavior_context.safe_text;seen=[]
+ def traced(value,*args):
+  if str(value).startswith('unrelated-'):seen.append(value)
+  return original(value,*args)
+ monkeypatch.setattr(behavior_context,'safe_text',traced)
+ item=next(v for v in context(evidence,evidence.describe('8.8.8.8')) if v.get('provider')=='misp')
+ assert item['indicators']==[] and item['attribute_ids']==[] and item['snapshot_current']
+ assert not seen
+ snapshot['attributes']=[]
+ assert next(v for v in context(evidence,evidence.describe('8.8.8.8')) if v.get('provider')=='misp')==item
+
 def test_structured_intelligence_preserves_freshness_origin_and_contradictions(evidence):
  evidence.cache('8.8.8.8','misp',{'matches':1,'context_matches':2,'sources':['GreyNoise imported feed'],'attribute_ids':['101'],'fresh_to_ids_and_warninglists_enforced':True})
  evidence.cache('8.8.8.8','greynoise',{'classification':'benign','noise':True,'riot':True,'found':True,'last_seen':now(),'name':'Verified service'})
