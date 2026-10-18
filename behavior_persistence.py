@@ -109,14 +109,18 @@ def clear_reservation(p,owner):
     marker=p.with_suffix('.inflight')
     if marker.is_symlink():raise ValueError('Invalid assessment dispatch marker')
     if marker.exists():
-        with marker.open('rb') as f:body=f.read(4097)
+        try:
+            with marker.open('rb') as f:body=f.read(4097)
+        except FileNotFoundError:return
         if len(body)>4096:raise ValueError('Invalid assessment dispatch marker')
         if json.loads(body).get('owner')==owner:marker.unlink()
 
 
 def resolve_dispatch(brain,marker):
     if marker.is_symlink():raise ValueError('Invalid assessment dispatch marker')
-    with marker.open('rb') as f:body=f.read(4097)
+    try:
+        with marker.open('rb') as f:body=f.read(4097)
+    except FileNotFoundError:return None
     if len(body)>4096:raise ValueError('Invalid assessment dispatch marker')
     value=json.loads(body)
     if not isinstance(value,dict) or set(value)!={'owner','packet','config','assessment','request'} or any(not isinstance(v,str) for v in value.values()):
@@ -125,13 +129,17 @@ def resolve_dispatch(brain,marker):
         raise ValueError('Invalid assessment dispatch identity')
     def saved():
         with contextlib.closing(sqlite3.connect(str(brain.path),timeout=.025)) as db:
-            return db.execute('SELECT packet_id,config_id,status FROM assessments WHERE id=?',(value['assessment'],)).fetchone()
-    try:row=retry_busy(saved)
+            row=db.execute('SELECT packet_id,config_id,status FROM assessments WHERE id=?',(value['assessment'],)).fetchone()
+            job=db.execute('SELECT id,state,lease FROM jobs WHERE packet_id=? AND config_id=?',(value['packet'],value['config'])).fetchone()
+            return row,job
+    try:row,job=retry_busy(saved)
     except sqlite3.OperationalError as exc:
         if not contention(exc):raise
         logging.warning('Behavior assessment persistence deferred sqlite_code=%s',exc.sqlite_errorcode)
         return 'persistence_deferred'
-    if not row:return 'persistence_review_required'
+    if not row:
+        if job and job[0]==value['owner'] and job[1]=='running' and job[2]>time.time():return 'leased_or_exhausted'
+        return 'persistence_review_required'
     if tuple(row[:2])!=(value['packet'],value['config']) or row[2] not in ('completed','failed','superseded'):
         raise ValueError('Conflicting saved dispatch identity')
     clear_reservation(marker.with_suffix('.json'),value['owner']);sync_directory(marker.parent)
@@ -142,7 +150,9 @@ class Cancelled(Exception):pass
 
 
 def persist(brain,p,should_stop=None):
-    value=read(p);frozen=value['row']
+    try:value=read(p)
+    except FileNotFoundError:return 'persistence_deferred'
+    frozen=value['row']
     attempts=0
     def save():
         nonlocal attempts
@@ -185,7 +195,7 @@ def persist(brain,p,should_stop=None):
         return status
     # Also safe after a crash between commit and unlink: the same ID is checked.
     clear_reservation(p,value['owner'])
-    p.unlink();sync_directory(p.parent)
+    p.unlink(missing_ok=True);sync_directory(p.parent)
     return status
 
 

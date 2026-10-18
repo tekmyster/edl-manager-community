@@ -557,7 +557,7 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
   import logging
   status=resolve_dispatch(brain,pending.with_suffix('.inflight'))
   if status=='persistence_review_required':logging.warning('Behavior assessment persistence requires review reason=dispatch_outcome_unknown')
-  return status
+  if status is not None:return status
  with brain.connect() as db:
   db.execute('BEGIN IMMEDIATE')
   if should_stop and should_stop():return 'cancelled'

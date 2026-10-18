@@ -286,6 +286,8 @@ def test_result_journal_disk_failure_retains_dispatch_intent_without_repeat(tmp_
  markers=list(pending.directory(b).glob('*.inflight'));assert len(markers)==1 and not files(b)
  marker=json.loads(markers[0].read_text())
  with ledger.connect(b.store) as db:assert db.execute('SELECT state FROM requests WHERE id=?',(marker['request'],)).fetchone()[0]=='accepted'
+ assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='leased_or_exhausted' and calls==[1]
+ with b.connect() as db:db.execute('UPDATE jobs SET lease=0')
  assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required' and calls==[1]
  assert pending.recover(b)['uncertain_dispatches']==1 and records(b)['assessments']==[]
  assert marker['request'] not in caplog.text
@@ -308,6 +310,7 @@ def test_uncertain_dispatch_skips_only_its_packet_and_keeps_other_work(tmp_path,
   meta={'request_id':attempt.id};attempt.finish('accepted',meta);return example(p),meta
  monkeypatch.setattr(ai,'infer',infer)
  with pytest.raises(KeyboardInterrupt):ai.model_job(b,'packet0',packet(b),set(),cfg)
+ with b.connect() as db:db.execute('UPDATE jobs SET lease=0')
  results,examined,reason=ai.drain_queue(b,s,cfg)
  assert reason=='idle' and results=={'persistence_review_required':1,'completed':1} and calls==['packet0','packet1']
  with b.connect() as db:assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==1
@@ -329,3 +332,19 @@ def test_cursor_real_locked_preserves_committed_receipt_then_replays_once(tmp_pa
   before=requests(b);assert len(before)==1 and cursor(b) is None and 'sqlite_code=262' in caplog.text
  finally:held.close()
  assert telemetry.recover(b)['cursor_advanced'] and requests(b)==before
+
+
+def test_concurrent_result_replayers_commit_exactly_once(tmp_path,monkeypatch):
+ from concurrent.futures import ThreadPoolExecutor
+ s,b,cfg=queue(tmp_path,1);held=[];calls=fake(monkeypatch,b,lambda:held.append(Holder(b.path,['BEGIN IMMEDIATE'])))
+ try:assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_deferred'
+ finally:
+  for h in held:h.close()
+ p=files(b)[0];barrier=threading.Barrier(2);original=pending.read
+ def read(path):
+  value=original(path);barrier.wait(3);return value
+ with monkeypatch.context() as patch:
+  patch.setattr(pending,'read',read)
+  with ThreadPoolExecutor(max_workers=2) as pool:
+   futures=[pool.submit(pending.persist,b,p) for _ in range(2)];assert [f.result(timeout=5) for f in futures]==['completed','completed']
+ verify_once(b,calls);assert not files(b) and not list(pending.directory(b).glob('*.inflight'))

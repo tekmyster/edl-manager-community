@@ -10,7 +10,7 @@ from behavior_mapping import DETECTORS,MAX_ATTACK,MAX_DEFEND,select,validate_map
 from behavior_taxonomy import build,fingerprint,load
 from behavior_ai import DEFAULTS,Brain,infer,model_job,validate_result
 from test_behavior_ai import result
-from core import Store
+from core import Store,now
 
 
 def event(ident='one',action='HTTP request',**kwargs):
@@ -181,6 +181,9 @@ def test_catalog_identity_invalidates_cache_without_native_changes(catalog,tmp_p
  store=Store(tmp_path/'manager.sqlite3');brain=Brain(store)
  p=tmp_path/'behavior-taxonomy.json';p.write_text(json.dumps(catalog))
  packet={'packet_id':'packet','events':[event()],'coverage':'saved_samples'}
+ with brain.connect() as db:
+  db.execute('INSERT INTO packets VALUES(?,?,?,?,?,?)',('packet','8.8.8.8',now(),json.dumps(packet),'[]',0))
+  db.execute('INSERT INTO current_packets VALUES(?,?)',('8.8.8.8','packet'))
  calls=[]
  def fake(*args):calls.append(args[3]);return result(packet),{}
  monkeypatch.setattr(behavior_ai,'infer',fake)
