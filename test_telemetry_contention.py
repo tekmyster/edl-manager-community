@@ -16,13 +16,13 @@ def fixture(tmp_path):
     return b,meta
 
 @contextlib.contextmanager
-def lock_at(monkeypatch,target,needle,seconds):
+def lock_at(monkeypatch,target,needle,seconds,exclusive=False):
     original=sqlite3.connect;begin=threading.Event();held=threading.Event();release=threading.Event();errors=[]
     def holder():
         try:
             assert begin.wait(3)
             with contextlib.closing(original(target,timeout=1)) as db:
-                db.execute('BEGIN IMMEDIATE');held.set();release.wait(seconds);db.rollback()
+                db.execute('BEGIN EXCLUSIVE' if exclusive else 'BEGIN IMMEDIATE');held.set();release.wait(seconds);db.rollback()
         except BaseException as exc:errors.append(exc);held.set()
     class Connection(sqlite3.Connection):
         def execute(self,sql,*args,**kw):
@@ -52,20 +52,29 @@ def test_short_behavior_cursor_lock_retries_without_repeating_ledger_receipt(tmp
     row=requests(b)[0];assert row[0]==meta['request_id'] and row[2]==meta['request_started_at'] and row[3]==meta['request_finished_at']
     assert len(requests(b))==1 and cursor(b)['id']=='saved' and not caplog.records
 
-@pytest.mark.parametrize('phase',['cursor_write','ledger_write'])
+def test_short_assessment_read_lock_retries_without_creating_dispatches(tmp_path,monkeypatch,caplog):
+    b,_=fixture(tmp_path)
+    with sqlite3.connect(b.path) as db:db.execute('PRAGMA journal_mode=DELETE')
+    with lock_at(monkeypatch,b.path,"SELECT value FROM retention_state WHERE name='telemetry_cursor'",.08,exclusive=True):
+        result=telemetry.recover(b)
+    assert result['recovered']==1 and result['cursor_advanced'] and len(requests(b))==1 and not caplog.records
+
+@pytest.mark.parametrize('phase',['cursor_write','ledger_write','assessment_read'])
 def test_exhausted_lock_identifies_database_and_restart_replays_once(tmp_path,monkeypatch,caplog,phase):
-    b,meta=fixture(tmp_path);target=b.path if phase=='cursor_write' else ledger.path(b.store)
+    b,meta=fixture(tmp_path);target=ledger.path(b.store) if phase=='ledger_write' else b.path
+    if phase=='assessment_read':
+        with sqlite3.connect(b.path) as db:db.execute('PRAGMA journal_mode=DELETE')
     if phase=='ledger_write':
         for connection in b.store._analytics_handles.values():connection.close()
         b.store._analytics_handles.clear()
-    sql="INSERT INTO retention_state VALUES('telemetry_cursor'" if phase=='cursor_write' else 'INSERT INTO requests VALUES'
-    with lock_at(monkeypatch,target,sql,2):
+    sql="SELECT value FROM retention_state WHERE name='telemetry_cursor'" if phase=='assessment_read' else "INSERT INTO retention_state VALUES('telemetry_cursor'" if phase=='cursor_write' else 'INSERT INTO requests VALUES'
+    with lock_at(monkeypatch,target,sql,2,exclusive=phase=='assessment_read'):
         start=time.monotonic();result=telemetry.recover(b);elapsed=time.monotonic()-start
         assert result['status']=='retry' and result['phase']==phase and elapsed<.7
-        assert cursor(b) is None
+        if phase!='assessment_read':assert cursor(b) is None
         assert len(requests(b))==(phase=='cursor_write')
     before=requests(b);result=telemetry.recover(Brain(Store(b.store.path)))
-    assert result['cursor_advanced'] and result['recovered']==(phase=='ledger_write')
+    assert result['cursor_advanced'] and result['recovered']==(phase!='cursor_write')
     assert len(requests(b))==1 and (not before or requests(b)==before)
     assert f'operation=ai_recover sqlite_code=5 os_errno=None phase={phase}' in caplog.text
     assert meta['request_id'] not in caplog.text and 'packet' not in caplog.text
@@ -86,7 +95,8 @@ def test_cursor_compare_and_swap_never_overwrites_concurrent_advance(tmp_path,mo
         row=db.execute("SELECT rowid,id FROM assessments WHERE id='later'").fetchone();marker=json.dumps(dict(row),sort_keys=True)
     original=telemetry.retry_busy
     def concurrent_advance(fn):
-        with b.connect() as db:db.execute("INSERT INTO retention_state VALUES('telemetry_cursor',?)",(marker,))
+        if fn.__name__=='advance':
+            with b.connect() as db:db.execute("INSERT INTO retention_state VALUES('telemetry_cursor',?)",(marker,))
         return original(fn)
     monkeypatch.setattr(telemetry,'retry_busy',concurrent_advance)
     result=telemetry.recover(b,1)

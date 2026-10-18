@@ -47,21 +47,22 @@ def recover(brain,limit=50):
     limit=max(1,min(50,limit));result={'scanned':0,'bound':50,'recovered':0,'partial':False}
     phase='assessment_read'
     try:
-        with contextlib.closing(sqlite3.connect(str(brain.path),timeout=.025)) as db:
-            db.row_factory=sqlite3.Row
-            row=db.execute("SELECT value FROM retention_state WHERE name='telemetry_cursor'").fetchone()
-            saved_cursor=row[0] if row else None
-            try:marker=json.loads(saved_cursor) if saved_cursor else {}
-            except (ValueError,TypeError):marker={}
-            if not isinstance(marker,dict):marker={}
-            cursor=marker.get('rowid',0)
-            if type(cursor) is not int or cursor<0:cursor=0
-            previous=db.execute('SELECT id FROM assessments WHERE rowid=?',(cursor,)).fetchone() if cursor else None
-            # Retention may delete the watermark and SQLite can reuse rowids.
-            # Identity loss restarts the bounded scan; idempotence prevents
-            # double counting, and a compare-and-swap avoids a racing rewind.
-            if cursor and (not previous or previous[0]!=marker.get('id')):cursor=0
-            rows=db.execute("SELECT rowid,id,packet_id,created,status,json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.metadata') metadata FROM assessments WHERE rowid>? ORDER BY rowid LIMIT ?",(cursor,limit)).fetchall()
+        def load():
+            with contextlib.closing(sqlite3.connect(str(brain.path),timeout=.025)) as db:
+                db.row_factory=sqlite3.Row
+                row=db.execute("SELECT value FROM retention_state WHERE name='telemetry_cursor'").fetchone()
+                saved_cursor=row[0] if row else None
+                try:marker=json.loads(saved_cursor) if saved_cursor else {}
+                except (ValueError,TypeError):marker={}
+                if not isinstance(marker,dict):marker={}
+                cursor=marker.get('rowid',0)
+                if type(cursor) is not int or cursor<0:cursor=0
+                previous=db.execute('SELECT id FROM assessments WHERE rowid=?',(cursor,)).fetchone() if cursor else None
+                # Retention can remove/reuse the watermark; CAS prevents rewind.
+                if cursor and (not previous or previous[0]!=marker.get('id')):cursor=0
+                rows=db.execute("SELECT rowid,id,packet_id,created,status,json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.metadata') metadata FROM assessments WHERE rowid>? ORDER BY rowid LIMIT ?",(cursor,limit)).fetchall()
+                return saved_cursor,rows
+        saved_cursor,rows=retry_busy(load)
         result['scanned']=len(rows)
         if not rows:return result
         values=[(row,v) for row in rows if (v:=receipt(row))]
