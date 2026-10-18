@@ -1,0 +1,13 @@
+.behavior-synthesis-details { min-width: 0; overflow-wrap: anywhere; }
+.behavior-synthesis-details .scroll { max-width: 100%; overflow-x: auto; }
+.behavior-synthesis-details table { min-width: 760px; }
+.behavior-synthesis-details caption { text-align: left; padding: .75rem 0; color: var(--muted); }
+.behavior-synthesis-details td:first-child { min-width: 10rem; }
+.behavior-synthesis-details time { font-variant-numeric: tabular-nums; }
+.behavior-synthesis-details small { display: block; white-space: normal; }
+.behavior-synthesis-details summary:focus-visible,
+.behavior-citation:focus-visible,
+.behavior-synthesis-details .scroll:focus-visible { outline: 2px solid var(--accent, #76c9ff); outline-offset: 3px; }
+.behavior-cited-observation { scroll-margin-top: 1rem; }
+.behavior-cited-observation:target,
+.behavior-cited-observation:focus { outline: 2px solid var(--accent, #76c9ff); outline-offset: -2px; background: rgba(118, 201, 255, .08); }

@@ -176,6 +176,8 @@ def register(app,store,cfg,login_required):
    store.audit(session['user'],'behavior.investigation.retain',{'packet_id':ident})
    flash('Observation and its assessments retained for investigation.','success')
   return redirect(url_for('behavior_observation',ident=ident))
+ from behavior_synthesis import presentation
+ app.jinja_env.globals['behavior_synthesis_presentation']=presentation
  app.jinja_env.globals['behavior_view']=service.view
  app.jinja_env.globals['behavior_groups']=lambda address:groups(service,address=address)
  from source_settings import SOURCES
