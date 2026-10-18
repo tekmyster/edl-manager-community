@@ -393,6 +393,24 @@ def decode_taxonomy_choices(value,choices):
   result[field]=decoded
  return result
 
+def failure_diagnostic(exc,phase,http_status=None):
+ # Fixed machine-readable observations only; never exception text or bodies.
+ import requests
+ if isinstance(exc,ModelOutputError):
+  category={'invalid_assessment':'assessment_rejected','output_limit':'output_limit','incomplete_response':'incomplete_response'}.get(exc.code,'model_output')
+ elif phase=='http_status':category='http_rejection'
+ elif isinstance(exc,requests.exceptions.SSLError):category='tls'
+ elif isinstance(exc,requests.exceptions.Timeout):category='timeout'
+ elif isinstance(exc,requests.exceptions.ConnectionError):category='connection'
+ elif isinstance(exc,requests.exceptions.RequestException):category='transport'
+ elif isinstance(exc,OSError):category='io'
+ elif phase in ('response_stream','response_envelope'):category='response_format'
+ else:category='local_error'
+ result={'phase':phase,'category':category}
+ if type(http_status) is int and 100<=http_status<=599:result['http_status']=http_status
+ return result
+
+
 def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
  import requests,copy
  from behavior_mapping import select
@@ -406,14 +424,17 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
   candidates.pop();schema,prompt=prepare(packet,candidates,registry)
  if len(json.dumps(prompt).encode())>18000:raise ValueError('Analysis input exceeds size limit')
  session=requests.Session();session.trust_env=False
- metadata={};transport_start=None;transport_state='failed'
+ metadata={};transport_start=None;transport_state='failed';failure_phase='dispatch';http_status=None
  try:
   call=requester or session.post
   grounding_instruction=INSTRUCTION
   if attempt:attempt.start()
-  transport_start=time.monotonic()
+  transport_start=time.monotonic();failure_phase='request_headers'
   response=call(cfg['endpoint']+'/api/chat',headers={'Authorization':'Bearer '+key},json={'model':cfg['model'],'messages':[{'role':'system','content':grounding_instruction},{'role':'user','content':json.dumps(prompt,ensure_ascii=True)}],'stream':True,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}},verify=cfg['ca_file'] or True,timeout=(5,cfg['timeout']),allow_redirects=False,stream=True)
-  if response.status_code!=200:response.close();raise ValueError('Model service rejected the request')
+  http_status=response.status_code
+  failure_phase='http_status'
+  if http_status!=200:response.close();raise ValueError('Model service rejected the request')
+  failure_phase='response_stream'
   body=b'';size=0;content_size=0;parts=[];envelope=None;first_content=None;streamed=False;finished=False
   def invalid_constant(value):raise ValueError('Non-finite JSON constant')
   def consume(line):
@@ -445,6 +466,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
      if line.strip():consume(line)
     if len(body)>131072:raise ValueError('Model response exceeds size limit')
   finally:response.close()
+  failure_phase='response_envelope'
   if streamed:
    if body.strip():consume(body)
    if envelope is None:raise ModelOutputError('incomplete_response',{'first_content_seconds':first_content})
@@ -475,6 +497,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
   metadata.update(cached_input_tokens=cached,input_cache_accounting=accounting,uncached_input_tokens=total-cached if accounting=='consistent' else None)
   if envelope.get('done') is not True or envelope.get('model')!=cfg['model']:raise ModelOutputError('incomplete_response',metadata)
   if envelope.get('done_reason')=='length':raise ModelOutputError('output_limit',metadata)
+  failure_phase='assessment_validation'
   validation_stage='json_content'
   try:
    value=parse_wire(envelope['message']['content'],parse_constant=invalid_constant)
@@ -499,6 +522,13 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
   return value,metadata
  except ModelOutputError as exc:
   transport_state='rejected';metadata=exc.metadata
+  metadata['failure_diagnostic']=failure_diagnostic(exc,failure_phase,http_status)
+  raise
+ except Exception as exc:
+  metadata['failure_diagnostic']=failure_diagnostic(exc,failure_phase,http_status)
+  # Preserve the original exception type/backoff. Finalization below appends
+  # only the genuinely observed attempt receipt to this same metadata object.
+  exc._edl_failure_metadata=metadata
   raise
  finally:
   if transport_start is not None:
@@ -539,13 +569,17 @@ def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
   owner=str(uuid.uuid4())
   db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?) ON CONFLICT(packet_id,config_id) DO UPDATE SET id=excluded.id,state=excluded.state,lease=excluded.lease,attempts=jobs.attempts+1,updated=excluded.updated',(owner,ident,cid,'running',clock+cfg['timeout']+30,1,now()))
  secret=pathlib.Path(brain.store.path).parent/'behavior-provider.json'
+ failure_phase='provider_configuration'
  try:
   key=json.loads(secret.read_text()).get('key','') if secret.exists() else ''
   from analytics_store import Attempt
+  failure_phase='request_preparation'
   result,metadata=infer(cfg,packet,candidates,allowed,key,None,Attempt(brain.store,ident))
   result={**result,'metadata':{**metadata,'supplied_packet_ids':[ident]+[c['candidate_id'] for c in candidates]}};status='completed';error='';hours=cfg['assessment_hours']
  except Exception as exc:
-  result={'metadata':exc.metadata} if isinstance(exc,ModelOutputError) else {};status='failed';error=exc.code if isinstance(exc,ModelOutputError) else type(exc).__name__;hours=1
+  metadata=exc.metadata if isinstance(exc,ModelOutputError) else getattr(exc,'_edl_failure_metadata',None)
+  if metadata is None:metadata={'failure_diagnostic':failure_diagnostic(exc,failure_phase)}
+  result={'metadata':metadata};status='failed';error=exc.code if isinstance(exc,ModelOutputError) else type(exc).__name__;hours=1
  with brain.connect() as db:
   db.execute('BEGIN IMMEDIATE')
   if not db.execute("SELECT 1 FROM jobs WHERE id=? AND packet_id=? AND config_id=? AND state='running'",(owner,ident,cid)).fetchone():return 'lease_lost'
