@@ -21,7 +21,7 @@ def transport(packet,wire,candidates=None,registry=None):
 def test_conservative_choice_round_trip_has_exact_bound_facts_and_zero_unknowns():
  p=linked_packet();wire=example(p);(value,metadata),calls=transport(p,wire)
  assert value['findings'][0] in contract(p,{})['facts'] and value['automation']==value['intent']=={'classification':'unknown','confidence':0}
- assert metadata['generation_schema_version']==VERSION and metadata['prompt_version']=='behavior-3.16'
+ assert metadata['generation_schema_version']==VERSION and metadata['prompt_version']=='behavior-3.17'
  assert calls[0]['stream'] is True and calls[0]['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
  assert set(calls[0]['format']['properties'])==set(wire)
  assert not {'analysis_summary','limitations','evidence_ids','explanation'}&set(wire)

@@ -106,7 +106,7 @@ def test_job_failure_persists_observed_receipt_preserves_history_and_backoff(job
  assert ai.model_job(brain,ident,packet,features,cfg)=='backoff' and calls==[1]
  after=store.describe('8.8.8.8');assert before['score']==after['score'] and before['retention']==after['retention']
  assert cfg['daily_budget'] is None and ai.DEFAULTS['daily_budget']==24
- assert ai.PROMPT_VERSION=='behavior-3.16'
+ assert ai.PROMPT_VERSION=='behavior-3.17'
 
 
 def test_predispatch_failure_has_no_fabricated_receipt(job,monkeypatch):

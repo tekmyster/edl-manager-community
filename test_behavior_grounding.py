@@ -136,8 +136,10 @@ def test_coherent_reported_command_and_transfer_can_permit_an_interpretation_not
  assert error.value.metadata['validation_diagnostic']['reason']=='object_fields' # Invalid legacy wire is not converted.
 
 def test_fact_budget_and_existing_small_model_resource_limits(catalog):
- p=packet(*(event(str(i),action='connection observed') for i in range(100)))
- c=contract(p,catalog);assert c['available_facts']==100 and c['offered_facts']==12
+ # Lossless compaction can fit the former 100-event fixture; this remains
+ # deliberately over the byte limit while preserving the twelve-fact offer cap.
+ p=packet(*(event(str(i),action='connection observed') for i in range(200)))
+ c=contract(p,catalog);assert c['available_facts']==200 and c['offered_facts']==12
  with pytest.raises(ValueError,match='input exceeds size'):transport(p,example(p),catalog)
  p['events']=p['events'][:40]
  (_,metadata),calls=transport(p,example(p),catalog)
