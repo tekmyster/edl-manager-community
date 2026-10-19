@@ -1,5 +1,5 @@
 """Indexed bounded queue pools. Candidate order is not inference or latency evidence."""
-import datetime as dt,json
+import datetime as dt,json,sqlite3
 
 REFRESH='''INSERT INTO queue_priority
  SELECT q.ip,p.id,coalesce(s.richness,0),coalesce(s.last_seen,''),q.queued,coalesce(s.fingerprint,'')
@@ -56,15 +56,24 @@ def backfill(brain,limit=200):
 
  Recent saved packets are indexed first without changing observed event times.
  New packets are indexed on insertion; this restartable cursor covers history.
+ SQLite contention defers only after rollback; scanned then reports zero
+ committed progress and partial=True leaves completeness unknown until retry.
  """
- with brain.connect() as db:
-  row=db.execute("SELECT value FROM retention_state WHERE name='schedule_cursor_v2'").fetchone()
-  cursor=int(row[0]) if row else db.execute('SELECT coalesce(max(rowid),0)+1 FROM packets').fetchone()[0]
-  rows=db.execute('SELECT rowid,id FROM packets WHERE rowid<? ORDER BY rowid DESC LIMIT ?',(cursor,max(1,min(200,limit)))).fetchall()
-  for row in rows:index(db,row['id'])
-  if rows:cursor=rows[-1]['rowid']
-  db.execute("INSERT OR REPLACE INTO retention_state VALUES('schedule_cursor_v2',?)",(str(cursor),))
-  partial=bool(db.execute('SELECT 1 FROM packets WHERE rowid<? LIMIT 1',(cursor,)).fetchone())
+ try:
+  with brain.connect() as db:
+   row=db.execute("SELECT value FROM retention_state WHERE name='schedule_cursor_v2'").fetchone()
+   cursor=int(row[0]) if row else db.execute('SELECT coalesce(max(rowid),0)+1 FROM packets').fetchone()[0]
+   rows=db.execute('SELECT rowid,id FROM packets WHERE rowid<? ORDER BY rowid DESC LIMIT ?',(cursor,max(1,min(200,limit)))).fetchall()
+   for row in rows:index(db,row['id'])
+   if rows:cursor=rows[-1]['rowid']
+   db.execute("INSERT OR REPLACE INTO retention_state VALUES('schedule_cursor_v2',?)",(str(cursor),))
+   partial=bool(db.execute('SELECT 1 FROM packets WHERE rowid<? LIMIT 1',(cursor,)).fetchone())
+ except sqlite3.OperationalError as exc:
+  from behavior_persistence import contention
+  if not contention(exc):raise
+  # The connection context has rolled back and closed before reporting defer.
+  # Zero committed progress; partial=True means completeness is still unknown.
+  return {'scanned':0,'bound':200,'partial':True,'version':2,'status':'deferred','sqlite_code':exc.sqlite_errorcode,'retry':'next_normal_pass'}
  return {'scanned':len(rows),'bound':200,'partial':partial,'version':2}
 
 

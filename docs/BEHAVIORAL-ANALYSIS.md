@@ -240,3 +240,6 @@ benchmark definitions are documented in [AI retention and performance](AI-RETENT
 
 The staged additive session/source contract, capture semantics and typed rejection
 diagnostics are documented in [portable source observations](SOURCE-OBSERVATIONS.md).
+
+
+Scheduler index migration commits at most 200 saved packets per pass. Actual SQLite BUSY/LOCKED errors at its transaction boundary roll back all index, readiness, queue-priority and cursor changes before returning an explicit deferred status. The last committed cursor is retained; a later normal pass resumes from it. Deferred progress is zero and completeness remains unknown. Non-contention SQLite, I/O and programming errors still propagate. This does not change connection timeouts, add an inline retry loop or force a worker cycle.
