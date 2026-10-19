@@ -166,7 +166,9 @@ def offers(packet):
 
 
 def options(packet):
- return {key:{'kind':v['kind'],'evidence_ids':v['evidence_ids'],'interpretations':v['interpretations']} for key,v in offers(packet).items()}
+ return {key:{'kind':v['kind'],'evidence_ids':v['evidence_ids'],'interpretations':v['interpretations'],
+              'reported_account':describe(v),'interpretation_meanings':{meaning:MEANINGS[meaning] for meaning in v['interpretations']},
+              'uncertainty':LIMITS[v['kind']]} for key,v in offers(packet).items()}
 
 
 def wire_schema(packet):

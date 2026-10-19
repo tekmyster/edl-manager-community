@@ -129,10 +129,13 @@ def prepare_bounded(packet,candidates,registry):
  reason='none' if selected else 'no_candidate'
  if base_bytes>INPUT_BYTE_LIMIT:reason='base_exceeds_input_limit'
  elif considered_bytes>INPUT_BYTE_LIMIT:
-  selected=[];schema,prompt=base_schema,base;reason='candidate_exceeds_input_limit'
+  # Cards must not turn previously admissible history into silent context loss.
+  without_cards={**prompt,'synthesis_options':{key:{field:value[field] for field in ('kind','evidence_ids','interpretations')} for key,value in prompt['synthesis_options'].items()}}
+  if len(prompt_json(without_cards).encode('utf-8'))<=INPUT_BYTE_LIMIT:reason='group_cards_exceed_input_limit'
+  else:selected=[];schema,prompt=base_schema,base;reason='candidate_exceeds_input_limit'
  actual_ids=[candidate['candidate_id'] for candidate in selected]
  metadata={'historical_windows_supplied':len(selected),'wire_candidate_ids':actual_ids,'wire_packet_ids':[packet['packet_id']]+actual_ids,'input_preparation':{'version':VERSION,'byte_limit':INPUT_BYTE_LIMIT,'base_prompt_bytes':base_bytes,'considered_prompt_bytes':considered_bytes,'user_prompt_bytes':len(prompt_json(prompt).encode('utf-8')),'omission_reason':reason,'omitted_candidate_ids':[candidate['candidate_id'] for candidate in considered if candidate['candidate_id'] not in actual_ids]}}
- if base_bytes>INPUT_BYTE_LIMIT:
+ if base_bytes>INPUT_BYTE_LIMIT or reason=='group_cards_exceed_input_limit':
   # Preparation failed before dispatch: no candidate or packet was sent.
   metadata.update(historical_windows_supplied=0,wire_candidate_ids=[],wire_packet_ids=[])
   metadata['input_preparation']['user_prompt_bytes']=None

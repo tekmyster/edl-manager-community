@@ -75,17 +75,40 @@ def boundary_pair():
  return p,c
 
 
-def test_exact_escaped_utf8_wire_boundary_includes_history_and_one_more_byte_omits_it():
+def legacy_overbudget_pair():
+ p,c=boundary_pair();_,prompt=gen.prepare(p,[c],{})
+ old={**prompt,'synthesis_options':{key:{k:v[k] for k in ('kind','evidence_ids','interpretations')} for key,v in prompt['synthesis_options'].items()}}
+ c['padding']+='x'*(len(gen.prompt_json(prompt).encode())-len(gen.prompt_json(old).encode())+1)
+ return p,c
+
+
+def test_exact_escaped_utf8_boundary_keeps_history_and_card_overflow_fails_before_dispatch():
  p,c=boundary_pair();before=copy.deepcopy((p,c))
  _,prompt,selected,meta=gen.prepare_bounded(p,[c],{})
  assert len(gen.prompt_json(prompt).encode('utf-8'))==18000 and selected==[c]
  assert '\\u00e9' in gen.prompt_json(prompt) and 'é' not in gen.prompt_json(prompt)
  assert meta['input_preparation']['omission_reason']=='none' and (p,c)==before
- c['padding']+='x';_,prompt,selected,meta=gen.prepare_bounded(p,[c],{})
+ c['padding']+='x'
+ with pytest.raises(ValueError) as exact:gen.prepare_bounded(p,[c],{})
+ assert exact.value._edl_failure_metadata['input_preparation']['considered_prompt_bytes']==18001
+ def forbidden(*a,**kw):pytest.fail('Card-induced history loss reached transport')
+ with pytest.raises(ValueError) as caught:ai.infer({**ai.DEFAULTS,'endpoint':'https://127.0.0.1'},p,[c],{},'',requester=forbidden)
+ meta=caught.value._edl_failure_metadata
+ assert meta['wire_packet_ids']==meta['wire_candidate_ids']==[] and meta['historical_windows_supplied']==0
+ # infer selects registry metadata before preparing; its honest byte count can
+ # exceed the direct empty-registry assembly above without dispatching either.
+ assert meta['input_preparation']['considered_prompt_bytes']>=18001 and meta['input_preparation']['user_prompt_bytes'] is None
+ assert meta['input_preparation']['omission_reason']=='group_cards_exceed_input_limit'
+ assert meta['input_preparation']['omitted_candidate_ids']==['peer'] and (p,c)==(before[0],{**before[1],'padding':before[1]['padding']+'x'})
+ assert meta['failure_diagnostic']['phase']=='request_preparation'
+
+
+def test_history_already_overbudget_without_cards_preserves_original_omission_policy():
+ p,c=legacy_overbudget_pair();_,prompt,selected,meta=gen.prepare_bounded(p,[c],{})
  assert not selected and not prompt['offered']['relations'] and not prompt['candidates']
  assert meta['historical_windows_supplied']==0 and meta['wire_candidate_ids']==[]
  assert meta['wire_packet_ids']==[p['packet_id']]
- assert meta['input_preparation']['considered_prompt_bytes']==18001
+ assert meta['input_preparation']['considered_prompt_bytes']>18001
  assert meta['input_preparation']['omission_reason']=='candidate_exceeds_input_limit'
  assert meta['input_preparation']['omitted_candidate_ids']==['peer'] and prompt['packet']['context']==p['context']
 
@@ -122,7 +145,7 @@ def test_transport_uses_exact_measured_serialization_and_canonical_validator():
 
 
 def test_omitted_candidate_is_not_available_to_decoder_even_when_preassembly_reference_exists():
- p,c=boundary_pair();c['padding']+='x';w=gen.example(p,[c]);tables,_=gen.offers(p,[c],{})
+ p,c=legacy_overbudget_pair();w=gen.example(p,[c]);tables,_=gen.offers(p,[c],{})
  w['actor_correlation']=[{'choice_id':next(iter(tables['relations'])),'confidence':.4}]
  with pytest.raises(ai.ModelOutputError) as caught:transport(p,w,[c])
  assert caught.value.metadata['historical_windows_supplied']==0 and caught.value.metadata['wire_candidate_ids']==[]
@@ -133,7 +156,7 @@ def test_saved_preassembly_refs_survive_wire_omission_cache_and_lease(tmp_path,m
  from test_behavior_drain import queue
  from test_behavior_retention import packet,hold,sweep
  from behavior_mapping import select
- s,b,cfg=queue(tmp_path,1);p,c=boundary_pair();p['packet_id']='packet0';c['padding']+='x'*100
+ s,b,cfg=queue(tmp_path,1);p,c=legacy_overbudget_pair();p['packet_id']='packet0';c['padding']+='x'*100
  calls=[]
  def offline_infer(cfg,p,candidates,allowed,key,requester,attempt):
   assert attempt.start();wire=gen.example(p,[],allowed)
