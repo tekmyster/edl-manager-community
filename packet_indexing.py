@@ -57,7 +57,9 @@ def index_packet(brain,store,address,cfg,source_cfg=None,revision=None,should_st
      db.execute('INSERT INTO analysis_queue SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM analysis_queue WHERE ip=?) OR (SELECT count(*) FROM analysis_queue)<10000 ON CONFLICT(ip) DO UPDATE SET packet_id=excluded.packet_id',(address,ident,now(),address))
     if revision is not None:
      from source_handoff import indexed
-     indexed(local,address,revision,prepared_source,collection=scope)
+     # Preserve the loaded prior four-argument API. collection_scope reads
+     # this same pinned native snapshot and private config copy as above.
+     indexed(local,address,revision,prepared_source)
     if stopped():raise Cancelled
     assert native.total_changes==0
  finally:

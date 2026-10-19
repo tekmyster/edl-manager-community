@@ -184,6 +184,6 @@ def ready(brain,source_cfg=None,limit=100,addresses=None):
   if addresses is not None:where+=' AND ip IN (SELECT value FROM json_each(?))';args.append(json.dumps(addresses))
   return {r['ip']:r['revision'] for r in db.execute('SELECT ip,revision FROM source_sample_ready WHERE '+where+' ORDER BY revision,ip LIMIT ?',args+[max(1,min(100,limit))])}
 
-def indexed(brain,address,revision,source_cfg=None,collection=None):
+def indexed(brain,address,revision,source_cfg=None):
  from evidence_history import collection_scope
- with brain.connect() as db:db.execute('DELETE FROM source_sample_ready WHERE ip=? AND scope=? AND revision=?',(address,collection_scope(brain,source_cfg) if collection is None else collection,revision))
+ with brain.connect() as db:db.execute('DELETE FROM source_sample_ready WHERE ip=? AND scope=? AND revision=?',(address,collection_scope(brain,source_cfg),revision))
