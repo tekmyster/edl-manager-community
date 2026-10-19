@@ -78,6 +78,11 @@ def prepare(packet,candidates,registry):
  schema=obj({'generation_schema_version':text(enum=[VERSION]),'packet_id':text(100,enum=[packet['packet_id']]),'classification':text(enum=coverage['classifications']),'maliciousness_confidence':copy.deepcopy(confidence),'automation':hypothesis('automation'),'intent':hypothesis('intent'),'observations':obj({key:text(15,enum=allowed) for key,allowed in roles.items()}),'attack_techniques':switches('attack'),'d3fend_context':switches('d3fend'),'actor_correlation':hypothesis('relations')})
  from behavior_synthesis import wire_schema as synthesis_schema,options
  schema['properties']['observable_synthesis']=synthesis_schema(packet);schema['required'].append('observable_synthesis')
+ if schema['properties']['observable_synthesis']['properties']:
+  # Present group choices before verdict/finding choices without changing
+  # validation semantics or requiring a particular output member order.
+  schema['properties']={'observable_synthesis':schema['properties']['observable_synthesis'],**{key:value for key,value in schema['properties'].items() if key!='observable_synthesis'}}
+  schema['required']=['observable_synthesis',*[key for key in schema['required'] if key!='observable_synthesis']]
  offered={k:v for k,v in tables.items() if k!='counterevidence'}
  offered['facts']={key:{**fact,'allowed_roles':roles[key]} for key,fact in tables['facts'].items()}
  # Wire-only references replace exact duplicate bodies, never partial matches.
