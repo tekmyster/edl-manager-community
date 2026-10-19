@@ -55,7 +55,7 @@ def test_crash_between_derived_commit_and_ack_replays_idempotently(tmp_path,monk
   if calls==2:raise sqlite3.OperationalError('simulated crash before native acknowledgement')
   with connect(*a,**kw) as db:yield db
  monkeypatch.setattr(s,'connect',interrupted)
- assert deliver(b)['status']=='busy_retry_next_pass'
+ with pytest.raises(sqlite3.OperationalError,match='simulated crash'):deliver(b)
  before=history(b);b=Brain(Store(s.path))
  assert deliver(b)['applied']==0 and history(b)==before
  assert all(r[-1] for r in counts(b.store))

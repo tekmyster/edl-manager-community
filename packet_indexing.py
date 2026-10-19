@@ -8,41 +8,62 @@ import copy
 
 class Cancelled(Exception):pass
 
-def index_packet(brain,store,address,cfg,source_cfg=None,revision=None,should_stop=None):
+def native_identity(db):
+ # Indexed small configuration rows, never the large MISP snapshot. The
+ # preparation reader stays on its coherent snapshot; verification is fresh.
+ return list(db.execute("SELECT key,value FROM state WHERE key IN ('source_configuration','behavior_settings') ORDER BY key"))
+
+def index_packet(brain,store,address,cfg,source_cfg=None,revision=None,should_stop=None,at=None):
  """One bounded derived commit; native access remains strictly read-only."""
  from core import now
  stopped=should_stop or (lambda:False)
  # Copies bind existing methods to these transaction-local handles. Never
  # replace a connection on the Store/Brain shared by another worker thread.
  local=copy.copy(brain);reader=copy.copy(store);local.store=reader
+ prepared_cfg=copy.deepcopy(cfg);prepared_source=copy.deepcopy(source_cfg)
+ uri=pathlib.Path(store.path).resolve().as_uri()+'?mode=ro'
+ prepared_valid=False
  try:
-  with contextlib.closing(sqlite3.connect(pathlib.Path(store.path).resolve().as_uri()+'?mode=ro',uri=True,timeout=30)) as native,brain.connect() as db:
-   native.row_factory=sqlite3.Row;native.execute('PRAGMA query_only=ON')
+  with contextlib.closing(sqlite3.connect(uri,uri=True,timeout=30)) as native:
+   native.row_factory=sqlite3.Row;native.execute('PRAGMA query_only=ON');native.execute('BEGIN')
    reader.connect=lambda *a,**kw:contextlib.nullcontext(native)
-   local.connect=lambda:contextlib.nullcontext(db)
-   db.execute('BEGIN IMMEDIATE')
    if stopped():raise Cancelled
-   if revision is not None:
-    from evidence_history import collection_scope
-    current=db.execute('SELECT revision FROM source_sample_ready WHERE ip=? AND scope=?',(address,collection_scope(local,source_cfg))).fetchone()
-    if current is None or current['revision']!=revision:return None,[]
+   identity=[tuple(r) for r in native_identity(native)]
    detailed=reader.describe(address)
-   ident,packet,features=local.packet(detailed,cfg,source_cfg=source_cfg)
-   candidates=local.candidates(ident,features) if cfg['correlation_enabled'] else []
-   if cfg['correlation_enabled']:
-    from behavior_intelligence import inspect,load_catalog
-    inspect(local,ident,candidates,load_catalog(pathlib.Path(store.path).parent/'behavior-references.json'))
-   if cfg['model_enabled'] and packet['events']:
-    db.execute('INSERT INTO analysis_queue SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM analysis_queue WHERE ip=?) OR (SELECT count(*) FROM analysis_queue)<10000 ON CONFLICT(ip) DO UPDATE SET packet_id=excluded.packet_id',(address,ident,now(),address))
-   if revision is not None:
-    from source_handoff import indexed
-    indexed(local,address,revision,source_cfg)
+   prepared_at=at or dt.datetime.now(dt.timezone.utc)
+   from behavior_context import context
+   native_context=context(reader,detailed,prepared_source,prepared_at)
+   from evidence_history import collection_scope
+   scope=collection_scope(local,prepared_source)
    if stopped():raise Cancelled
-   assert native.total_changes==0
+   with brain.connect() as db:
+    local.connect=lambda:contextlib.nullcontext(db)
+    db.execute('BEGIN IMMEDIATE')
+    if stopped():raise Cancelled
+    with contextlib.closing(sqlite3.connect(uri,uri=True,timeout=30)) as check:
+     check.execute('PRAGMA query_only=ON')
+     if [tuple(r) for r in native_identity(check)]!=identity or cfg!=prepared_cfg or source_cfg!=prepared_source:return None,[]
+    if revision is not None:
+     current=db.execute('SELECT revision FROM source_sample_ready WHERE ip=? AND scope=?',(address,scope)).fetchone()
+     if current is None or current['revision']!=revision:return None,[]
+    prepared_valid=True
+    options={'native_context':native_context} if getattr(local,'prepared_native_context',False) else {}
+    ident,packet,features=local.packet(detailed,prepared_cfg,at=prepared_at,source_cfg=prepared_source,**options)
+    candidates=local.candidates(ident,features) if prepared_cfg['correlation_enabled'] else []
+    if prepared_cfg['correlation_enabled']:
+     from behavior_intelligence import inspect,load_catalog
+     inspect(local,ident,candidates,load_catalog(pathlib.Path(store.path).parent/'behavior-references.json'))
+    if prepared_cfg['model_enabled'] and packet['events']:
+     db.execute('INSERT INTO analysis_queue SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM analysis_queue WHERE ip=?) OR (SELECT count(*) FROM analysis_queue)<10000 ON CONFLICT(ip) DO UPDATE SET packet_id=excluded.packet_id',(address,ident,now(),address))
+    if revision is not None:
+     from source_handoff import indexed
+     indexed(local,address,revision,prepared_source,collection=scope)
+    if stopped():raise Cancelled
+    assert native.total_changes==0
  finally:
   # The existing 60-second snapshot cache survives per-packet handle reuse.
   for name in ('_behavior_misp_snapshot','_behavior_misp_snapshot_at','_behavior_misp_lookup'):
-   if hasattr(reader,name):setattr(store,name,getattr(reader,name))
+   if prepared_valid and hasattr(reader,name):setattr(store,name,getattr(reader,name))
  return ident,candidates
 
 

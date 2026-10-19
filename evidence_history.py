@@ -63,49 +63,65 @@ def save(brain,address,source,sensor,samples,received,scope=""):
  events=[normalize(address,source,sensor,sample,received) for sample in samples[:500]]
  save_events(brain,address,events,received,scope)
 
+HISTORY_COMMIT_EVENTS=16
+
 def save_events(brain,address,events,received,scope=''):
- with brain.connect() as db:
-  for event in events[:500]:
-   if event:
-    from source_binding_recovery import receive,audit
-    receive(db,address,event,scope,received)
-    db.execute('INSERT OR IGNORE INTO event_history VALUES(?,?,?,?,?,?,?,?)',(event['id'],address,event['source'],event['sensor'],event['seen'],received,scope,json.dumps(event)))
-    # Merge the persisted report, never just the current input. First receipt,
-    # event identity and original event fields stay immutable.
-    prior=json.loads(db.execute('SELECT content FROM event_history WHERE id=? AND scope=?',(event['id'],scope)).fetchone()[0])
-    if (event.get('source_observation') or {}).get('conflict') and not db.execute("SELECT 1 FROM source_binding_audit WHERE event_id=? AND scope=? AND action='hard_incoming_conflict' LIMIT 1",(event['id'],scope)).fetchone():
-     audit(db,event,scope,received,'hard_incoming_conflict',prior,event,{'incoming_conflict':True})
-    changed=False
-    if event.get('source_observation'):
-     from source_observations import merge_reports
-     observation=merge_reports(prior.get('source_observation'),event['source_observation'])
-     if observation.get('conflict') and prior.get('source_observation') and not prior['source_observation'].get('conflict') and not event['source_observation'].get('conflict'):
-      audit(db,event,scope,received,'hard_metadata_disagreement',prior,event,{'incoming_source_observation':event['source_observation']})
-     if prior.get('source_observation')!=observation:prior['source_observation']=observation;changed=True
-    old_agent=prior['provenance'].get('collector_agent');new_agent=event['provenance'].get('collector_agent')
-    if prior.get('source_observation') and old_agent and new_agent and old_agent!=new_agent:
-     audit(db,event,scope,received,'hard_collector_disagreement',prior,event,{'old_collector':old_agent,'new_collector':new_agent})
-     prior['source_observation']={'conflict':True};changed=True
-    if event['provenance']['record_id']:
-     if not prior['provenance'].get('record_id'):
-      prior['provenance']=event['provenance'];changed=True
-    if changed:db.execute('UPDATE event_history SET content=? WHERE id=? AND scope=?',(json.dumps(prior),event['id'],scope))
-    # A changed native timestamp/target creates a separate historical ID. Keep
-    # both identities, but never select a coherent copy of a disputed original.
-    # This indexed exact-origin lookup does not scan/truncate a sample window.
-    origin=event['provenance']['upstream_id']
-    if origin:
-     where="ip=? AND source=? AND sensor=? AND scope=? AND json_extract(content,'$.provenance.upstream_id')=?"
-     args=(address,event['source'],event['sensor'],scope,origin)
-     observed=bool(prior.get('source_observation')) or db.execute('SELECT 1 FROM event_history WHERE '+where+" AND json_type(content,'$.source_observation')='object' LIMIT 1",args).fetchone()
-     if observed and db.execute('SELECT 1 FROM event_history WHERE '+where+' AND id<>? LIMIT 1',(*args,event['id'])).fetchone():
-      for disputed in db.execute('SELECT content FROM event_history WHERE '+where,args).fetchall():
-       variant=json.loads(disputed['content'])
-       if not (variant.get('source_observation') or {}).get('conflict'):audit(db,variant,scope,received,'hard_original_record_disagreement',variant,event,{'original_id':origin,'incoming_normalized_id':event['id']})
-      db.execute('UPDATE event_history SET content=json_set(content,\'$.source_observation\',json(\'{"conflict":true}\')) WHERE '+where,args)
-      prior['source_observation']={'conflict':True}
-    from behavior_references import index_event
-    index_event(db,address,prior,scope)
+ """Own short standalone commits; never split or commit a borrowed owner."""
+ events=events[:500]
+ for offset in range(0,len(events),HISTORY_COMMIT_EVENTS):
+  with brain.connect() as db:
+   if db.in_transaction:
+    apply_events(db,address,events[offset:],received,scope)
+    return
+   db.execute('BEGIN IMMEDIATE')
+   apply_events(db,address,events[offset:offset+HISTORY_COMMIT_EVENTS],received,scope)
+
+
+def apply_events(db,address,events,received,scope=''):
+ """Transaction-neutral binding/audit apply; caller owns begin and completion."""
+ if not db.in_transaction:raise RuntimeError('History apply requires an owning transaction')
+ for event in events[:500]:
+  if event:
+   from source_binding_recovery import receive,audit
+   receive(db,address,event,scope,received)
+   db.execute('INSERT OR IGNORE INTO event_history VALUES(?,?,?,?,?,?,?,?)',(event['id'],address,event['source'],event['sensor'],event['seen'],received,scope,json.dumps(event)))
+   # Merge the persisted report, never just the current input. First receipt,
+   # event identity and original event fields stay immutable.
+   prior=json.loads(db.execute('SELECT content FROM event_history WHERE id=? AND scope=?',(event['id'],scope)).fetchone()[0])
+   if (event.get('source_observation') or {}).get('conflict') and not db.execute("SELECT 1 FROM source_binding_audit WHERE event_id=? AND scope=? AND action='hard_incoming_conflict' LIMIT 1",(event['id'],scope)).fetchone():
+    audit(db,event,scope,received,'hard_incoming_conflict',prior,event,{'incoming_conflict':True})
+   changed=False
+   if event.get('source_observation'):
+    from source_observations import merge_reports
+    observation=merge_reports(prior.get('source_observation'),event['source_observation'])
+    if observation.get('conflict') and prior.get('source_observation') and not prior['source_observation'].get('conflict') and not event['source_observation'].get('conflict'):
+     audit(db,event,scope,received,'hard_metadata_disagreement',prior,event,{'incoming_source_observation':event['source_observation']})
+    if prior.get('source_observation')!=observation:prior['source_observation']=observation;changed=True
+   old_agent=prior['provenance'].get('collector_agent');new_agent=event['provenance'].get('collector_agent')
+   if prior.get('source_observation') and old_agent and new_agent and old_agent!=new_agent:
+    audit(db,event,scope,received,'hard_collector_disagreement',prior,event,{'old_collector':old_agent,'new_collector':new_agent})
+    prior['source_observation']={'conflict':True};changed=True
+   if event['provenance']['record_id']:
+    if not prior['provenance'].get('record_id'):
+     prior['provenance']=event['provenance'];changed=True
+   if changed:db.execute('UPDATE event_history SET content=? WHERE id=? AND scope=?',(json.dumps(prior),event['id'],scope))
+   # A changed native timestamp/target creates a separate historical ID. Keep
+   # both identities, but never select a coherent copy of a disputed original.
+   # This indexed exact-origin lookup does not scan/truncate a sample window.
+   origin=event['provenance']['upstream_id']
+   if origin:
+    where="ip=? AND source=? AND sensor=? AND scope=? AND json_extract(content,'$.provenance.upstream_id')=?"
+    args=(address,event['source'],event['sensor'],scope,origin)
+    observed=bool(prior.get('source_observation')) or db.execute('SELECT 1 FROM event_history WHERE '+where+" AND json_type(content,'$.source_observation')='object' LIMIT 1",args).fetchone()
+    if observed and db.execute('SELECT 1 FROM event_history WHERE '+where+' AND id<>? LIMIT 1',(*args,event['id'])).fetchone():
+     for disputed in db.execute('SELECT content FROM event_history WHERE '+where,args).fetchall():
+      variant=json.loads(disputed['content'])
+      if not (variant.get('source_observation') or {}).get('conflict'):audit(db,variant,scope,received,'hard_original_record_disagreement',variant,event,{'original_id':origin,'incoming_normalized_id':event['id']})
+     db.execute('UPDATE event_history SET content=json_set(content,\'$.source_observation\',json(\'{"conflict":true}\')) WHERE '+where,args)
+     prior['source_observation']={'conflict':True}
+   from behavior_references import index_event
+   index_event(db,address,prior,scope)
+
 
 def cache_rows(brain,row,at,source_cfg=None):
  received=at.isoformat(timespec='seconds');scope=collection_scope(brain,source_cfg)

@@ -341,28 +341,33 @@ def main():
   s._pipeline_receipts={};s._worker_publication=None;s._worker_last_direct_commit=None
   anchor=sqlite3.connect(cfg['database']);anchor.execute('SELECT name FROM sqlite_master LIMIT 1').fetchall()
   s._worker_connection=anchor;s._batch_evidence=True
-  phase='starting'
+  phase='starting';maintenance={}
   try:
+   phase='maintenance'
+   from source_handoff import maintain as maintain_handoff
+   from new_ips import maintain as maintain_arrivals
+   from event_history import recover_audit
+   for name,operation in (('handoff',lambda:maintain_handoff(s)),('arrivals',lambda:maintain_arrivals(s)),('audit',lambda:recover_audit(s,limit=5000))):maintenance[name]=operation()
    if fast:
     phase='collect'
-    s.state('ingest_status',{'status':'running','started':started,'phase':'collecting and publishing'})
+    s.state('ingest_status',{'status':'running','started':started,'phase':'collecting and publishing','maintenance':maintenance})
     count=collect(s,cfg,include_palo=False)
     from source_types import refresh
     phase='source_types';refresh(s);phase='build';build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
     if m is None:logging.warning('Publication deferred: ingestion committed; another publisher is active. Retrying next cycle.')
     phase='success_status'
-    s.state('ingest_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'ingestion_committed':True,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
+    s.state('ingest_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'ingestion_committed':True,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'maintenance':maintenance,'pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
     return
-   s.state('worker_status',{'status':'running','phase':'collecting evidence','started':started,'mode':'production'})
+   s.state('worker_status',{'status':'running','phase':'collecting evidence','started':started,'mode':'production','maintenance':maintenance})
    phase='collect'
-   count=collect(s,cfg,palo_only=enrich_only);s.state('worker_status',{'status':'running','phase':'cached enrichment','started':started,'evidence_buckets':count,'mode':'production'})
+   count=collect(s,cfg,palo_only=enrich_only);s.state('worker_status',{'status':'running','phase':'cached enrichment','maintenance':maintenance,'started':started,'evidence_buckets':count,'mode':'production'})
    phase='enrich';checks=enrich(s,cfg)
    from source_types import refresh
-   phase='source_types';refresh(s);s.state('worker_status',{'status':'running','phase':'building lists','started':started,'evidence_buckets':count,'enrichment_checks':checks,'mode':'production'})
+   phase='source_types';refresh(s);s.state('worker_status',{'status':'running','phase':'building lists','maintenance':maintenance,'started':started,'evidence_buckets':count,'enrichment_checks':checks,'mode':'production'})
    phase='build';build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
    if m is None:logging.warning('Publication deferred: enrichment committed; another publisher is active. Retrying next cycle.')
    phase='success_status'
-   s.state('worker_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'enrichment_checks':checks,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'mode':'production','pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
+   s.state('worker_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'enrichment_checks':checks,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'mode':'production','maintenance':maintenance,'pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
   except Exception as exc:
    from behavior_persistence import contention
    # This owner also covers direct commit and outside-connect failures. Never
@@ -374,7 +379,7 @@ def main():
    s._pipeline_receipts.clear();s._pipeline_receipts['invalidated']=True;s._evidence_pending=0
    published=s._worker_publication
    deferred=rolled_back and contention(exc)
-   result={'status':'deferred' if deferred else 'error','started':started,'completed':now(),'phase':phase,'error':type(exc).__name__,'sqlite_code':getattr(exc,'sqlite_errorcode',None),'last_direct_commit_boundary':s._worker_last_direct_commit,'pending_transaction':'rolled_back' if rolled_back else 'rollback_failed','prior_commits':'retained','publication':'published_bookkeeping_pending' if published else 'not_confirmed_this_pass','publication_boundary':'after_generation_swap' if published else 'before_generation_swap','pipeline_timing':{'status':'unmeasurable','reason':'transaction_rollback'}}
+   result={'status':'deferred' if deferred else 'error','maintenance':maintenance,'started':started,'completed':now(),'phase':phase,'error':type(exc).__name__,'sqlite_code':getattr(exc,'sqlite_errorcode',None),'last_direct_commit_boundary':s._worker_last_direct_commit,'pending_transaction':'rolled_back' if rolled_back else 'rollback_failed','prior_commits':'retained','publication':'published_bookkeeping_pending' if published else 'not_confirmed_this_pass','publication_boundary':'after_generation_swap' if published else 'before_generation_swap','pipeline_timing':{'status':'unmeasurable','reason':'transaction_rollback'}}
    if published:result['generation']=published['generation']
    if deferred:result['retry']='next_normal_pass'
    status_error=None

@@ -266,3 +266,45 @@ replace a durable derived success/failure result or trigger an immediate fetch.
 Other storage failures remain visible. The existing process single-flight lock
 still covers fetch/save/release, including work lasting longer than the lease;
 the 90-second lease alone is not a general exactly-once request guarantee.
+
+
+### SQLite writer occupancy and loaded-code rollout
+
+An initialized native Store validates the required tables, columns, keys,
+indexes and migration markers without recurring retention deletes or unchanged
+audit-cursor writes. Missing indexes still require a real schema repair;
+incompatible or missing initialized history fails visibly. Fresh and genuine
+legacy migrations retain their backfill/replay behavior. The existing scheduled
+native owner runs indexed due checks and at most 5,000 expired handoff rows,
+5,000 arrivals older than 366 days and 5,000 audit records per pass. Maintenance
+status includes remaining work; partial sweeps resume on the next normal pass.
+Native evidence batches of 100, source pages, cursor overlap and Palo renewals
+keep their existing commit boundaries and eligibility rules.
+
+Readiness prepares the native description and intelligence context at one fixed
+as-of time on a read-only native snapshot before taking the derived writer.
+Inside that writer it verifies the exact ready revision, captured collection
+scope, native configuration identities and caller settings. Mutable historical
+receipt/ambiguity decisions, packet and feature writes, correlation/intelligence,
+analysis queue and exact ready acknowledgment share that one transaction. A
+changed configuration or successor revision leaves work pending for a fresh pass.
+
+Handoff delivery keeps its public read bound of 500 while committing at most 16
+selected rows per derived transaction. Each commit is followed by exact native
+revision-plus-ID acknowledgments. Successful chunks continue immediately without
+sleep, inference quota or cycle work cap. Earlier chunks survive a later failure;
+reported counts include only committed derived work and completed acknowledgments.
+Standalone history saves likewise begin IMMEDIATE before mutable receipt reads
+and commit chunks of 16. Borrowed transactions use a neutral apply helper and
+remain owned by their caller. A fetched history query reports success only after
+all of its events have been saved. Replay remains necessary after interruption.
+
+The staged bound of 16 favors competing-writer opportunities over fewer commits;
+16/64 fixture measurements are delivery-review evidence, not a production capacity
+or zero-contention guarantee. The native preparation capability is optional for
+compatibility with an already loaded Brain class. Such an old class keeps the
+prior in-writer context path. Foreground/fallback callers keep existing defaults.
+A later authorized rollout must refresh long-lived web/worker Python processes
+for all loaded functions to receive the repair, and validate fresh administrative
+access before closing the original administrative session if access settings are
+changed. No refresh, service change or deployment is part of implementation staging.

@@ -1,5 +1,5 @@
 """Versioned behavioral evidence and shadow AI assessments. No enforcement writes."""
-import contextlib,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
+import contextlib,copy,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
 PROMPT_VERSION='behavior-3.17'
@@ -97,6 +97,7 @@ def local_endpoint(endpoint):
  if not addresses or not all(any(a in n for n in allowed if a.version==n.version) for a in addresses):raise ValueError('This release supports privately hosted model servers only.')
 
 class Brain:
+ prepared_native_context=True
  def __init__(self,store):
   self.store=store;self.path=pathlib.Path(store.path).parent/'behavior.sqlite3'
   from behavior_groups import SCHEMA as GROUP_SCHEMA
@@ -117,7 +118,7 @@ class Brain:
   try:yield db;db.commit()
   except Exception:db.rollback();raise
   finally:db.close()
- def packet(self,row,cfg=None,at=None,source_cfg=None):
+ def packet(self,row,cfg=None,at=None,source_cfg=None,native_context=None):
   cfg=cfg or settings(self.store);at=at or dt.datetime.now(dt.timezone.utc);cut=at-dt.timedelta(days=cfg['window_days'])
   from evidence_history import cache_rows,cache_palo,query,normalize,active_sources,representative
   cache_rows(self,row,at,source_cfg);cache_palo(self,row['ip'],source_cfg,at);history=query(self,row['ip'],at,source_cfg=source_cfg)
@@ -197,7 +198,7 @@ class Brain:
   selected=selected[:160]
   if total>len(selected):missing.add('Only a bounded subset of saved samples was included')
   from behavior_context import context as build_context
-  content={'version':VERSION,'window_days':cfg['window_days'],'events':selected,'context':build_context(self.store,row,source_cfg,at),'source_counts':source_counts,'coverage':'saved_samples','history_coverage':{k:v for k,v in history.items() if k!='events'},'sequence':{},'limitations':sorted(missing|{'Saved source summaries are not a complete raw event history','Intelligence and history are bounded, field-allowlisted context','Native attempt/record counters summarize parent buckets; do not sum repeated bucket counts across samples','TLS and header-order fingerprints are not collected by this packet builder'})}
+  content={'version':VERSION,'window_days':cfg['window_days'],'events':selected,'context':build_context(self.store,row,source_cfg,at) if native_context is None else copy.deepcopy(native_context),'source_counts':source_counts,'coverage':'saved_samples','history_coverage':{k:v for k,v in history.items() if k!='events'},'sequence':{},'limitations':sorted(missing|{'Saved source summaries are not a complete raw event history','Intelligence and history are bounded, field-allowlisted context','Native attempt/record counters summarize parent buckets; do not sum repeated bucket counts across samples','TLS and header-order fingerprints are not collected by this packet builder'})}
   def sequence_value():
    chosen=sorted(content['events'],key=lambda e:(e['seen'],e['id']))
    return {'available':total,'cached_total':history['total'],'cached_read':len(history['events']),'included':len(chosen),'partial':True,'selection':'complete source session groups and indexed advisory-pattern events, then source time endpoints and spaced positions, bounded by bytes','first':chosen[0]['seen'] if chosen else None,'last':chosen[-1]['seen'] if chosen else None}

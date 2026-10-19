@@ -41,8 +41,23 @@ def identity(address,collection,event):
 
 def initialize(db):
  db.executescript(NATIVE_SCHEMA)
- cut=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=30)).isoformat(timespec='seconds')
- db.execute('DELETE FROM source_sample_handoff WHERE revision IN (SELECT revision FROM source_sample_handoff WHERE seen<? ORDER BY seen LIMIT 5000)',(cut,))
+ # A marker never substitutes for the schema. Existing opens only read; a
+ # missing index is recreated by the DDL and incompatible columns fail here.
+ db.execute('SELECT revision,id,ip,source,sensor,scope,seen,received,content,delivered FROM source_sample_handoff LIMIT 0')
+ if [(r[1],r[5]) for r in db.execute('PRAGMA table_info(source_sample_handoff)') if r[5]]!=[('revision',1)]:raise ValueError('Incompatible handoff primary key')
+ for name,columns in (('source_sample_pending',['delivered','revision']),('source_sample_expiry',['seen'])):
+  if [r[2] for r in db.execute('PRAGMA index_info('+name+')')]!=columns:raise ValueError('Incompatible handoff index: '+name)
+ unique=[r[1] for r in db.execute('PRAGMA index_list(source_sample_handoff)') if r[2]]
+ if not any([r[2] for r in db.execute('PRAGMA index_info("'+name.replace('"','""')+'")')]==['id'] for name in unique):raise ValueError('Missing handoff identity uniqueness')
+
+def maintain(store,at=None):
+ cut=((at or dt.datetime.now(dt.timezone.utc))-dt.timedelta(days=30)).isoformat(timespec='seconds')
+ with store.connect() as db:
+  if not db.execute('SELECT 1 FROM source_sample_handoff WHERE seen<? LIMIT 1',(cut,)).fetchone():return {'deleted':0,'partial':False,'bound':5000}
+  db.execute('BEGIN IMMEDIATE')
+  deleted=db.execute('DELETE FROM source_sample_handoff WHERE revision IN (SELECT revision FROM source_sample_handoff WHERE seen<? ORDER BY seen LIMIT 5000)',(cut,)).rowcount
+  partial=bool(db.execute('SELECT 1 FROM source_sample_handoff WHERE seen<? LIMIT 1',(cut,)).fetchone())
+ return {'deleted':deleted,'partial':partial,'bound':5000}
 
 def capture(db,address,source,sensor,details,received,source_cfg=None):
  """Same native transaction; retain samples before a later bucket replaces them."""
@@ -62,51 +77,69 @@ def capture(db,address,source,sensor,details,received,source_cfg=None):
 
 class Cancelled(Exception):pass
 
-def deliver(brain,limit=500,at=None,should_stop=None):
- """Commit derived receipt/ready state first, then acknowledge exact native rows.
+DELIVERY_COMMIT_EVENTS=16
 
- A crash between commits safely replays; the applied ledger suppresses repeats.
- No native transaction or writer lock is held while derived storage is busy.
+def deliver(brain,limit=500,at=None,should_stop=None):
+ """Bounded reads, short derived commits, then exact native acknowledgments.
+
+ The public read bound remains500. Every selected chunk continues immediately;
+ it is not a request/cycle quota. A failed later chunk retains earlier commits.
  """
  from evidence_history import save_events
+ from behavior_persistence import contention
  started=time.monotonic();stopped=should_stop or (lambda:False)
  at=at or dt.datetime.now(dt.timezone.utc);cut=(at-dt.timedelta(days=30)).isoformat(timespec='seconds')
+ totals={'read':0,'applied':0,'merged':0,'equivalent':0,'acknowledged':0,'transactions':0}
+ maximum=0;transaction_seconds=0
+ def outcome(status):
+  return {'status':status,**totals,'bound':500,'commit_bound':DELIVERY_COMMIT_EVENTS,'transaction_seconds':round(transaction_seconds,6),'max_transaction_seconds':round(maximum,6),'seconds':round(time.monotonic()-started,6)}
  try:
   if stopped():raise Cancelled
   with brain.store.connect() as native:
    rows=[dict(r) for r in native.execute('SELECT * FROM source_sample_handoff WHERE delivered=0 ORDER BY revision LIMIT ?',(max(1,min(500,limit)),))]
-  with brain.connect() as db:
-   # Bound lock waiting for this optional local handoff, not native ingestion.
-   db.execute('PRAGMA busy_timeout=100');db.execute('BEGIN IMMEDIATE')
-   class Transaction:
-    def connect(self):return contextlib.nullcontext(db)
-   applied=0;merged=0;equivalent=0
-   for row in rows:
-    if stopped():raise Cancelled
-    if row['seen']<cut:continue
-    event=json.loads(row['content']);ident,_=identity(row['ip'],row['scope'],event)
-    prior=db.execute('SELECT 1 FROM source_sample_applied WHERE id=?',(row['id'],)).fetchone()
-    same=db.execute('SELECT 1 FROM source_sample_equivalence WHERE id=?',(ident,)).fetchone()
-    if not prior and not same:
-     save_events(Transaction(),row['ip'],[event],row['received'],row['scope']);merged+=1
-     db.execute('INSERT INTO source_sample_ready VALUES(?,?,?,?) ON CONFLICT(ip,scope) DO UPDATE SET revision=max(revision,excluded.revision),seen=max(seen,excluded.seen)',(row['ip'],row['scope'],row['revision'],row['seen']))
-    db.execute('INSERT OR IGNORE INTO source_sample_equivalence VALUES(?,?)',(ident,row['seen']))
-    if prior:continue
-    db.execute('INSERT INTO source_sample_applied VALUES(?,?)',(row['id'],row['seen']))
-    applied+=1;equivalent+=bool(same)
-   db.execute('DELETE FROM source_sample_applied WHERE id IN (SELECT id FROM source_sample_applied WHERE seen<? LIMIT 5000)',(cut,))
-   db.execute('DELETE FROM source_sample_ready WHERE rowid IN (SELECT rowid FROM source_sample_ready WHERE seen<? LIMIT 5000)',(cut,))
-   db.execute('DELETE FROM source_sample_equivalence WHERE id IN (SELECT id FROM source_sample_equivalence WHERE seen<? LIMIT 5000)',(cut,))
-  transaction_seconds=time.monotonic()-started
-  if stopped():raise Cancelled
-  # Ack only immutable revisions read above, never a newer source bucket.
-  with brain.store.connect() as native:
-   native.executemany('UPDATE source_sample_handoff SET delivered=1 WHERE revision=? AND id=?',[(r['revision'],r['id']) for r in rows])
-  return {'status':'delivered','read':len(rows),'applied':applied,'merged':merged,'equivalent':equivalent,'bound':500,'transaction_seconds':round(transaction_seconds,6),'seconds':round(time.monotonic()-started,6)}
- except Cancelled:
-  return {'status':'cancelled','bound':500}
- except sqlite3.OperationalError:
-  return {'status':'busy_retry_next_pass','bound':500}
+  chunks=[rows[i:i+DELIVERY_COMMIT_EVENTS] for i in range(0,len(rows),DELIVERY_COMMIT_EVENTS)] or [[]]
+  for number,chunk in enumerate(chunks):
+   if stopped():raise Cancelled
+   # Immutable parsing/identity work precedes the derived writer. Mutable
+   # predecessor/receipt/audit decisions remain inside save_events' owner.
+   prepared=[]
+   for row in chunk:
+    if row['seen']>=cut:
+     event=json.loads(row['content']);ident,_=identity(row['ip'],row['scope'],event);prepared.append((row,event,ident))
+   tx_started=time.monotonic()
+   with brain.connect() as db:
+    if not chunk and not any(db.execute('SELECT 1 FROM '+table+' WHERE seen<? LIMIT 1',(cut,)).fetchone() for table in ('source_sample_applied','source_sample_ready','source_sample_equivalence')):break
+    db.execute('PRAGMA busy_timeout=100');db.execute('BEGIN IMMEDIATE')
+    class Transaction:
+     def connect(self):return contextlib.nullcontext(db)
+    applied=merged=equivalent=0
+    for row,event,ident in prepared:
+     if stopped():raise Cancelled
+     prior=db.execute('SELECT 1 FROM source_sample_applied WHERE id=?',(row['id'],)).fetchone()
+     same=db.execute('SELECT 1 FROM source_sample_equivalence WHERE id=?',(ident,)).fetchone()
+     if not prior and not same:
+      save_events(Transaction(),row['ip'],[event],row['received'],row['scope']);merged+=1
+      db.execute('INSERT INTO source_sample_ready VALUES(?,?,?,?) ON CONFLICT(ip,scope) DO UPDATE SET revision=max(revision,excluded.revision),seen=max(seen,excluded.seen)',(row['ip'],row['scope'],row['revision'],row['seen']))
+     db.execute('INSERT OR IGNORE INTO source_sample_equivalence VALUES(?,?)',(ident,row['seen']))
+     if prior:continue
+     db.execute('INSERT INTO source_sample_applied VALUES(?,?)',(row['id'],row['seen']));applied+=1;equivalent+=bool(same)
+    if number==0:
+     db.execute('DELETE FROM source_sample_applied WHERE id IN (SELECT id FROM source_sample_applied WHERE seen<? LIMIT 5000)',(cut,))
+     db.execute('DELETE FROM source_sample_ready WHERE rowid IN (SELECT rowid FROM source_sample_ready WHERE seen<? LIMIT 5000)',(cut,))
+     db.execute('DELETE FROM source_sample_equivalence WHERE id IN (SELECT id FROM source_sample_equivalence WHERE seen<? LIMIT 5000)',(cut,))
+   duration=time.monotonic()-tx_started;transaction_seconds+=duration;maximum=max(maximum,duration)
+   totals['transactions']+=1;totals['read']+=len(chunk);totals['applied']+=applied;totals['merged']+=merged;totals['equivalent']+=equivalent
+   if stopped():raise Cancelled
+   if chunk:
+    with brain.store.connect() as native:
+     native.executemany('UPDATE source_sample_handoff SET delivered=1 WHERE revision=? AND id=?',[(r['revision'],r['id']) for r in chunk])
+   totals['acknowledged']+=len(chunk)
+  return outcome('delivered')
+ except Cancelled:return outcome('cancelled')
+ except sqlite3.OperationalError as exc:
+  if not contention(exc):raise
+  result=outcome('busy_retry_next_pass');result['sqlite_code']=exc.sqlite_errorcode;return result
+
 
 def consume(store,stopped,finished=None,quiesce=None):
  """Drain successive bounded commits independently of serial model work.
@@ -126,14 +159,18 @@ def consume(store,stopped,finished=None,quiesce=None):
    if brain is None:brain=Brain(store)
    if quiesce and quiesce.is_set():break
    result=deliver(brain,should_stop=stopped.is_set)
-  except sqlite3.OperationalError:result={'status':'busy_retry_next_pass','bound':500}
+  except sqlite3.OperationalError as exc:
+   from behavior_persistence import contention
+   if not contention(exc):
+    store._source_handoff_status={'status':'failed','error':type(exc).__name__};stopped.set();return
+   result={'status':'busy_retry_next_pass','bound':500,'sqlite_code':exc.sqlite_errorcode}
   except Exception as exc:
    store._source_handoff_status={'status':'failed','error':type(exc).__name__}
    stopped.set();return
-  if result['status']=='delivered' and result['read']:
-   totals['transactions']+=1
-   for k in ('read','applied','merged','equivalent'):totals[k]+=result[k]
-   totals['max_transaction_seconds']=max(totals['max_transaction_seconds'],result['transaction_seconds'])
+  if result.get('transactions') or result['status']=='delivered' and result['read']:
+   totals['transactions']+=result.get('transactions',1)
+   for k in ('read','applied','merged','equivalent'):totals[k]+=result.get(k,0)
+   totals['max_transaction_seconds']=max(totals['max_transaction_seconds'],result.get('max_transaction_seconds',result['transaction_seconds']))
   store._source_handoff_status={**result,'totals':dict(totals),'at':dt.datetime.now(dt.timezone.utc).isoformat()}
   if result['status']=='cancelled':break
   if result['status']!='delivered' or not result['read']:
@@ -147,6 +184,6 @@ def ready(brain,source_cfg=None,limit=100,addresses=None):
   if addresses is not None:where+=' AND ip IN (SELECT value FROM json_each(?))';args.append(json.dumps(addresses))
   return {r['ip']:r['revision'] for r in db.execute('SELECT ip,revision FROM source_sample_ready WHERE '+where+' ORDER BY revision,ip LIMIT ?',args+[max(1,min(100,limit))])}
 
-def indexed(brain,address,revision,source_cfg=None):
+def indexed(brain,address,revision,source_cfg=None,collection=None):
  from evidence_history import collection_scope
- with brain.connect() as db:db.execute('DELETE FROM source_sample_ready WHERE ip=? AND scope=? AND revision=?',(address,collection_scope(brain,source_cfg),revision))
+ with brain.connect() as db:db.execute('DELETE FROM source_sample_ready WHERE ip=? AND scope=? AND revision=?',(address,collection_scope(brain,source_cfg) if collection is None else collection,revision))

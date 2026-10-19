@@ -34,15 +34,41 @@ def audit_event(d,ident,at,actor,action,details):
  else:return
  insert(d,'audit:'+str(ident),at,actor,event,kind,target,safe)
 
-def recover_audit(store):
+def initialize(store):
+ """Schema and genuine legacy replay, without ordinary-open cursor writes."""
+ with store.connect() as db:
+  marker=db.execute("SELECT value FROM state WHERE key='policy_event_audit_cursor'").fetchone()
+  present=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='policy_events'").fetchone()
+  if marker and not present:raise ValueError('Initialized policy event history is missing')
+  db.executescript(SCHEMA)
+  db.execute('SELECT event_key,at,recorded,actor,action,kind,target,details,family,lo,hi FROM policy_events LIMIT 0')
+  if [(r[1],r[5]) for r in db.execute('PRAGMA table_info(policy_events)') if r[5]]!=[('event_key',1)]:raise ValueError('Incompatible policy event primary key')
+  for name,columns in (('policy_events_target',['kind','target','at']),('policy_events_time',['at']),('policy_events_bounds',['family','lo','hi'])):
+   if [r[2] for r in db.execute('PRAGMA index_info('+name+')')]!=columns:raise ValueError('Incompatible policy event index: '+name)
+  if marker:
+   value=json.loads(marker[0])
+   if type(value) is not int or value<0:raise ValueError('Invalid policy event migration marker')
+ if not marker:recover_audit(store)
+
+def recover_audit(store,limit=None):
  """Replay saved, actual operator actions, keeping original event times."""
+ def cursor(d):
+  r=d.execute("SELECT value FROM state WHERE key='policy_event_audit_cursor'").fetchone();value=json.loads(r[0]) if r else 0
+  if type(value) is not int or value<0:raise ValueError('Invalid policy event migration marker')
+  return r,value
  with store.connect() as d:
-  r=d.execute("SELECT value FROM state WHERE key='policy_event_audit_cursor'").fetchone();cursor=json.loads(r[0]) if r else 0
-  for r in d.execute('SELECT * FROM audit WHERE id>? ORDER BY id',(cursor,)).fetchall():
+  marker,start=cursor(d)
+  if marker and not d.execute('SELECT 1 FROM audit WHERE id>? LIMIT 1',(start,)).fetchone():return {'processed':0,'partial':False,'cursor':start}
+  d.execute('BEGIN IMMEDIATE');marker,start=cursor(d)
+  query='SELECT * FROM audit WHERE id>? ORDER BY id'+(' LIMIT ?' if limit is not None else '')
+  rows=d.execute(query,(start,max(1,min(5000,int(limit)))) if limit is not None else (start,)).fetchall();end=start
+  for r in rows:
    try:audit_event(d,r['id'],r['at'],r['actor'],r['action'],json.loads(r['details']))
    except (ValueError,KeyError,TypeError):pass
-   cursor=r['id']
-  d.execute('INSERT OR REPLACE INTO state VALUES(?,?)',('policy_event_audit_cursor',json.dumps(cursor)))
+   end=r['id']
+  if end!=start or not marker:d.execute('INSERT OR REPLACE INTO state VALUES(?,?)',('policy_event_audit_cursor',json.dumps(end)))
+  partial=bool(d.execute('SELECT 1 FROM audit WHERE id>? LIMIT 1',(end,)).fetchone())
+ return {'processed':len(rows),'partial':partial,'cursor':end}
 
 def expirations(store,at):
  with store.connect() as d:

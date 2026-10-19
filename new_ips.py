@@ -7,16 +7,40 @@ CREATE INDEX IF NOT EXISTS ip_observations_time ON ip_observations(seen,ip);
 """
 def initialize(store):
  with store.connect() as d:
+  marker=d.execute("SELECT value FROM state WHERE key='new_ip_tracking'").fetchone()
+  if marker and not d.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ip_observations'").fetchone():raise ValueError('Initialized arrival history is missing')
   d.executescript(SCHEMA)
+  d.execute('SELECT ip,seen FROM ip_observations LIMIT 0')
+  if [(r[1],r[5]) for r in d.execute('PRAGMA table_info(ip_observations)') if r[5]]!=[('ip',1),('seen',2)]:raise ValueError('Incompatible arrival primary key')
+  if [r[2] for r in d.execute('PRAGMA index_info(ip_observations_time)')]!=['seen','ip']:raise ValueError('Incompatible arrival time index')
+  marker=d.execute("SELECT value FROM state WHERE key='new_ip_tracking'").fetchone()
+  if marker:
+   value=json.loads(marker[0])
+   if not isinstance(value,dict) or not value.get('started') or dt.datetime.fromisoformat(value['started']).tzinfo is None:raise ValueError('Invalid arrival migration marker')
+   return
   d.execute("BEGIN IMMEDIATE")
+  # Another initializer may have completed while this connection waited.
+  marker=d.execute("SELECT value FROM state WHERE key='new_ip_tracking'").fetchone()
+  if marker:
+   value=json.loads(marker[0])
+   if not isinstance(value,dict) or not value.get('started') or dt.datetime.fromisoformat(value['started']).tzinfo is None:raise ValueError('Invalid arrival migration marker')
+   return
   current=dt.datetime.now(UTC);cut=(current-dt.timedelta(days=366)).isoformat(timespec='seconds')
-  # Existing scheduled Store users perform retention; requests only read it.
+  # This is the real legacy backfill, not recurring initialized maintenance.
   d.execute('DELETE FROM ip_observations WHERE seen<?',(cut,))
-  if d.execute("SELECT 1 FROM state WHERE key='new_ip_tracking'").fetchone():return
   for query in ('SELECT ip,seen FROM evidence','SELECT ip,seen FROM source_activity','SELECT ip,seen FROM offender_returns','SELECT ip,first_seen seen FROM ips','SELECT ip,last_seen seen FROM ips'):
    d.execute('INSERT OR IGNORE INTO ip_observations SELECT ip,seen FROM ('+query+') WHERE seen>=? AND seen<=?',(cut,current.isoformat(timespec='seconds')))
   oldest=d.execute('SELECT min(seen) FROM ip_observations').fetchone()[0]
   d.execute('INSERT INTO state VALUES(?,?)',('new_ip_tracking',json.dumps({'started':current.isoformat(timespec='seconds'),'earliest_retained':oldest})))
+
+def maintain(store,at=None):
+ cut=((at or dt.datetime.now(UTC))-dt.timedelta(days=366)).isoformat(timespec='seconds')
+ with store.connect() as db:
+  if not db.execute('SELECT 1 FROM ip_observations WHERE seen<? LIMIT 1',(cut,)).fetchone():return {'deleted':0,'partial':False,'bound':5000}
+  db.execute('BEGIN IMMEDIATE')
+  deleted=db.execute('DELETE FROM ip_observations WHERE rowid IN (SELECT rowid FROM ip_observations WHERE seen<? ORDER BY seen,ip LIMIT 5000)',(cut,)).rowcount
+  partial=bool(db.execute('SELECT 1 FROM ip_observations WHERE seen<? LIMIT 1',(cut,)).fetchone())
+ return {'deleted':deleted,'partial':partial,'bound':5000}
 def record(d,address,seen):
  d.execute('INSERT OR IGNORE INTO ip_observations VALUES(?,?)',(address,seen))
 

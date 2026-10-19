@@ -40,7 +40,7 @@ def test_expired_ignored_source_identity_payload_is_not_newly_decoded(tmp_path):
 
 def test_arrival_read_does_not_wait_for_native_writer_and_retention_still_runs(tmp_path):
     import sqlite3,threading,time
-    from new_ips import Reports,record
+    from new_ips import Reports,record,maintain
     s=Store(tmp_path/'native');at=dt.datetime.now(dt.timezone.utc)
     with s.connect() as db:
         record(db,'8.8.8.8',(at-dt.timedelta(days=367)).isoformat(timespec='seconds'))
@@ -55,6 +55,9 @@ def test_arrival_read_does_not_wait_for_native_writer_and_retention_still_runs(t
         assert time.monotonic()-start<1 and report['count']==1
         with s.connect(commit=False) as db:assert db.execute('SELECT count(*) FROM ip_observations').fetchone()[0]==2
     finally:release.set();thread.join(3)
-    # Regular Store initialization owns the same unchanged retention cutoff.
+    # Initialized readers do not prune. The existing scheduled owner applies
+    # the same retention cutoff through bounded maintenance.
     Store(s.path)
+    with s.connect(commit=False) as db:assert db.execute('SELECT count(*) FROM ip_observations').fetchone()[0]==2
+    assert maintain(s,at)=={'deleted':1,'partial':False,'bound':5000}
     with s.connect(commit=False) as db:assert db.execute('SELECT count(*) FROM ip_observations').fetchone()[0]==1

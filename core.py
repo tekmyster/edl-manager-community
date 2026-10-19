@@ -107,10 +107,8 @@ class Store:
   with self.connect() as d:initialize_handoff(d)
   from new_ips import initialize
   initialize(self)
-  from event_history import SCHEMA
-  with self.connect() as d:d.executescript(SCHEMA)
-  from event_history import recover_audit
-  recover_audit(self)
+  from event_history import initialize as initialize_events
+  initialize_events(self)
   from permanent_policy import SCHEMA as permanent_schema
   with self.connect() as d:d.executescript(permanent_schema)
  @contextlib.contextmanager
