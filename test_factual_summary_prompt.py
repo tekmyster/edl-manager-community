@@ -20,7 +20,7 @@ def test_neutral_preference_keeps_all_omit_unknown_and_inconclusive_valid():
  assert result['classification']=='inconclusive'
  assert result['automation']==result['intent']=={'classification':'unknown','confidence':0}
  ai.validate_result(result,packet,[],{})
- assert metadata['prompt_version']=='behavior-3.21'
+ assert metadata['prompt_version']=='behavior-3.22'
  assert metadata['generation_schema_version']==gen.VERSION=='grounded-groups-8'
  assert requests[0]['messages'][0]['content']==gen.INSTRUCTION
 
@@ -49,17 +49,17 @@ def test_prompt_only_version_gets_fresh_job_preserves_old_assessment(tmp_path,mo
   return result(packet),{'prompt_version':ai.PROMPT_VERSION,'generation_schema_version':ai.GENERATION_SCHEMA_VERSION}
  monkeypatch.setattr(ai,'infer',fake)
  cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':None}
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.20')
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.21')
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  with brain.connect() as db:
   old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.21')
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.22')
  assert ai.GENERATION_SCHEMA_VERSION=='grounded-groups-8'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='cached'
  with brain.connect() as db:
   rows=[tuple(row) for row in db.execute('SELECT * FROM assessments')]
- assert old in rows and len(rows)==2 and calls==['behavior-3.20','behavior-3.21']
+ assert old in rows and len(rows)==2 and calls==['behavior-3.21','behavior-3.22']
  assert len({row[2] for row in rows})==2
  native_after=store.describe('8.8.8.8')
  assert native_before['score']==native_after['score'] and native_before['retention']==native_after['retention']
