@@ -105,7 +105,7 @@ def collect(s,cfg,include_palo=True,palo_only=False):
   # Older indexes may lack this keyword mapping; retain native UTC string order
   # and the same cross-index scope rather than skipping indexes or event times.
   q={'size':0,'query':{'bool':{'filter':native_filters}},'aggs':{'items':{'composite':comp,'aggs':{'last':{'top_hits':{'size':1,'sort':[{'data.edl_seen_utc':{'order':'desc','unmapped_type':'keyword'}},{'timestamp':'desc'}],'_source':['data','timestamp','agent']}}}}}}
-  if getattr(s,'_worker_connection',None) is not None:s._worker_connection.commit()
+  if getattr(s,'_worker_connection',None) is not None:s._worker_last_direct_commit='native_page_before_fetch';s._worker_connection.commit()
   r=sess.post(cfg['index_url']+'/wazuh-alerts-*/_search',json=q,timeout=90);r.raise_for_status();v=r.json()
   if v.get('timed_out') or v.get('_shards',{}).get('failed'):raise RuntimeError('Incomplete index query; prior evidence retained')
   a=v['aggregations']['items']
@@ -124,7 +124,7 @@ def collect(s,cfg,include_palo=True,palo_only=False):
   comp={'size':500,'sources':[{'ip':{'terms':{'field':'data.srcip'}}},{'rule':{'terms':{'field':'rule.id'}}}]}
   if after:comp['after']=after
   q={'size':0,'query':{'bool':{'filter':([] if enabled.get('wazuh')=='*' else [{'term':{'agent.name':enabled['wazuh']}}])+[{'range':{'timestamp':{'gte':'now-30d'}}},{'range':{'rule.level':{'gte':8}}},{'exists':{'field':'data.srcip'}}],'must_not':[{'terms':{'rule.id':['119900','119902']}},{'terms':{'location':[cfg['palo_location']] if cfg.get('palo_location') else []}}]}},'aggs':{'items':{'composite':comp,'aggs':{'last':{'top_hits':{'size':1,'sort':[{'timestamp':'desc'}],'_source':['timestamp','rule']}}}}}}
-  if getattr(s,'_worker_connection',None) is not None:s._worker_connection.commit()
+  if getattr(s,'_worker_connection',None) is not None:s._worker_last_direct_commit='wazuh_page_before_fetch';s._worker_connection.commit()
   r=sess.post(cfg['index_url']+'/wazuh-alerts-*/_search',json=q,timeout=60);r.raise_for_status();v=r.json()
   if v.get('timed_out') or v.get('_shards',{}).get('failed'):raise RuntimeError('Incomplete general Wazuh query')
   a=v['aggregations']['items']
@@ -154,7 +154,7 @@ def collect(s,cfg,include_palo=True,palo_only=False):
     comp={'size':500,'sources':[{'ip':{'terms':{'field':field}}}]}
     if after:comp['after']=after
     q={'size':0,'query':{'bool':{'filter':[{'term':{'location':cfg['palo_location']}},{'range':{'timestamp':{'gte':cutoff}}},{'terms':{field:observed}},{'terms':{'data.action':['deny','drop','reset-client','reset-server','reset-both','block-ip']}}]}},'aggs':{'ips':{'composite':comp,'aggs':{'last':{'max':{'field':'timestamp'}},'native_last':{'max':{'script':{'source':"if (!doc.containsKey('data.high_resolution_timestamp') || doc['data.high_resolution_timestamp'].size()==0) return 0; try { return java.time.OffsetDateTime.parse(doc['data.high_resolution_timestamp'].value).toInstant().toEpochMilli(); } catch (Exception e) { return 0; }"}}}}}}}
-    if getattr(s,'_worker_connection',None) is not None:s._worker_connection.commit()
+    if getattr(s,'_worker_connection',None) is not None:s._worker_last_direct_commit='palo_page_before_fetch';s._worker_connection.commit()
     r=sess.post(cfg['index_url']+'/wazuh-alerts-*/_search',json=q,timeout=60);r.raise_for_status();v=r.json()
     if v.get('timed_out') or v.get('_shards',{}).get('failed'):raise ValueError('Incomplete Palo context query')
     a=v['aggregations']['ips']
@@ -338,27 +338,55 @@ def main():
   try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
   except BlockingIOError:return
   started=now()
-  s._pipeline_receipts={}
+  s._pipeline_receipts={};s._worker_publication=None;s._worker_last_direct_commit=None
   anchor=sqlite3.connect(cfg['database']);anchor.execute('SELECT name FROM sqlite_master LIMIT 1').fetchall()
   s._worker_connection=anchor;s._batch_evidence=True
+  phase='starting'
   try:
    if fast:
+    phase='collect'
     s.state('ingest_status',{'status':'running','started':started,'phase':'collecting and publishing'})
     count=collect(s,cfg,include_palo=False)
     from source_types import refresh
-    refresh(s);build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
+    phase='source_types';refresh(s);phase='build';build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
     if m is None:logging.warning('Publication deferred: ingestion committed; another publisher is active. Retrying next cycle.')
+    phase='success_status'
     s.state('ingest_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'ingestion_committed':True,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
     return
    s.state('worker_status',{'status':'running','phase':'collecting evidence','started':started,'mode':'production'})
+   phase='collect'
    count=collect(s,cfg,palo_only=enrich_only);s.state('worker_status',{'status':'running','phase':'cached enrichment','started':started,'evidence_buckets':count,'mode':'production'})
-   checks=enrich(s,cfg)
+   phase='enrich';checks=enrich(s,cfg)
    from source_types import refresh
-   refresh(s);s.state('worker_status',{'status':'running','phase':'building lists','started':started,'evidence_buckets':count,'enrichment_checks':checks,'mode':'production'})
-   build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
+   phase='source_types';refresh(s);s.state('worker_status',{'status':'running','phase':'building lists','started':started,'evidence_buckets':count,'enrichment_checks':checks,'mode':'production'})
+   phase='build';build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
    if m is None:logging.warning('Publication deferred: enrichment committed; another publisher is active. Retrying next cycle.')
+   phase='success_status'
    s.state('worker_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'enrichment_checks':checks,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'mode':'production','pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
-  except Exception as e:
-   s.state('ingest_status' if fast else 'worker_status',{'status':'error','started':started,'completed':now(),'error':type(e).__name__+': '+str(e)[:240]});raise
-  finally:s._worker_connection=None;anchor.close()
+  except Exception as exc:
+   from behavior_persistence import contention
+   # This owner also covers direct commit and outside-connect failures. Never
+   # let the status write commit earlier pending input from a failed unit.
+   rolled_back=False
+   try:anchor.rollback();rolled_back=True
+   except Exception as rollback_error:
+    logging.error('Native rollback failed type=%s',type(rollback_error).__name__)
+   s._pipeline_receipts.clear();s._pipeline_receipts['invalidated']=True;s._evidence_pending=0
+   published=s._worker_publication
+   deferred=rolled_back and contention(exc)
+   result={'status':'deferred' if deferred else 'error','started':started,'completed':now(),'phase':phase,'error':type(exc).__name__,'sqlite_code':getattr(exc,'sqlite_errorcode',None),'last_direct_commit_boundary':s._worker_last_direct_commit,'pending_transaction':'rolled_back' if rolled_back else 'rollback_failed','prior_commits':'retained','publication':'published_bookkeeping_pending' if published else 'not_confirmed_this_pass','publication_boundary':'after_generation_swap' if published else 'before_generation_swap','pipeline_timing':{'status':'unmeasurable','reason':'transaction_rollback'}}
+   if published:result['generation']=published['generation']
+   if deferred:result['retry']='next_normal_pass'
+   status_error=None
+   try:
+    # If rollback itself failed, no write on that handle is safe.
+    if rolled_back:s.state('ingest_status' if fast else 'worker_status',result)
+   except Exception as secondary:
+    status_error=secondary
+    logging.error('Native status persistence failed type=%s sqlite_code=%s',type(secondary).__name__,getattr(secondary,'sqlite_errorcode',None))
+   logging.warning('Native pass incomplete status=%s phase=%s type=%s sqlite_code=%s last_direct_commit=%s pending_transaction=%s publication_boundary=%s publication=%s',result['status'],phase,type(exc).__name__,getattr(exc,'sqlite_errorcode',None),s._worker_last_direct_commit,result['pending_transaction'],result['publication_boundary'],result['publication'])
+   if deferred and (status_error is None or contention(status_error)):return result
+   # Preserve the primary exception, even when recording it also failed.
+   raise
+  finally:s._worker_connection=None;s._batch_evidence=False;s._evidence_pending=0;anchor.close()
 if __name__=='__main__':main()

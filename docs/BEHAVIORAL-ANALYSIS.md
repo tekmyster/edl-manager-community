@@ -243,3 +243,26 @@ diagnostics are documented in [portable source observations](SOURCE-OBSERVATIONS
 
 
 Scheduler index migration commits at most 200 saved packets per pass. Actual SQLite BUSY/LOCKED errors at its transaction boundary roll back all index, readiness, queue-priority and cursor changes before returning an explicit deferred status. The last committed cursor is retained; a later normal pass resumes from it. Deferred progress is zero and completeness remains unknown. Non-contention SQLite, I/O and programming errors still propagate. This does not change connection timeouts, add an inline retry loop or force a worker cycle.
+
+
+Native ingestion/enrichment failures are recovered by the worker transaction
+owner. Before writing failure/deferred status it rolls back the current pending
+unit, invalidates timing receipts and resets pending batch bookkeeping. Earlier
+commits remain durable. Only numeric SQLite BUSY/LOCKED may defer to the next
+normal pass; other errors propagate, and a secondary status failure never
+replaces the original error. Deferred passes do not report completed counts.
+The existing commit sizes, cursor overlap and native scoring/protections stay
+unchanged. Already durable ASN input replays from its snapshot before queue
+publication; a failed import does not itself require another broker lookup.
+
+A generation swapped into `current` is already published even if subsequent
+SQLite bookkeeping or success-status persistence fails. Failure status records
+which side of that boundary was reached; rollback does not undo published files
+or earlier commits. This recovery does not establish elimination of contention.
+
+Background history claims use an optional opaque owner and compare-release.
+Old cleanup cannot clear a reclaimed lease. Native cleanup contention cannot
+replace a durable derived success/failure result or trigger an immediate fetch.
+Other storage failures remain visible. The existing process single-flight lock
+still covers fetch/save/release, including work lasting longer than the lease;
+the 90-second lease alone is not a general exactly-once request guarantee.

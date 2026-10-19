@@ -234,7 +234,9 @@ class Store:
    if inserted.rowcount:d.execute("INSERT INTO ips(ip,first_seen,last_seen) VALUES(?,?,?) ON CONFLICT(ip) DO UPDATE SET first_seen=min(first_seen,excluded.first_seen),last_seen=max(last_seen,excluded.last_seen)",(address,seen,seen))
   if batching:
    self._evidence_pending=getattr(self,'_evidence_pending',0)+1
-   if self._evidence_pending>=100:self._worker_connection.commit();self._evidence_pending=0
+   if self._evidence_pending>=100:
+    self._worker_last_direct_commit='evidence_100'
+    self._worker_connection.commit();self._evidence_pending=0
  def active_rules(self):
   with self.connect() as d:return [dict(r) for r in d.execute('SELECT * FROM rules WHERE enabled=1 AND (expires IS NULL OR expires>?) ORDER BY created DESC',(now(),))]
  def describe(self,address):
@@ -412,7 +414,8 @@ class Store:
   # Commit collected evidence/cursors before waiting for another publisher.
   # Never hold SQLite's writer lock while acquiring the filesystem lock.
   anchor=getattr(self,'_worker_connection',None)
-  if anchor is not None:anchor.commit()
+  if anchor is not None:
+   self._worker_last_direct_commit='before_publication_request';anchor.commit()
   requested=now()
   with self.connect() as d:
    d.execute('BEGIN IMMEDIATE')
@@ -490,7 +493,10 @@ class Store:
   manifest['sha256']={name:hashlib.sha256((gen/(name+'.txt')).read_bytes()).hexdigest() for name in counts}
   (gen/'manifest.json').write_text(json.dumps(manifest,indent=2));tmp=out/'current.new'
   if tmp.exists() or tmp.is_symlink():tmp.unlink()
-  tmp.symlink_to(gen.name,target_is_directory=True);os.replace(tmp,out/'current');self.state('latest_build',manifest)
+  tmp.symlink_to(gen.name,target_is_directory=True);os.replace(tmp,out/'current')
+  # Record the filesystem boundary before any subsequent SQLite bookkeeping.
+  self._worker_publication={'generation':gen.name,'created':manifest['created']}
+  self.state('latest_build',manifest)
   from behavior_metrics import record_publication
   record_publication(self,manifest)
   from offenders import mark_blocks

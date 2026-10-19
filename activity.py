@@ -67,7 +67,7 @@ def fetch(cfg,target):
   k=b['key'];destinations.append({**k,'destination':address(k.get('destination')),'nat':address(k.get('nat')),'count':b['doc_count']})
  return {'events':events,'destinations':destinations,'total':v['hits']['total']['value'],'destinations_limited':bool(agg.get('after_key')) and len(destinations)>=500,'fetched':now(),'cutoff':cut.isoformat(),'status':'ok'}
 
-def claim_activity(store,key,quota_key=None,budget=None):
+def claim_activity(store,key,quota_key=None,budget=None,*,owner=None):
  """Coordinate UI and background readers using one durable per-IP lease."""
  with store.connect() as db:
   db.execute('BEGIN IMMEDIATE')
@@ -81,8 +81,15 @@ def claim_activity(store,key,quota_key=None,budget=None):
    row=db.execute('SELECT value FROM state WHERE key=?',(quota_key,)).fetchone();used=json.loads(row[0]) if row else 0
    if used>=budget:return 'budget'
    db.execute('INSERT OR REPLACE INTO state VALUES(?,?)',(quota_key,json.dumps(used+1)))
-  db.execute('INSERT OR REPLACE INTO state VALUES(?,?)',('ip_activity_pending:'+key,json.dumps({'started':current.isoformat()})))
+  db.execute('INSERT OR REPLACE INTO state VALUES(?,?)',('ip_activity_pending:'+key,json.dumps({'started':current.isoformat(),**({'owner':owner} if owner is not None else {})})))
  return 'claimed'
+
+def release_activity(store,key,owner):
+ """Release only this caller's claim; expiry/reclaim must not lose a new lease."""
+ if not isinstance(owner,str) or not owner:raise ValueError('Activity owner is required')
+ with store.connect() as db:
+  released=db.execute("UPDATE state SET value='{}' WHERE key=? AND json_extract(value,'$.owner')=?",('ip_activity_pending:'+key,owner))
+  return bool(released.rowcount)
 
 class ActivityCache:
  def __init__(self,store,cfg):self.store=store;self.cfg=cfg;self.pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='ip-investigation');self.lock=threading.Lock();self.pending=set()

@@ -1,5 +1,8 @@
 """Derived redacted local history. Never writes native evidence or retention."""
-import datetime as dt,json,re
+import datetime as dt,json,re,uuid,logging
+import requests
+
+class IncompleteHistoryError(RuntimeError):pass
 from behavior_ai import digest,timestamp,safe_text,path_shape
 from behavior_context import destination
 from web_client import request_structure
@@ -164,7 +167,7 @@ def fetch(cfg,address):
   session.auth=(cfg['index_user'],cfg['index_password']);session.verify=trust
   if context is not None:session.mount(cfg['index_url'],TLS())
   response=session.post(cfg['index_url']+'/wazuh-alerts-*/_search',json=q,timeout=(5,40));response.raise_for_status();result=response.json()
- if result.get('timed_out') or result.get('_shards',{}).get('failed'):raise RuntimeError('Incomplete history query')
+ if result.get('timed_out') or result.get('_shards',{}).get('failed'):raise IncompleteHistoryError('Incomplete history query')
  records=[]
  for hit in result['hits']['hits']:
   native=hit.get('_source',{});data=native.get('data',{});source=data.get('edl_source','wazuh');sensor=data.get('edl_detector','').split(':')[0] or 'rule:'+str(native.get('rule',{}).get('id',''))
@@ -179,7 +182,8 @@ def fetch(cfg,address):
 
 def refresh(brain,address,source_cfg,at,fetcher=None):
  from source_settings import effective
- from activity import claim_activity
+ from activity import claim_activity,release_activity
+ from behavior_persistence import contention
  cfg=effective(brain.store,source_cfg)
  if not cfg.get('index_url') or not any(cfg.get('source_agents',{}).values()) or not all(cfg.get(k) for k in ('index_user','index_password','index_ca')):return 'not_configured'
  scope=digest([cfg['index_url'],cfg.get('source_agents',{}),cfg.get('palo_location','')]);current=at.isoformat(timespec='seconds')
@@ -187,18 +191,34 @@ def refresh(brain,address,source_cfg,at,fetcher=None):
   prior=db.execute('SELECT * FROM history_queries WHERE ip=?',(address,)).fetchone()
   if prior and prior['scope']==scope and timestamp(prior['fetched']) and (at-timestamp(prior['fetched'])).total_seconds()<(3600 if json.loads(prior['content'])['status']=='error' else 300):return 'cached'
  key='history_query:'+scope+':'+address
- state=claim_activity(brain.store,key,'behavior_history_usage:'+at.date().isoformat(),100)
+ owner=uuid.uuid4().hex
+ try:state=claim_activity(brain.store,key,'behavior_history_usage:'+at.date().isoformat(),100,owner=owner)
+ except Exception as exc:
+  if not contention(exc):raise
+  logging.warning('History persistence deferred operation=claim sqlite_code=%s',exc.sqlite_errorcode)
+  return 'deferred'
  if state!='claimed':return state
+ primary=None
  try:
-  records,meta=(fetcher or fetch)(cfg,address)
+  # Only upstream query failures become a cached failure. Storage/schema/IO and
+  # programming failures while saving must remain visible to the owner.
+  try:records,meta=(fetcher or fetch)(cfg,address)
+  except (requests.RequestException,TimeoutError,ValueError,IncompleteHistoryError):
+   with brain.connect() as db:db.execute('INSERT OR REPLACE INTO history_queries VALUES(?,?,?,?)',(address,scope,current,json.dumps({'status':'error','fetched':current,'coverage':'partial'})))
+   return 'failed'
   for source,sensor,samples in records:save(brain,address,source,sensor,samples,current,scope)
   meta.update(fetched=current,coverage='partial')
   with brain.connect() as db:db.execute('INSERT OR REPLACE INTO history_queries VALUES(?,?,?,?)',(address,scope,current,json.dumps(meta)))
   return 'refreshed'
- except Exception:
-  with brain.connect() as db:db.execute('INSERT OR REPLACE INTO history_queries VALUES(?,?,?,?)',(address,scope,current,json.dumps({'status':'error','fetched':current,'coverage':'partial'})))
-  return 'failed'
- finally:brain.store.state('ip_activity_pending:'+key,{})
+ except BaseException as exc:
+  primary=exc;raise
+ finally:
+  try:release_activity(brain.store,key,owner)
+  except Exception as exc:
+   # A committed derived result remains authoritative after native cleanup
+   # contention. No immediate fetch retry, and no unconditional key clearing.
+   logging.warning('History lease release failed type=%s sqlite_code=%s',type(exc).__name__,getattr(exc,'sqlite_errorcode',None))
+   if not contention(exc) and primary is None:raise
 
 def cleanup(brain,at):
  # One existing bounded transaction: connect rolls back before a busy deferral.
