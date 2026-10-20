@@ -18,6 +18,15 @@ class Response:
  def close(self):self.closed=True
 
 
+@pytest.mark.parametrize('kind,category',[('tls','tls'),('certificate','tls'),('deadline','timeout'),('timeout','timeout'),('connection','connection'),('http','transport')])
+def test_standard_library_pipeline_transport_failures_keep_fixed_categories(kind,category):
+ import ssl,http.client
+ from behavior_deadline import Expired
+ errors={'tls':ssl.SSLError('PRIVATE-TLS'),'certificate':ssl.SSLCertVerificationError('PRIVATE-CERT'),'deadline':Expired('PRIVATE-DEADLINE'),'timeout':TimeoutError('PRIVATE-TIMEOUT'),'connection':ConnectionRefusedError('PRIVATE-CONNECTION'),'http':http.client.BadStatusLine('PRIVATE-HTTP')}
+ saved=ai.failure_diagnostic(errors[kind],'dispatch')
+ assert saved=={'phase':'dispatch','category':category} and 'PRIVATE' not in json.dumps(saved)
+
+
 def metadata(exc):
  return exc.metadata if isinstance(exc,ai.ModelOutputError) else exc._edl_failure_metadata
 

@@ -69,7 +69,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   ledger.check=deadline.check
   refs=[ident]+[c['candidate_id'] for c in candidates]
   parent=ledger.begin(ident,cid,pipe.input_key,livecfg,time.time()+deadline.left(),refs)
-  plan=ledger.plan(parent)
+  plan=ledger.plan(parent);frozen_receipt=None;ledger.packet_hash=hash_value(pipe.packet)
   def guard():
    deadline.check();value=live()
    if source_identity()!=pipe.identity['client_sources']:raise Refused('input_identity_changed')
@@ -77,18 +77,23 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
     stored=db.execute('SELECT content FROM packets WHERE id=?',(ident,)).fetchone()
    if not stored or hash_value(json.loads(stored[0]))!=hash_value(pipe.packet):raise Refused('input_identity_changed')
    if select(load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'),packet)!=allowed:raise Refused('input_identity_changed')
+   if frozen_receipt is not None:
+    current=ledger.frozen(parent);pipe.validate_receipt(current)
+    if current!=frozen_receipt:raise Refused('pipeline_frozen_identity_changed')
    # Recheck the operator-pinned asset before every claim/entry, not only at
    # preassembly. A source/config update never edits a frozen task in place.
    from behavior_tokens import load as verified
    if verified(value).value!=pipe.tokenizer.value:raise Refused('input_identity_changed')
    return value
+  ledger.verify=guard
   def execute(stage,request,decode,check):
    nonlocal last,charged_units
    active=guard();request_hash=hash_value(request)
-   request_id=ledger.claim(parent,stage,cid,request_hash,active['daily_budget'])
+   receipt_hash=hash_value(frozen_receipt) if stage==2 else None
+   request_id=ledger.claim(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
    charged_units+=1
    attempt=Attempt(brain.store,ident);attempt.id=request_id
-   def entry():guard();ledger.entry(parent,stage,cid,request_hash)
+   def entry():active=guard();ledger.entry(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
    preparation=copy.deepcopy(pipe.preparation)
    preparation['input_preparation'].update(version=STAGE1 if stage==1 else STAGE2,user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
    wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':pipe.input_key},'version':STAGE1 if stage==1 else STAGE2,'expected_input':check['input_tokens']}
@@ -102,14 +107,14 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   receipt,meta=execute(1,pipe.stage1,pipe.freeze,check)
   guard();ledger.freeze(parent,cid,receipt,meta)
   # Re-read the durable receipt. No in-memory/provider text becomes stage2 truth.
-  receipt=ledger.frozen(parent);pipe.validate_receipt(receipt);request,check=pipe.second(receipt)
+  receipt=ledger.frozen(parent);pipe.validate_receipt(receipt);frozen_receipt=copy.deepcopy(receipt);request,check=pipe.second(receipt)
   result,meta=execute(2,request,lambda wire:pipe.compose(wire,receipt),check)
   guard();deadline.check()
   metadata=aggregate(stages,time.monotonic()-deadline.started)
   metadata.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=VERSION,input_binding=pipe.input_key,account_binding=receipt['binding'],supplied_packet_ids=refs,wire_packet_ids=refs,identity=pipe.identity)
   result={**result,'metadata':metadata};created=ai.now();expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=cfg['assessment_hours'])).isoformat(timespec='seconds')
   outcome={'version':1,'row':[plan['assessment'],ident,cid,created,expires,'completed',json.dumps(result,allow_nan=False),'',round(time.monotonic()-deadline.started,3)],'owner':plan['owner'],'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
-  ledger.final(parent,cid,outcome,meta,True)
+  ledger.final(parent,cid,outcome,meta,True,hash_value(frozen_receipt))
   try:return persist(Ledger(brain).plan(parent),charged_units)
   finally:deadline.finish()
  except Refused as exc:

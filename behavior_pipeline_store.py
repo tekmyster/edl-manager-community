@@ -43,7 +43,7 @@ def alive(token):
 
 class Ledger:
  def __init__(self,brain,check=lambda:None,hook=lambda phase:None):
-  self.brain=brain;self.path=brain.path;self.check=check;self.hook=hook
+  self.brain=brain;self.path=brain.path;self.check=check;self.hook=hook;self.verify=None;self.packet_hash=None
   with self.connection() as db:
    if db.execute("SELECT 1 FROM sqlite_master WHERE name='pipeline_schema'").fetchone():
     if db.execute('SELECT version FROM pipeline_schema WHERE id=1').fetchone()[0]!=1:raise Refused('pipeline_schema_review_required')
@@ -123,14 +123,23 @@ class Ledger:
   current=db.execute('SELECT c.packet_id FROM current_packets c JOIN packets p ON p.ip=c.ip WHERE p.id=?',(plan['packet'],)).fetchone()
   if not job or job['id']!=plan['owner'] or job['state']!='running' or job['lease']<=time.time():raise Refused('pipeline_ownership_lost')
   if not current or current[0]!=plan['packet']:raise Refused('superseded_before_request')
+  if self.packet_hash is not None:
+   from behavior_pipeline import hash_value
+   source=db.execute('SELECT content FROM packets WHERE id=?',(plan['packet'],)).fetchone()
+   if not source or hash_value(json.loads(source[0]))!=self.packet_hash:raise Refused('input_identity_changed')
   if not db.execute('SELECT 1 FROM pipeline_active WHERE parent=?',(ident,)).fetchone():raise Refused('pipeline_ownership_lost')
   return plan
- def claim(self,ident,stage,config,request_hash,budget):
-  from behavior_ai import now
-  day=now()[:10]
+ def frozen_identity(self,db,ident,expected):
+  from behavior_pipeline import hash_value
+  row=db.execute("SELECT receipt FROM pipeline_stages WHERE parent=? AND ordinal=1 AND state='accepted'",(ident,)).fetchone()
+  if expected is None or not row or hash_value(json.loads(row[0]))!=expected:raise Refused('pipeline_frozen_identity_changed')
+ def claim(self,ident,stage,config,request_hash,budget,receipt_hash=None):
   def commit(db):
+   from behavior_ai import now
+   day=now()[:10]
    plan=self.guard(db,ident,config)
    if plan['state']!=('stage1_ready' if stage==1 else 'stage1_validated'):raise Refused('pipeline_stage_order')
+   if stage==2:self.frozen_identity(db,ident,receipt_hash)
    row=db.execute('SELECT * FROM pipeline_stages WHERE parent=? AND ordinal=?',(ident,stage)).fetchone()
    if not row or row['state']!='planned':raise Refused('pipeline_duplicate_claim')
    held=db.execute('SELECT * FROM pipeline_reservations WHERE parent=?',(ident,)).fetchone();remaining=held['held']
@@ -140,33 +149,47 @@ class Ledger:
    db.execute('UPDATE pipeline_reservations SET day=?,held=held-1 WHERE parent=? AND held>0',(day,ident))
    db.execute('INSERT INTO usage VALUES(?,1) ON CONFLICT(day) DO UPDATE SET requests=requests+1',(day,))
    db.execute("UPDATE pipeline_stages SET request_hash=?,state='claimed',charged_day=? WHERE parent=? AND ordinal=?",(request_hash,day,ident,stage));db.execute('UPDATE pipeline_plans SET state=? WHERE id=?',('stage%d_claimed'%stage,ident));return row['request_id']
-  self.hook('before_claim%d'%stage);result=self.tx(commit);self.hook('after_claim%d'%stage);return result
- def entry(self,ident,stage,config,request_hash):
-  from behavior_ai import now
+  self.hook('before_claim%d'%stage)
+  if self.verify is not None:budget=self.verify()['daily_budget']
+  result=self.tx(commit);self.hook('after_claim%d'%stage);return result
+ def entry(self,ident,stage,config,request_hash,budget=None,receipt_hash=None):
   def commit(db):
+   from behavior_ai import now
    self.guard(db,ident,config);row=db.execute('SELECT * FROM pipeline_stages WHERE parent=? AND ordinal=?',(ident,stage)).fetchone()
    if row['state']!='claimed' or row['request_hash']!=request_hash:raise Refused('pipeline_entry_identity')
+   if stage==2:self.frozen_identity(db,ident,receipt_hash)
+   day=now()[:10]
+   if row['charged_day']!=day:raise Refused('pipeline_dispatch_day_changed')
+   used=db.execute('SELECT coalesce(sum(requests),0) FROM usage WHERE day=?',(day,)).fetchone()[0];held=db.execute('SELECT coalesce(sum(held),0) FROM pipeline_reservations WHERE day=?',(day,)).fetchone()[0]
+   if budget is not None and used+held>budget:raise Refused('budget')
    db.execute("UPDATE pipeline_stages SET state='entered',entered=? WHERE parent=? AND ordinal=?",(now(),ident,stage));db.execute('UPDATE pipeline_plans SET state=? WHERE id=?',('stage%d_entered'%stage,ident))
-  self.hook('before_entry%d'%stage);self.tx(commit);self.hook('after_entry%d'%stage)
+  self.hook('before_entry%d'%stage)
+  if self.verify is not None:budget=self.verify()['daily_budget']
+  self.tx(commit);self.hook('after_entry%d'%stage)
  def freeze(self,ident,config,receipt,metadata):
   def commit(db):
    plan=self.guard(db,ident,config)
    if plan['state']!='stage1_entered' or plan['input_key']!=receipt['input_key']:raise Refused('pipeline_freeze_identity')
    db.execute("UPDATE pipeline_stages SET state='accepted',receipt=?,metadata=? WHERE parent=? AND ordinal=1",(json.dumps(receipt,allow_nan=False),json.dumps(metadata,allow_nan=False),ident));db.execute("UPDATE pipeline_plans SET state='stage1_validated' WHERE id=?",(ident,))
-  self.hook('before_freeze');self.tx(commit);self.hook('after_freeze')
+  self.hook('before_freeze')
+  if self.verify is not None:self.verify()
+  self.tx(commit);self.hook('after_freeze')
  def frozen(self,ident):
   with self.connection() as db:
    row=db.execute("SELECT receipt FROM pipeline_stages WHERE parent=? AND ordinal=1 AND state='accepted'",(ident,)).fetchone()
    if not row:raise Refused('pipeline_receipt_missing')
    return json.loads(row[0])
- def final(self,ident,config,outcome,metadata,success):
+ def final(self,ident,config,outcome,metadata,success,receipt_hash=None):
   def commit(db):
    plan=self.guard(db,ident,config,allow_expired=not success)
    if success and plan['state']!='stage2_entered':raise Refused('pipeline_final_order')
+   if success:self.frozen_identity(db,ident,receipt_hash)
    row=db.execute("SELECT ordinal FROM pipeline_stages WHERE parent=? AND state IN ('claimed','entered') ORDER BY ordinal DESC LIMIT 1",(ident,)).fetchone()
    if row:db.execute('UPDATE pipeline_stages SET state=?,metadata=? WHERE parent=? AND ordinal=?',('accepted' if success else 'failed',json.dumps(metadata,allow_nan=False),ident,row[0]))
    db.execute('UPDATE pipeline_plans SET state=\'final_pending\',outcome=? WHERE id=?',(json.dumps(outcome,allow_nan=False),ident));db.execute('UPDATE pipeline_reservations SET held=0 WHERE parent=?',(ident,));db.execute('DELETE FROM pipeline_active WHERE parent=?',(ident,))
-  self.hook('before_final');self.tx(commit,live=success);self.hook('after_final')
+  self.hook('before_final')
+  if success and self.verify is not None:self.verify()
+  self.tx(commit,live=success);self.hook('after_final')
  def receipts(self,ident):
   with self.connection() as db:return [json.loads(r[0]) for r in db.execute('SELECT metadata FROM pipeline_stages WHERE parent=? AND metadata IS NOT NULL ORDER BY ordinal',(ident,))]
  def charges(self,ident):

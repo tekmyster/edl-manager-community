@@ -402,14 +402,14 @@ def decode_taxonomy_choices(value,choices):
 
 def failure_diagnostic(exc,phase,http_status=None):
  # Fixed machine-readable observations only; never exception text or bodies.
- import requests
+ import requests,ssl,http.client
  if isinstance(exc,ModelOutputError):
   category={'invalid_assessment':'assessment_rejected','output_limit':'output_limit','incomplete_response':'incomplete_response'}.get(exc.code,'model_output')
  elif phase=='http_status':category='http_rejection'
- elif isinstance(exc,requests.exceptions.SSLError):category='tls'
- elif isinstance(exc,requests.exceptions.Timeout):category='timeout'
- elif isinstance(exc,requests.exceptions.ConnectionError):category='connection'
- elif isinstance(exc,requests.exceptions.RequestException):category='transport'
+ elif isinstance(exc,(requests.exceptions.SSLError,ssl.SSLError)):category='tls'
+ elif isinstance(exc,(requests.exceptions.Timeout,TimeoutError)):category='timeout'
+ elif isinstance(exc,(requests.exceptions.ConnectionError,ConnectionError)):category='connection'
+ elif isinstance(exc,(requests.exceptions.RequestException,http.client.HTTPException)):category='transport'
  elif isinstance(exc,OSError):category='io'
  elif phase in ('response_stream','response_envelope'):category='response_format'
  else:category='local_error'

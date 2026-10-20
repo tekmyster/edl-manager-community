@@ -47,6 +47,12 @@ reservations are released. The dispatch day's UTC quota is checked again for
 each claim, including midnight rollover and a reduced limit. Unlimited retains
 historical usage and removes only the configured request ceilings.
 
+Quota is checked again at entry. If the UTC day changes between a claim and
+entry, the consumed claim remains on its original day and no request is sent.
+A limit reduced below already consumed claims cannot refund them; it prevents
+another dispatch. Local configuration, ownership and quota refusals do not
+create a provider outage backoff.
+
 One configured deadline (default 120 seconds, maximum 180) covers preparation,
 both requests, admission, streaming and validation. Stage two receives the time
 remaining. The 180-second setting preserves the existing 15-second gateway
@@ -68,6 +74,11 @@ The receipt binds the complete input, configuration, registry, client sources,
 model metadata and topology. Ownership, current packet, stored packet content,
 configuration, source generation, registry and metadata are checked before
 dispatch and final acceptance. Stage two cannot alter the frozen accounts.
+
+The final checks run again after each boundary hook and immediately before the
+short writer transaction. Packet content and the expected frozen-receipt digest
+are also compared inside claim, entry and final acceptance transactions. File
+reads and configuration checks remain outside the writer transaction.
 
 After a process dies, an unfinished plan becomes uncertain and blocks another
 attempt for that packet, including a new configuration alias. It is never

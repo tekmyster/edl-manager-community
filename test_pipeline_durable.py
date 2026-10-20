@@ -206,3 +206,49 @@ def test_bounded_compaction_preserves_failed_tombstone_and_uncertain_receipt(sam
  assert next(x['receipt'] for x in rows(b,'pipeline_stages') if x['parent']==uncertain['id'] and x['ordinal']==1)==receipt
  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=sender(calls))=='persistence_review_required'
  assert run(b,p[1]['packet_id'],p[1],set(),{**cfg,'timeout':121},requester=sender(calls))=='persistence_review_required'
+
+@pytest.mark.parametrize('phase,actual',[('before_claim1',0),('before_entry1',0),('before_freeze',1),('before_claim2',1),('before_entry2',1),('before_final',2)])
+@pytest.mark.parametrize('change',['config','source','packet','cancel'])
+def test_boundary_mutations_are_rechecked_after_hook_before_transaction(sample,monkeypatch,phase,actual,change):
+ s,b,cfg,p=sample;calls=[];stop=threading.Event();changed=[]
+ def hook(point):
+  if point!=phase or changed:return
+  changed.append(1)
+  if change=='config':s.state('behavior_settings',{**cfg,'model':'changed'})
+  elif change=='source':monkeypatch.setattr('behavior_pipeline_job.source_identity',lambda:{})
+  elif change=='cancel':stop.set()
+  else:
+   with b.connect() as db:db.execute("UPDATE packets SET content='{}' WHERE id=?",(p[0]['packet_id'],))
+ status=run(b,p[0]['packet_id'],p[0],set(),cfg,requester=sender(calls),hook=hook,should_stop=stop.is_set)
+ assert changed and status in ('failed','persistence_review_required') and len(calls)==actual
+ assert not [r for r in rows(b,'assessments') if r['status']=='completed']
+ assert rows(b,'pipeline_reservations')[0]['held']==0
+
+@pytest.mark.parametrize('phase,actual',[('before_claim2',1),('before_entry2',1),('before_final',2)])
+def test_frozen_receipt_is_rechecked_at_claim_entry_and_commit(sample,phase,actual):
+ s,b,cfg,p=sample;calls=[];changed=[]
+ def hook(point):
+  if point==phase and not changed:
+   changed.append(1)
+   with b.connect() as db:db.execute("UPDATE pipeline_stages SET receipt='{}' WHERE ordinal=1")
+ status=run(b,p[0]['packet_id'],p[0],set(),cfg,requester=sender(calls),hook=hook)
+ assert changed and status in ('failed','persistence_review_required') and len(calls)==actual
+ assert not [r for r in rows(b,'assessments') if r['status']=='completed']
+
+@pytest.mark.parametrize('phase,actual,charges',[('before_claim1',0,0),('before_entry1',0,1),('before_claim2',1,1),('before_entry2',1,2)])
+def test_quota_cut_at_irreducible_boundaries_never_posts_after_cut(sample,phase,actual,charges):
+ s,b,cfg,p=sample;calls=[];changed=[]
+ def hook(point):
+  if point==phase and not changed:changed.append(1);s.state('behavior_settings',{**cfg,'daily_budget':1})
+ assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=sender(calls),hook=hook)=='failed'
+ assert changed and len(calls)==actual and sum(r['requests'] for r in rows(b,'usage'))==charges
+ assert rows(b,'pipeline_reservations')[0]['held']==0
+ assert not [r for r in rows(b,'retention_state') if r['name'].startswith('provider_backoff:')]
+
+def test_midnight_between_claim_and_entry_consumes_claim_without_dispatch(sample,monkeypatch):
+ s,b,cfg,p=sample;calls=[]
+ def hook(phase):
+  if phase=='before_entry1':monkeypatch.setattr(ai,'now',lambda:'2026-10-18T00:00:01+00:00')
+ assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=sender(calls),hook=hook)=='failed'
+ assert calls==[] and {r['day']:r['requests'] for r in rows(b,'usage')}=={'2026-10-17':1}
+ assert rows(b,'pipeline_reservations')[0]['held']==0
