@@ -1,4 +1,5 @@
 """Real isolated SQLite contention; no production connections or model calls."""
+from test_pipeline_mock import stage_mock
 import contextlib,json,sqlite3,threading
 import pytest
 from core import Store
@@ -173,7 +174,7 @@ def test_foreground_run_reports_background_table_lock_and_next_normal_pass_index
  b.store._source_handoff_background=True;b.store._packet_index_background=True
  b.store.state('behavior_settings',{**ai.DEFAULTS,'enabled':True,'model_enabled':False})
  monkeypatch.setattr(ai,'Brain',lambda store:scope)
- monkeypatch.setattr(ai,'infer',lambda *a,**kw:pytest.fail('Offline contention test attempted inference'))
+ stage_mock(monkeypatch,ai,lambda *a,**kw:pytest.fail('Offline contention test attempted inference'))
  ready=threading.Event();release=threading.Event();errors=[]
  def background_reader():
   try:

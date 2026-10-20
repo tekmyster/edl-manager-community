@@ -1,4 +1,5 @@
 """Keyed contribution choices and explicit source timing. Synthetic, not model utility."""
+from test_pipeline_mock import stage_mock
 from test_generation_fixtures import decision
 import copy,itertools,json
 import pytest
@@ -122,10 +123,10 @@ def test_prompt_selection_and_generation_boundaries_separate_cache_from_failed_a
  from test_behavior_ai import result
  s=Store(tmp_path/'native');s.evidence('8.8.8.8','tpot','fixture',now(),'ssh',50);b=ai.Brain(s);ident,p,f=b.packet(s.describe('8.8.8.8'));calls=[]
  def fake(*args):calls.append((ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION));return result(p),{}
- monkeypatch.setattr(ai,'infer',fake);cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':None}
+ stage_mock(monkeypatch,ai,fake);cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':None}
  monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.27');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','grounded-groups-11');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed'
  with b.connect() as db:old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.28');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','grounded-groups-12');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed';assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='cached'
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.29');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','account-then-selection-1');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed';assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='cached'
  with b.connect() as db:rows=[tuple(r) for r in db.execute('SELECT * FROM assessments')]
  assert old in rows and len(rows)==2 and len(calls)==2
 @pytest.mark.parametrize('constant',['NaN','Infinity','-Infinity'])

@@ -1,5 +1,6 @@
 from behavior_grounding import RELATION,ALTERNATIVE,SUMMARIES
 """Synthetic protocol regressions, never production correctness labels/inference."""
+from test_pipeline_mock import stage_mock
 import copy,json
 import pytest
 import behavior_ai as ai
@@ -48,7 +49,7 @@ def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,c
   for claim in choices[kind].values():
    assert 'context-only' not in claim['evidence_ids'];validate_mapping(kind,claim,select(catalog,mixed),mixed)
  assert choices['attack']['attack:T1110']['evidence_ids']==['f1','f2']
- assert metadata['prompt_version']=='behavior-3.28' and metadata['generation_schema_version']=='grounded-groups-12'
+ assert metadata['prompt_version']=='behavior-3.29' and metadata['generation_schema_version']=='grounded-groups-12'
  assert len(payload['messages'][1]['content'].encode())<=18000 and payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
 
 @pytest.mark.parametrize('entry',[
@@ -155,7 +156,7 @@ def test_prompt_and_wire_schema_versions_invalidate_cache_without_native_changes
  store=Store(tmp_path/'native');store.evidence('8.8.8.8','tpot','fixture',now(),'ssh',50);brain=ai.Brain(store);ident,packet,features=brain.packet(store.describe('8.8.8.8'));before=store.describe('8.8.8.8')
  calls=[]
  def fake(*a):calls.append(1);return result(packet),{'prompt_version':ai.PROMPT_VERSION}
- monkeypatch.setattr(ai,'infer',fake);cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':5}
+ stage_mock(monkeypatch,ai,fake);cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':6}
  monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.4');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','legacy')
  assert ai.model_job(brain,ident,packet,features,cfg)=='completed'
  monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.6');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','taxonomy-choices-1')

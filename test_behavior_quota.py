@@ -1,4 +1,5 @@
 """Isolated quota/settings lifecycle; all model transport is mocked."""
+from test_pipeline_mock import stage_mock
 import datetime as dt,json,os,pathlib,threading
 from concurrent.futures import ThreadPoolExecutor
 import pytest
@@ -43,50 +44,53 @@ def test_no_finite_sentinel_usage_persists_cache_does_not_consume(sample,monkeyp
  with b.connect() as db:
   db.execute('INSERT INTO usage VALUES(?,?)',(now()[:10],10000001))
   db.execute("INSERT INTO usage VALUES('2020-01-01',96)")
- monkeypatch.setattr('behavior_ai.infer',lambda *args:(calls.append(1) or example(p),{}))
+ stage_mock(monkeypatch,'behavior_ai.infer',lambda *args:(calls.append(1) or example(p),{}))
  assert model_job(b,ident,p,f,cfg)=='completed'
  assert model_job(b,ident,p,f,{**cfg,'daily_budget':1})=='cached'
  assert config_id(cfg)==config_id({**cfg,'daily_budget':96})
  with b.connect() as db:
-  assert dict(db.execute('SELECT day,requests FROM usage'))=={now()[:10]:10000002,'2020-01-01':96}
- assert calls==[1] and Brain(s).summary()['requests_today']==10000002
+  assert dict(db.execute('SELECT day,requests FROM usage'))=={now()[:10]:10000003,'2020-01-01':96}
+ assert calls==[1] and Brain(s).summary()['requests_today']==10000003
  assert settings(s)['daily_budget'] is None
 
 def test_finite_exhaustion_then_unlimited_then_finite_does_not_reset(sample,monkeypatch):
  s,b,ident,p,f,cfg=sample
  with b.connect() as db:db.execute('INSERT INTO usage VALUES(?,96)',(now()[:10],))
- monkeypatch.setattr('behavior_ai.infer',lambda *args:(example(p),{}))
+ stage_mock(monkeypatch,'behavior_ai.infer',lambda *args:(example(p),{}))
+ s.state('behavior_settings',{**cfg,'daily_budget':96})
  assert model_job(b,ident,p,f,{**cfg,'daily_budget':96})=='budget'
+ s.state('behavior_settings',cfg)
  assert model_job(b,ident,p,f,cfg)=='completed'
  with b.connect() as db:db.execute("UPDATE assessments SET expires='2020-01-01'")
+ s.state('behavior_settings',{**cfg,'daily_budget':96})
  assert model_job(b,ident,p,f,{**cfg,'daily_budget':96})=='budget'
- with b.connect() as db:assert db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()[0]==97
+ with b.connect() as db:assert db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()[0]==98
 
 def test_unlimited_preserves_provider_backoff_and_retry_exhaustion(sample,monkeypatch):
  s,b,ident,p,f,cfg=sample;calls=[]
  def fail(*args):calls.append(1);raise TimeoutError('synthetic')
- monkeypatch.setattr('behavior_ai.infer',fail)
- for attempt in range(3):
-  assert model_job(b,ident,p,f,cfg)=='failed'
-  with b.connect() as db:db.execute("UPDATE assessments SET expires='2020-01-01'")
-  assert model_job(b,ident,p,f,cfg)=='backoff'
-  with b.connect() as db:db.execute("UPDATE retention_state SET value=? WHERE name LIKE 'provider_backoff:%'",(json.dumps({'failures':attempt+1,'until':0}),))
- assert model_job(b,ident,p,f,cfg)=='leased_or_exhausted'
+ stage_mock(monkeypatch,'behavior_ai.infer',fail)
+ assert model_job(b,ident,p,f,cfg)=='failed'
+ with b.connect() as db:db.execute("UPDATE assessments SET expires='2020-01-01'")
+ # A consumed failed two-stage plan requires review; expiry cannot create a
+ # replacement attempt, even with Unlimited or a configuration alias.
+ assert model_job(b,ident,p,f,cfg)=='persistence_review_required'
+ assert model_job(b,ident,p,f,{**cfg,'timeout':121})=='persistence_review_required'
  with b.connect() as db:
-  assert db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()[0]==3
-  assert db.execute('SELECT attempts FROM jobs').fetchone()[0]==3
- assert len(calls)==3
+  assert db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()[0]==2
+  assert db.execute('SELECT attempts FROM jobs').fetchone()[0]==1
+ assert len(calls)==1
 
 def test_unlimited_concurrent_same_packet_still_uses_lease(sample,monkeypatch):
  s,b,ident,p,f,cfg=sample;entered=threading.Event();release=threading.Event()
  def infer(*args):entered.set();assert release.wait(10);return example(p),{}
- monkeypatch.setattr('behavior_ai.infer',infer)
+ stage_mock(monkeypatch,'behavior_ai.infer',infer)
  with ThreadPoolExecutor(max_workers=1) as pool:
   future=pool.submit(model_job,b,ident,p,f,cfg)
   try:
    assert entered.wait(10)
    assert model_job(b,ident,p,f,cfg)=='leased_or_exhausted'
-   with b.connect() as db:assert db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()[0]==1
+   with b.connect() as db:assert db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()[0]==2
   finally:release.set()
   assert future.result(timeout=10)=='completed'
 
@@ -96,8 +100,8 @@ def test_worker_finite_cap_and_unlimited_drain(tmp_path,monkeypatch,limit):
  for i in range(3):s.evidence('8.8.8.'+str(i+1),'nginx','synthetic',now(),'http',0,details={'activity':{'events':[{'id':'e'+str(i),'seen':now(),'action':'HTTP request','method':'GET','path':'/example'}]}})
  calls=[]
  def infer(cfg,p,*args):calls.append(p['packet_id']);return example(p),{}
- monkeypatch.setattr('behavior_ai.infer',infer)
- expected=2 if limit is not None else 3
+ stage_mock(monkeypatch,'behavior_ai.infer',infer)
+ expected=1 if limit is not None else 3
  result=run(s);assert len(calls)==expected and result['analysis']=={'completed':expected}
  with Brain(s).connect() as db:assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==3-expected
 

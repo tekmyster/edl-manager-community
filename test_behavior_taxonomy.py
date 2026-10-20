@@ -1,5 +1,6 @@
 from behavior_grounding import mapping_text
 """Isolated synthetic contracts; fixtures are not production accuracy labels."""
+from test_pipeline_mock import stage_mock
 import copy
 import hashlib
 import json
@@ -186,8 +187,8 @@ def test_catalog_identity_invalidates_cache_without_native_changes(catalog,tmp_p
   db.execute('INSERT INTO current_packets VALUES(?,?)',('8.8.8.8','packet'))
  calls=[]
  def fake(*args):calls.append(args[3]);return result(packet),{}
- monkeypatch.setattr(behavior_ai,'infer',fake)
- cfg={**DEFAULTS,'model_enabled':True,'daily_budget':5}
+ stage_mock(monkeypatch,behavior_ai,fake)
+ cfg={**DEFAULTS,'model_enabled':True,'daily_budget':6}
  assert model_job(brain,'packet',packet,[],cfg)=='completed'
  assert model_job(brain,'packet',packet,[],cfg)=='cached'
  catalog['version']='new synthetic release';catalog.pop('registry_sha256');catalog['registry_sha256']=fingerprint(catalog);p.write_text(json.dumps(catalog))
@@ -234,7 +235,7 @@ def test_authenticated_detail_renders_mapping_and_preserves_native_policy(catalo
    def iter_content(self,n):yield json.dumps({'done':True,'model':'fixture','message':{'content':json.dumps(__import__('test_generation_fixtures').wire_or_invalid_legacy(packet,r,registry=catalog))}}).encode()
    def close(self):pass
   return infer(*args[:5],requester=lambda *a,**k:Response(),attempt=args[6] if len(args)>6 else None)
- monkeypatch.setattr(behavior_ai,'infer',fake)
+ stage_mock(monkeypatch,behavior_ai,fake)
  assert model_job(brain,ident,packet,features,cfg)=='completed'
  with store.connect() as db:db.execute('INSERT INTO users VALUES(?,?,?)',('fixture','hash',1))
  client=app.test_client()

@@ -1,3 +1,4 @@
+from test_pipeline_mock import stage_mock
 from behavior_grounding import RELATION,ALTERNATIVE
 import copy,datetime as dt,json
 import pytest
@@ -31,26 +32,26 @@ def test_untrusted_output_cannot_introduce_fields_scores_or_references(evidence,
 
 def test_model_cache_budget_failure_and_shadow_score_invariant(evidence,monkeypatch):
  import behavior_ai
- cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://10.1.1.1:11435','model':'test','daily_budget':1,'max_bump':25}
+ cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://10.1.1.1:11435','model':'test','daily_budget':2,'max_bump':25}
  evidence.state('behavior_settings',cfg);b=Brain(evidence);before=evidence.describe('8.8.8.8');ident,packet,features=b.packet(before);calls=[]
  def infer(*args):calls.append(1);return result(packet),{'model':'test'}
- monkeypatch.setattr(behavior_ai,'infer',infer)
+ stage_mock(monkeypatch,behavior_ai,infer)
  assert model_job(b,ident,packet,features,cfg)=='completed'
  assert model_job(b,ident,packet,features,cfg)=='cached' and len(calls)==1
  view=b.view('8.8.8.8');assert view['applied_bump']==0 and not view['scoring_eligible'] and view['hypothetical_score'] is None
  after=evidence.describe('8.8.8.8');assert after['score']==before['score'] and after['retention']==before['retention']
  with b.connect() as d:d.execute("UPDATE assessments SET expires='2020-01-01T00:00:00+00:00'")
  assert model_job(b,ident,packet,features,cfg)=='budget'
- cfg['daily_budget']=2
+ cfg['daily_budget']=4;evidence.state('behavior_settings',cfg)
  def fail(*args):raise TimeoutError('private diagnostic must not escape')
- monkeypatch.setattr(behavior_ai,'infer',fail)
+ stage_mock(monkeypatch,behavior_ai,fail)
  assert model_job(b,ident,packet,features,cfg)=='failed' and b.view('8.8.8.8')['assessment'] is None
  with b.connect() as d:assert 'private diagnostic' not in json.dumps([dict(r) for r in d.execute('SELECT * FROM assessments')])
 
 def test_expired_success_can_refresh_after_three_analyses(evidence,monkeypatch):
  import behavior_ai
  cfg={**DEFAULTS,'model_enabled':True,'model':'test','endpoint':'https://10.1.1.1','daily_budget':10};b=Brain(evidence);ident,packet,features=b.packet(evidence.describe('8.8.8.8'))
- monkeypatch.setattr(behavior_ai,'infer',lambda *args:(result(packet),{}))
+ stage_mock(monkeypatch,behavior_ai,lambda *args:(result(packet),{}))
  for unused in range(5):
   assert model_job(b,ident,packet,features,cfg)=='completed'
   with b.connect() as d:d.execute("UPDATE assessments SET expires='2020-01-01T00:00:00+00:00'")
@@ -141,13 +142,13 @@ def test_small_gpu_response_is_compact_and_truncation_is_rejected(evidence):
 def test_model_failure_records_token_usage_without_storing_reply(evidence,monkeypatch):
  import behavior_ai
  b=Brain(evidence);ident,packet,features=b.packet(evidence.describe('8.8.8.8'))
- cfg={**DEFAULTS,'model_enabled':True,'model':'test','daily_budget':1}
+ cfg={**DEFAULTS,'model_enabled':True,'model':'test','daily_budget':2}
  def fail(*args):raise behavior_ai.ModelOutputError('output_limit',{'input_tokens':200,'output_tokens':1800})
- monkeypatch.setattr(behavior_ai,'infer',fail)
+ stage_mock(monkeypatch,behavior_ai,fail)
  assert model_job(b,ident,packet,features,cfg)=='failed'
  with b.connect() as db:
   r=db.execute('SELECT result,error FROM assessments').fetchone()
- assert r['error']=='output_limit' and json.loads(r['result'])['metadata']['output_tokens']==1800
+ assert r['error']=='output_limit' and json.loads(r['result'])['metadata']['generation_stages'][1]['output_tokens']==1800
 
 
 def test_inference_separates_current_and_historical_references(evidence):

@@ -42,7 +42,7 @@ def test_metrics_empty_ranges_and_output_render(tmp_path):
             assert len(result['bins']) == count
             assert result['totals']['average_seconds'] is None
             page = render_template('behavior_metrics.html', metrics=result)
-            assert 'No model requests' in page and 'Interval details' in page
+            assert 'No assessments' in page and 'Interval details' in page
             assert page.count('<svg ') == 4
             assert 'NaN' not in page and 'raw JSON' not in page
     with pytest.raises(ValueError):metrics(b, 'invalid')

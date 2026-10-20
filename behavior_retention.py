@@ -114,5 +114,8 @@ def cleanup(brain,cfg,at=None):
    end=min(cut,at.date().isoformat())
    count=db.execute('DELETE FROM '+table+' WHERE rowid IN (SELECT rowid FROM '+table+' WHERE '+column+'<? ORDER BY '+column+' LIMIT ?)',(end,limit)).rowcount
    result['deleted'][table]=count
+  from behavior_pipeline_store import compact
+  cut=(at-dt.timedelta(days=int(cfg.get('assessment_retention_days',DEFAULTS['assessment_retention_days'])))).isoformat(timespec='seconds')
+  result['pipeline_journal']=compact(db,limit,cut)
  result['seconds']=round(time.monotonic()-started,4)
  return result

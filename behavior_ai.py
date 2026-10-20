@@ -2,11 +2,11 @@
 import contextlib,copy,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.28'
-GENERATION_SCHEMA_VERSION='grounded-groups-12'
+PROMPT_VERSION='behavior-3.29'
+GENERATION_SCHEMA_VERSION='account-then-selection-1'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
-DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
+DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','tokenizer_file':'','tokenizer_sha256':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS publication_samples(created TEXT PRIMARY KEY,points REAL NOT NULL,adjusted INTEGER NOT NULL,blocks INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS analysis_counters(hour TEXT NOT NULL,kind TEXT NOT NULL,count INTEGER NOT NULL,PRIMARY KEY(hour,kind));
@@ -54,14 +54,15 @@ def path_shape(value):
 def settings(store):return {**DEFAULTS,**(store.state('behavior_settings') or {})}
 
 def validate_settings(form):
- value={k:form.get(k,'').strip() for k in ('endpoint','model','ca_file')}
+ value={k:form.get(k,'').strip() for k in ('endpoint','model','ca_file','tokenizer_file','tokenizer_sha256')}
  if value['endpoint']:
   u=urllib.parse.urlsplit(value['endpoint'])
   if u.scheme!='https' or not u.hostname or u.username or u.password or u.path not in ('','/') or u.query or u.fragment:raise ValueError('Use an HTTPS model server address without a path or embedded credentials.')
   try:u.port
   except ValueError:raise ValueError('Enter a valid model server port.')
  value['endpoint']=value['endpoint'].rstrip('/')
- if len(value['model'])>120 or len(value['ca_file'])>500:raise ValueError('Model name or certificate path is too long.')
+ if value['tokenizer_sha256'] and not re.fullmatch('[a-f0-9]{64}',value['tokenizer_sha256']):raise ValueError('Enter a valid input metadata SHA256 identity.')
+ if len(value['model'])>120 or len(value['ca_file'])>500 or len(value['tokenizer_file'])>500:raise ValueError('Model name or certificate path is too long.')
  mode=form.get('daily_budget_mode','limited')
  if mode not in ('limited','unlimited'):raise ValueError('Choose a daily model request limit or Unlimited.')
  # JSON null is the explicit Unlimited value; missing mode preserves older finite forms.
@@ -294,7 +295,7 @@ class Brain:
    assessed_current=db.execute("SELECT count(*) FROM current_packets c WHERE EXISTS(SELECT 1 FROM assessments a WHERE a.packet_id=c.packet_id AND a.status='completed' AND a.expires>? AND json_extract(a.result,'$.metadata.prompt_version')=?)",(now(),PROMPT_VERSION)).fetchone()[0]
   cfg=settings(self.store);active=all(cfg.get(k) for k in ('enabled','model_enabled','scoring_enabled'));publication=(self.store.state('latest_build') or {}).get('ai_scoring',{})
   import statistics
-  return {'mode':'pilot' if active else 'shadow','indexed_ips':indexed,'assessments':counts,'similar_relationships':links,'activity_groups':groups,'requests_today':today[0] if today else 0,'daily_budget':cfg['daily_budget'],'current_prompt_unexpired_assessments':assessed_current,'queue_wait_median_hours':round(statistics.median(waits)/3600,2) if waits else None,'queue_wait_samples':len(waits),'pending_analysis':queue[0],'oldest_pending':queue[1],'applied_bump':publication.get('applied_points',0) if active else 0,'active_scoring':active}
+  return {'mode':'pilot' if active else 'shadow','indexed_ips':indexed,'assessments':counts,'similar_relationships':links,'activity_groups':groups,'requests_today':today[0] if today else 0,'daily_budget':cfg['daily_budget'],'current_prompt_unexpired_assessments':assessed_current,'queue_wait_median_hours':round(statistics.median(waits)/3600,2) if waits else None,'queue_wait_samples':len(waits),'pending_analysis':queue[0],'oldest_pending':queue[1],'applied_bump':publication.get('applied_points',0) if active else 0,'active_scoring':active,'pipeline_requests':__import__('behavior_pipeline_store').summary(self)}
 
 def config_id(cfg):return digest({k:v for k,v in cfg.items() if k not in ('batch_size','daily_budget','palo_daily_budget','palo_context_enabled','max_bump','enabled','scoring_enabled',*RETENTION_DEFAULTS)})
 
@@ -417,14 +418,18 @@ def failure_diagnostic(exc,phase,http_status=None):
  return result
 
 
-def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
+def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire=None,_deadline=None,_before_call=None):
  import requests,copy
  from behavior_mapping import select
  registry=select(registry,packet)
  from behavior_generation import prepare_bounded,prompt_json,decode,INSTRUCTION,ChoiceError,parse_wire
  from behavior_grounding import VERSION as GROUNDING_VERSION
- local_endpoint(cfg['endpoint'])
- try:schema,prompt,candidates,preparation_metadata=prepare_bounded(packet,candidates,registry)
+ if _deadline:_deadline.call(lambda:local_endpoint(cfg['endpoint']))
+ else:local_endpoint(cfg['endpoint'])
+ try:
+  if _wire:
+   request=_wire['request'];schema=request['format'];prompt=json.loads(request['messages'][1]['content']);preparation_metadata=copy.deepcopy(_wire['preparation'])
+  else:schema,prompt,candidates,preparation_metadata=prepare_bounded(packet,candidates,registry)
  except ValueError as exc:
   if hasattr(exc,'_edl_failure_metadata'):exc._edl_failure_metadata['failure_diagnostic']=failure_diagnostic(exc,'request_preparation')
   raise
@@ -432,10 +437,23 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
  metadata=copy.deepcopy(preparation_metadata);transport_start=None;transport_state='failed';failure_phase='dispatch';http_status=None
  try:
   call=requester or session.post
-  grounding_instruction=INSTRUCTION
-  if attempt:attempt.start()
-  transport_start=time.monotonic();failure_phase='request_headers'
-  response=call(cfg['endpoint']+'/api/chat',headers={'Authorization':'Bearer '+key},json={'model':cfg['model'],'messages':[{'role':'system','content':grounding_instruction},{'role':'user','content':prompt_json(prompt)}],'stream':True,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}},verify=cfg['ca_file'] or True,timeout=(5,cfg['timeout']),allow_redirects=False,stream=True)
+  if _deadline and requester is None:
+   from behavior_deadline import post
+   call=lambda url,**kw:post(url,deadline=_deadline,admission=cfg['timeout']==180,**kw)
+  request=_wire['request'] if _wire else {'model':cfg['model'],'messages':[{'role':'system','content':INSTRUCTION},{'role':'user','content':prompt_json(prompt)}],'stream':True,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}}
+  def dispatch():
+   nonlocal transport_start
+   if _deadline:_deadline.check()
+   if _before_call:_before_call()
+   if attempt:attempt.start()
+   if _deadline:_deadline.check()
+   transport_start=time.monotonic()
+   headers={'Authorization':'Bearer '+key}
+   if _deadline and cfg['timeout']==180:headers['X-EDL-Admission-Wait']='15'
+   remaining=_deadline.left() if _deadline else cfg['timeout']
+   return call(cfg['endpoint']+'/api/chat',headers=headers,json=request,verify=cfg['ca_file'] or True,timeout=(min(5,remaining),remaining),allow_redirects=False,stream=True)
+  failure_phase='request_headers'
+  response=_deadline.call(dispatch) if _deadline else dispatch()
   http_status=response.status_code
   failure_phase='http_status'
   if http_status!=200:response.close();raise ValueError('Model service rejected the request')
@@ -461,7 +479,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
   try:
    # Read through each complete NDJSON message without application buffering.
    # Timing is receipt of first nonempty message.content, never headers or total duration.
-   for chunk in response.iter_content(1):
+   for chunk in (_deadline.chunks(response) if _deadline else response.iter_content(1)):
     if time.monotonic()-transport_start>cfg['timeout']:raise ValueError('Model response deadline exceeded')
     size+=len(chunk)
     if size>1048576:raise ValueError('Model response exceeds size limit')
@@ -470,7 +488,11 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
      line,body=body.split(b'\n',1)
      if line.strip():consume(line)
     if len(body)>131072:raise ValueError('Model response exceeds size limit')
-  finally:response.close()
+  finally:
+   if _deadline:
+    import threading
+    threading.Thread(target=_deadline.close,args=(response,),daemon=True).start()
+   else:response.close()
   failure_phase='response_envelope'
   if streamed:
    if body.strip():consume(body)
@@ -483,7 +505,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
   def count(name):
    value=envelope.get(name)
    return value if type(value) is int and 0<=value<=10000000 else None
-  metadata={**preparation_metadata,'input_tokens':count('prompt_eval_count'),'output_tokens':count('eval_count'),'model':cfg['model'],'prompt_version':PROMPT_VERSION,'generation_schema_version':GENERATION_SCHEMA_VERSION,'taxonomy_version':registry.get('version','unconfigured'),'taxonomy_registry_sha256':registry.get('registry_sha256'),'taxonomy_rule_version':registry.get('rule_version'),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy unavailable'),'taxonomy_coverage':registry.get('coverage',{}),'historical_windows_supplied':len(candidates),'coverage':packet['coverage']}
+  metadata={**preparation_metadata,'input_tokens':count('prompt_eval_count'),'output_tokens':count('eval_count'),'model':cfg['model'],'prompt_version':PROMPT_VERSION,'generation_schema_version':_wire['version'] if _wire else __import__('behavior_generation').VERSION,'taxonomy_version':registry.get('version','unconfigured'),'taxonomy_registry_sha256':registry.get('registry_sha256'),'taxonomy_rule_version':registry.get('rule_version'),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy unavailable'),'taxonomy_coverage':registry.get('coverage',{}),'historical_windows_supplied':len(candidates),'coverage':packet['coverage']}
   metadata.update(first_content_seconds=first_content if streamed else None,request_seconds=round(time.monotonic()-transport_start,6),first_content_definition='request dispatch to receipt of first nonempty nonfinal (done:false) streamed message.content; final-only content unmeasured; seconds')
   # Preserve actual backend measurements separately from complete request wall
   # time. Missing/invalid fields stay unknown; evaluation is not device/kernel or
@@ -509,9 +531,12 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
    validation_stage='response_schema'
    shape(schema,value)
    validation_stage='generation_choices'
-   value=decode(value,packet,candidates,registry)
+   value=_wire['decode'](value) if _wire else decode(value,packet,candidates,registry)
    validation_stage='evidence_validation'
-   value=validate_result(value,packet,candidates,registry)
+   if not _wire:value=validate_result(value,packet,candidates,registry)
+   if _deadline:_deadline.check()
+   if _wire and metadata['input_tokens'] is not None and metadata['input_tokens']!=_wire['expected_input']:
+    raise ChoiceError('input_context_mismatch','input_token_count')
   except (ValueError,KeyError,TypeError) as exc:
    # Fixed codes and schema-defined paths only: never retain provider text,
    # unexpected keys, rejected labels, citation IDs or exception messages.
@@ -522,7 +547,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
    if isinstance(exc,AssessmentShapeError):diagnostic.update(reason=exc.reason,field=exc.field)
    metadata['validation_diagnostic']=diagnostic
    raise ModelOutputError('invalid_assessment',metadata) from None
-  metadata['taxonomy_mappings']={field:[{'technique_id':item['technique_id'],'name':registry[kind][item['technique_id']],'evidence_ids':item['evidence_ids']} for item in value[field]] for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]}
+  metadata['taxonomy_mappings']={field:[{'technique_id':item['technique_id'],'name':registry[kind][item['technique_id']],'evidence_ids':item['evidence_ids']} for item in value.get(field,[])] for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]}
   transport_state='accepted'
   return value,metadata
  except ModelOutputError as exc:
@@ -544,76 +569,9 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None):
   session.close()
 
 def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
- if should_stop and should_stop():return 'cancelled'
- candidates=(brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else candidates[:1]
- registry_file=pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'
- from behavior_taxonomy import load
- from behavior_mapping import select
- registry=load(registry_file)
- allowed=select(registry,packet)
- cid=config_id(cfg)+'-'+digest([allowed,candidates,VERSION,PROMPT_VERSION,GENERATION_SCHEMA_VERSION]);day=now()[:10];clock=time.time();backoff_key='provider_backoff:'+digest([cfg['endpoint'],cfg['model']])
- from behavior_persistence import directory,location,persist,stage,reserve,resolve_dispatch,review_key
- directory(brain,True)
- pending=location(brain,ident,cid)
- if pending.exists() or pending.is_symlink():
-  saved=persist(brain,pending,should_stop)
-  return 'persistence_review_required' if saved=='lease_lost' else saved
- if review_key(brain,pending).exists():
-  import logging
-  logging.warning('Behavior assessment persistence requires review reason=retained_dispatch_evidence')
-  return 'persistence_review_required'
- if pending.with_suffix('.inflight').exists() or pending.with_suffix('.inflight').is_symlink():
-  import logging
-  status=resolve_dispatch(brain,pending.with_suffix('.inflight'))
-  if status=='persistence_review_required':logging.warning('Behavior assessment persistence requires review reason=dispatch_outcome_unknown')
-  if status is not None:return status
- with brain.connect() as db:
-  db.execute('BEGIN IMMEDIATE')
-  if should_stop and should_stop():return 'cancelled'
-  current=db.execute('SELECT packet_id FROM current_packets WHERE ip=(SELECT ip FROM packets WHERE id=?)',(ident,)).fetchone()
-  if current and current['packet_id']!=ident:return 'superseded_before_request'
-  previous=db.execute('SELECT status,expires FROM assessments WHERE packet_id=? AND config_id=? ORDER BY created DESC,rowid DESC LIMIT 1',(ident,cid)).fetchone()
-  if previous and previous['expires']>now():
-   db.execute("INSERT INTO analysis_counters VALUES(?,'cached',1) ON CONFLICT(hour,kind) DO UPDATE SET count=count+1",(now(),));return 'cached'
-  backoff=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
-  if backoff and json.loads(backoff[0])['until']>clock:return 'backoff'
-  job=db.execute('SELECT * FROM jobs WHERE packet_id=? AND config_id=?',(ident,cid)).fetchone()
-  if job and job['lease']>clock:return 'leased_or_exhausted'
-  if job and job['attempts']>=3:
-   # Successful assessments may refresh indefinitely; failed work gets a bounded daily retry.
-   if job['state']=='completed' or job['updated'][:10]!=day:
-    db.execute('UPDATE jobs SET attempts=0 WHERE id=?',(job['id'],))
-   else:return 'leased_or_exhausted'
-  used=db.execute('SELECT requests FROM usage WHERE day=?',(day,)).fetchone()
-  if cfg['daily_budget'] is not None and used and used[0]>=cfg['daily_budget']:return 'budget'
-  db.execute('INSERT INTO usage VALUES(?,1) ON CONFLICT(day) DO UPDATE SET requests=requests+1',(day,))
-  owner=str(uuid.uuid4())
-  db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?) ON CONFLICT(packet_id,config_id) DO UPDATE SET id=excluded.id,state=excluded.state,lease=excluded.lease,attempts=jobs.attempts+1,updated=excluded.updated',(owner,ident,cid,'running',clock+cfg['timeout']+30,1,now()))
- from analytics_store import Attempt
- attempt=Attempt(brain.store,ident);assessment_id=str(uuid.uuid4())
- reserve(brain,ident,cid,owner,assessment_id,attempt.id)
- secret=pathlib.Path(brain.store.path).parent/'behavior-provider.json'
- failure_phase='provider_configuration'
- try:
-  key=json.loads(secret.read_text()).get('key','') if secret.exists() else ''
-  failure_phase='request_preparation'
-  result,metadata=infer(cfg,packet,candidates,allowed,key,None,attempt)
-  # Legacy preassembly references retain packets even when the wire budget omits them.
-  # Actual wire provenance is separately returned by infer; cache/job IDs stay preassembly.
-  result={**result,'metadata':{**metadata,'supplied_packet_ids':[ident]+[c['candidate_id'] for c in candidates]}};status='completed';error='';hours=cfg['assessment_hours']
- except Exception as exc:
-  metadata=exc.metadata if isinstance(exc,ModelOutputError) else getattr(exc,'_edl_failure_metadata',None)
-  if metadata is None:metadata={'failure_diagnostic':failure_diagnostic(exc,failure_phase)}
-  result={'metadata':metadata};status='failed';error=exc.code if isinstance(exc,ModelOutputError) else type(exc).__name__;hours=1
- created=now();expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=hours)).isoformat(timespec='seconds')
- outcome={'version':1,'row':[assessment_id,ident,cid,created,expires,status,json.dumps(result),error,round(time.time()-clock,3)],'owner':owner,'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
- pending=stage(brain,outcome)
- saved=persist(brain,pending,should_stop)
- if saved=='persistence_deferred':return saved
- status=saved
- from behavior_telemetry import recover
- recover(brain)
- return status
+ from behavior_pipeline_job import run
+ return run(brain,ident,packet,features,cfg,candidates,should_stop)
+
 
 def drain_queue(brain,store,cfg,retrieved=None,should_stop=None,refresh_index=None):
  """Drain in scheduler pages; page bounds are memory/query bounds, not quotas."""
@@ -644,13 +602,13 @@ def drain_queue(brain,store,cfg,retrieved=None,should_stop=None,refresh_index=No
    status=model_job(brain,queued['packet_id'],packet,set(json.loads(queued['features'])),cfg,candidates=retrieved.get(queued['packet_id']),should_stop=stopped) if fresh else 'stale_evidence'
    results[status]=results.get(status,0)+1;examined+=1
    if status in ('budget','backoff','cancelled','persistence_deferred'):return results,examined,status
-   if status in ('leased_or_exhausted','lease_lost','superseded_before_request','persistence_review_required'):
+   if status in ('leased_or_exhausted','lease_lost','superseded_before_request','persistence_review_required','pipeline_review_required','input_verification_required','provider_configuration_required'):
     skipped.add((queued['ip'],queued['packet_id']))
    else:
     with brain.connect() as db:
      db.execute('DELETE FROM analysis_queue WHERE ip=? AND packet_id=?',(queued['ip'],queued['original_packet_id']))
      db.execute('INSERT INTO queue_samples(created,wait_seconds,status) VALUES(?,?,?)',(now(),waiting,status))
-   if status not in ('cached','leased_or_exhausted','stale_evidence','superseded_before_request','persistence_review_required'):calls+=1
+   if status not in ('cached','leased_or_exhausted','stale_evidence','superseded_before_request','persistence_review_required'):calls+=getattr(status,'request_units',1)
   # Unlimited immediately takes another page, including work beyond blocked rows.
   if cfg['daily_budget'] is not None:return results,examined,'finite_page_complete'
 

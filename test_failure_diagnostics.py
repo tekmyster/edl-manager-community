@@ -92,21 +92,25 @@ def test_job_failure_persists_observed_receipt_preserves_history_and_backoff(job
   db.execute("INSERT INTO assessments VALUES('old','historic','old','2020','2021','failed','{}','ValueError',2)")
   old=tuple(db.execute("SELECT * FROM assessments WHERE id='old'").fetchone())
  def send(*a,**kw):calls.append(1);return Response(502)
- monkeypatch.setattr(requests.Session,'post',send)
- assert ai.model_job(brain,ident,packet,features,cfg)=='failed'
+ import behavior_tokens
+ from behavior_pipeline_job import run
+ from test_pipeline_support import SyntheticCounter
+ monkeypatch.setattr(behavior_tokens,'load',lambda cfg:SyntheticCounter());monkeypatch.setattr(ai,'local_endpoint',lambda _:None)
+ assert run(brain,ident,packet,features,cfg,requester=send)=='failed'
  with brain.connect() as db:
   rows=db.execute('SELECT * FROM assessments ORDER BY rowid').fetchall();assert tuple(rows[0])==old
   row=rows[-1];saved=json.loads(row['result'])['metadata'];assert row['error']=='ValueError'
-  assert saved['failure_diagnostic']['http_status']==502 and saved['request_id']
+  request_id=saved['generation_stages'][0]['request_id']
+  assert saved['failure_diagnostic']['http_status']==502 and request_id
   guard=json.loads(db.execute("SELECT value FROM retention_state WHERE name LIKE 'provider_backoff:%'").fetchone()[0]);assert guard['failures']==1
  with ledger(store) as db:
-  attempts=db.execute('SELECT * FROM requests').fetchall();assert len(attempts)==1 and attempts[0]['id']==saved['request_id']
- assert ai.model_job(brain,ident,packet,features,cfg)=='cached' and calls==[1]
+  attempts=db.execute('SELECT * FROM requests').fetchall();assert len(attempts)==1 and attempts[0]['id']==request_id
+ assert run(brain,ident,packet,features,cfg,requester=send)=='persistence_review_required' and calls==[1]
  with brain.connect() as db:db.execute("UPDATE assessments SET expires='2020' WHERE id!='old'")
- assert ai.model_job(brain,ident,packet,features,cfg)=='backoff' and calls==[1]
+ assert run(brain,ident,packet,features,cfg,requester=send)=='persistence_review_required' and calls==[1]
  after=store.describe('8.8.8.8');assert before['score']==after['score'] and before['retention']==after['retention']
  assert cfg['daily_budget'] is None and ai.DEFAULTS['daily_budget']==24
- assert ai.PROMPT_VERSION=='behavior-3.28'
+ assert ai.PROMPT_VERSION=='behavior-3.29'
 
 
 def test_predispatch_failure_has_no_fabricated_receipt(job,monkeypatch):
@@ -114,9 +118,10 @@ def test_predispatch_failure_has_no_fabricated_receipt(job,monkeypatch):
  def no_prepare(*a,**kw):raise ValueError('PRIVATE-PREPARE')
  monkeypatch.setattr('behavior_generation.prepare',no_prepare)
  monkeypatch.setattr(requests.Session,'post',lambda *a,**kw:pytest.fail('No dispatch allowed'))
- assert ai.model_job(brain,ident,packet,features,cfg)=='failed'
- with brain.connect() as db:saved=json.loads(db.execute('SELECT result FROM assessments').fetchone()[0])['metadata']
- assert saved=={'failure_diagnostic':{'phase':'request_preparation','category':'local_error'}}
+ assert ai.model_job(brain,ident,packet,features,cfg)=='input_verification_required'
+ with brain.connect() as db:
+  assert db.execute('SELECT count(*) FROM assessments').fetchone()[0]==0
+  assert db.execute('SELECT count(*) FROM usage').fetchone()[0]==0
  assert not (Path(store.path).parent/'analytics.sqlite3').exists()
 
 

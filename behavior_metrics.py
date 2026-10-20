@@ -46,13 +46,22 @@ def metrics(brain, period='24h', at=None):
             if status == 'completed':
                 success_times.append(elapsed)
         metadata = value.get('metadata', {}) if isinstance(value, dict) else {}
-        pair = (metadata.get('input_tokens'), metadata.get('output_tokens'))
-        if all(type(n) is int and n >= 0 for n in pair):
-            bucket['input'] += pair[0]
-            bucket['output'] += pair[1]
-            bucket['known_tokens'] += 1
-        else:
-            bucket['unknown_tokens'] += 1
+        stages=metadata.get('generation_stages')
+        records=stages[:2] if isinstance(stages,list) else [metadata]
+        for report in records:
+            if not isinstance(report,dict) or isinstance(stages,list) and not report.get('request_started_at'):continue
+            token_bucket=bucket
+            if isinstance(stages,list):
+                try:
+                    report_index=int((dt.datetime.fromisoformat(report['request_finished_at'])-start).total_seconds()//seconds)
+                except (KeyError,ValueError,TypeError):
+                    bucket['unknown_tokens']+=1;continue
+                if not 0<=report_index<count:continue
+                token_bucket=bins[report_index]
+            pair=(report.get('input_tokens'),report.get('output_tokens'))
+            if all(type(n) is int and n >= 0 for n in pair):
+                token_bucket['input']+=pair[0];token_bucket['output']+=pair[1];token_bucket['known_tokens']+=1
+            else:token_bucket['unknown_tokens']+=1
         model = metadata.get('model')
         if isinstance(model, str):
             models.add(model[:120])

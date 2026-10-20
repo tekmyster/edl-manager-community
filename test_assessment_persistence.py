@@ -1,4 +1,5 @@
 """Isolated real SQLite result-save contention; no network or production writes."""
+from test_pipeline_mock import stage_mock
 import contextlib,json,os,pathlib,sqlite3,threading,time,subprocess,sys
 import pytest
 import behavior_ai as ai
@@ -35,9 +36,15 @@ def fake(monkeypatch,b,after=None):
  def infer(cfg,p,candidates,allowed,key,requester,attempt):
   calls.append(1);assert len(calls)==1,'Persistence redispatched inference'
   assert attempt.start();meta={'request_id':attempt.id,'input_tokens':23,'output_tokens':7,'request_seconds':.4,'first_content_seconds':.1};assert attempt.finish('accepted',meta)
-  if after:after()
   return example(p),meta
- monkeypatch.setattr(ai,'infer',infer)
+ def journal_ready():
+  # Explicitly retain coverage for a legacy dispatch marker alongside the new
+  # SQLite journal. New production dispatches never create this marker.
+  with b.connect() as db:
+   plan=db.execute('SELECT * FROM pipeline_plans ORDER BY rowid DESC LIMIT 1').fetchone();request=db.execute('SELECT request_id FROM pipeline_stages WHERE parent=? AND ordinal=2',(plan['id'],)).fetchone()[0]
+  pending.reserve(b,plan['packet'],plan['config'],plan['owner'],plan['assessment'],request)
+  if after:after()
+ stage_mock(monkeypatch,ai,infer,before_persist=journal_ready)
  return calls
 
 
@@ -47,10 +54,10 @@ def files(b):return list(pending.directory(b).glob('*.json'))
 def verify_once(b,calls):
  rows=records(b);assert len(rows['assessments'])==1 and rows['assessments'][0][5]=='completed'
  assert rows['jobs'][0][3]=='completed' and rows['jobs'][0][4]==0 and rows['jobs'][0][5]==1
- assert rows['usage'][0][1]==1 and calls==[1]
+ assert rows['usage'][0][1]==2 and calls==[1]
  with ledger.connect(b.store) as db:
-  actual=list(db.execute('SELECT * FROM requests'));assert len(actual)==1 and actual[0]['state']=='accepted'
-  meta=json.loads(rows['assessments'][0][6])['metadata'];assert actual[0]['id']==meta['request_id'] and actual[0]['input_tokens']==23 and actual[0]['output_tokens']==7
+  actual=list(db.execute('SELECT * FROM requests'));assert len(actual)==2 and all(r['state']=='accepted' for r in actual)
+  meta=json.loads(rows['assessments'][0][6])['metadata']['generation_stages'][1];assert actual[1]['id']==meta['request_id'] and actual[1]['input_tokens']==23 and actual[1]['output_tokens']==7
  return rows
 
 
@@ -58,7 +65,7 @@ def test_held_writer_preserves_result_and_fresh_process_saves_without_inference(
  s,b,cfg=queue(tmp_path,1);held=[];calls=fake(monkeypatch,b,lambda:held.append(Holder(b.path,['BEGIN IMMEDIATE'])))
  try:
   start=time.monotonic();assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_deferred';assert time.monotonic()-start<1.2
-  saved=pending.read(files(b)[0]);assert records(b)['assessments']==[] and records(b)['usage'][0][1]==1 and records(b)['jobs'][0][3]=='running'
+  saved=pending.read(files(b)[0]);assert records(b)['assessments']==[] and records(b)['usage'][0][1]==2 and records(b)['jobs'][0][3]=='running'
   assert 'sqlite_code=5' in caplog.text and saved['row'][0] not in caplog.text
   if os.name=='posix':assert files(b)[0].stat().st_mode&0o777==0o600 and pending.directory(b).stat().st_mode&0o777==0o700
  finally:
@@ -129,7 +136,7 @@ def test_permanent_partial_save_failure_visible_and_replayable(tmp_path,monkeypa
  s,b,cfg=queue(tmp_path,1)
  with b.connect() as db:db.execute("CREATE TRIGGER isolated_save_failure AFTER INSERT ON assessments BEGIN SELECT RAISE(ABORT,'private canary'); END")
  calls=fake(monkeypatch,b)
- with pytest.raises(sqlite3.IntegrityError):ai.model_job(b,'packet0',packet(b),set(),cfg)
+ assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required'
  assert records(b)['assessments']==[] and records(b)['jobs'][0][3]=='running' and len(files(b))==1
  with b.connect() as db:db.execute('DROP TRIGGER isolated_save_failure')
  assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='completed';verify_once(b,calls)
@@ -142,7 +149,7 @@ def test_crash_after_commit_before_unlink_replays_identical_id_once(tmp_path,mon
   return original(self,*args,**kw)
  with monkeypatch.context() as patch:
   patch.setattr(pathlib.Path,'unlink',unlink)
-  with pytest.raises(OSError):ai.model_job(b,'packet0',packet(b),set(),cfg)
+  assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required'
  before=verify_once(b,calls);assert len(files(b))==1
  assert pending.recover(b)['saved']==1 and records(b)==before and not files(b)
 
@@ -202,8 +209,8 @@ def test_corrupt_pending_result_stays_visible_without_new_request(tmp_path,monke
  finally:
   for h in held:h.close()
  files(b)[0].write_text('{incomplete')
- with pytest.raises(ValueError):ai.model_job(b,'packet0',packet(b),set(),cfg)
- assert calls==[1] and records(b)['assessments']==[] and records(b)['usage'][0][1]==1
+ assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='failed'
+ assert calls==[1] and records(b)['assessments']==[] and records(b)['usage'][0][1]==2
 
 
 def test_journal_recovery_page_is_bounded(tmp_path):
@@ -243,23 +250,21 @@ def test_cursor_commit_busy_keeps_committed_ledger_count_and_replays_once(tmp_pa
 
 
 def test_actual_readonly_database_keeps_result_and_does_not_redispatch(tmp_path,monkeypatch):
- s,b,cfg=queue(tmp_path,1);calls=fake(monkeypatch,b);original=sqlite3.connect
+ s,b,cfg=queue(tmp_path,1);original=sqlite3.connect
  def connect(*args,**kw):
   if str(args[0])==str(b.path) and kw.get('timeout')==.025:args=(b.path.resolve().as_uri()+'?mode=ro',*args[1:]);kw['uri']=True
   return original(*args,**kw)
  with monkeypatch.context() as patch:
-  patch.setattr(sqlite3,'connect',connect)
-  with pytest.raises(sqlite3.OperationalError) as exc:ai.model_job(b,'packet0',packet(b),set(),cfg)
-  assert exc.value.sqlite_errorcode==sqlite3.SQLITE_READONLY
+  calls=fake(monkeypatch,b,lambda:patch.setattr(sqlite3,'connect',connect))
+  assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required'
  assert len(files(b))==1 and not records(b)['assessments']
  assert pending.recover(b)['saved']==1;verify_once(b,calls)
 
 
 def test_busy_logging_never_includes_validated_assessment_text(tmp_path,monkeypatch,caplog):
  s,b,cfg=queue(tmp_path,1);held=[]
- def infer(cfg,p,*args):
-  value=example(p);value['summary']='private assessment canary';held.append(Holder(b.path,['BEGIN IMMEDIATE']));return value,{}
- monkeypatch.setattr(ai,'infer',infer)
+ def infer(cfg,p,*args):return example(p),{'safe_fixture_marker':'private assessment canary'}
+ stage_mock(monkeypatch,ai,infer,before_persist=lambda:held.append(Holder(b.path,['BEGIN IMMEDIATE'])))
  try:assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_deferred'
  finally:
   for h in held:h.close()
@@ -282,16 +287,12 @@ def test_result_journal_disk_failure_retains_dispatch_intent_without_repeat(tmp_
  def fail(*args):raise OSError('isolated disk failure')
  with monkeypatch.context() as patch:
   patch.setattr(pending,'stage',fail)
-  with pytest.raises(OSError):ai.model_job(b,'packet0',packet(b),set(),cfg)
- markers=list(pending.directory(b).glob('*.inflight'));assert len(markers)==1 and not files(b)
- marker=json.loads(markers[0].read_text())
- with ledger.connect(b.store) as db:assert db.execute('SELECT state FROM requests WHERE id=?',(marker['request'],)).fetchone()[0]=='accepted'
- assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='leased_or_exhausted' and calls==[1]
- with b.connect() as db:db.execute('UPDATE jobs SET lease=0')
- assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required' and calls==[1]
- assert pending.recover(b)['uncertain_dispatches']==1 and records(b)['assessments']==[]
- assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required' and calls==[1]
- assert marker['request'] not in caplog.text
+  assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_review_required'
+ assert not files(b)
+ with b.connect() as db:assert db.execute('SELECT state FROM pipeline_plans').fetchone()[0]=='final_pending'
+ assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='completed' and calls==[1]
+ assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='cached' and calls==[1]
+ verify_once(b,calls)
 
 
 def test_commit_surviving_dispatch_marker_resolves_without_repeat(tmp_path,monkeypatch):
@@ -300,7 +301,8 @@ def test_commit_surviving_dispatch_marker_resolves_without_repeat(tmp_path,monke
   p=next(pending.directory(b).glob('*.inflight'));saved.append((p,p.read_bytes()))
  calls=fake(monkeypatch,b,after);assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='completed';before=verify_once(b,calls)
  saved[0][0].write_bytes(saved[0][1])
- assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='completed' and records(b)==before and not saved[0][0].exists()
+ assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='cached' and records(b)==before
+ assert pending.recover(b)['dispatch_markers_scanned']==1 and not saved[0][0].exists()
 
 
 def test_uncertain_dispatch_skips_only_its_packet_and_keeps_other_work(tmp_path,monkeypatch):
@@ -309,10 +311,10 @@ def test_uncertain_dispatch_skips_only_its_packet_and_keeps_other_work(tmp_path,
   calls.append(p['packet_id']);attempt.start()
   if p['packet_id']=='packet0':raise KeyboardInterrupt()
   meta={'request_id':attempt.id};attempt.finish('accepted',meta);return example(p),meta
- monkeypatch.setattr(ai,'infer',infer)
+ stage_mock(monkeypatch,ai,infer)
  with pytest.raises(KeyboardInterrupt):ai.model_job(b,'packet0',packet(b),set(),cfg)
  with b.connect() as db:db.execute('UPDATE jobs SET lease=0')
- assert pending.recover(b)['uncertain_dispatches']==1
+ with b.connect() as db:assert db.execute('SELECT state FROM pipeline_plans').fetchone()[0]=='uncertain'
  results,examined,reason=ai.drain_queue(b,s,cfg)
  assert reason=='idle' and results=={'persistence_review_required':1,'completed':1} and calls==['packet0','packet1']
  with b.connect() as db:assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==1

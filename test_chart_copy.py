@@ -65,7 +65,7 @@ def test_default_chart_surfaces_are_concise_and_methodology_remains_disclosed(ui
             assert 'nat' in text and '35 days' in text
             assert 'Overall usefulness: unavailable' in scope.text()
             assert 'partial' in scope.text().lower() and 'uncollected' in scope.text().lower()
-        if route=='/behavior/metrics':assert 'full request' in text and 'not establish accuracy' in text
+        if route=='/behavior/metrics':assert 'whole-assessment' in text and 'not establish accuracy' in text
 
 
 def test_first_content_unknowns_and_read_failures_remain_visible(ui):
@@ -87,7 +87,7 @@ def test_performance_intervals_keep_keyboard_values_units_and_equivalent_table(u
     page=fetch(c,'/behavior/metrics');points=[n for n in page.root.walk() if n.attrs.get('data-tip')]
     assert len(points)==96 and all(n.attrs.get('tabindex')=='0' and n.attrs.get('role')=='img' for n in points)
     assert any('Input 11; output 7 tokens' in n.attrs['data-tip'] for n in points)
-    assert any('Mean full response 3.0 seconds' in n.attrs['data-tip'] for n in points)
+    assert any('Mean assessment time 3.0 seconds' in n.attrs['data-tip'] for n in points)
     assert any('Unavailable' in n.attrs['data-tip'] for n in points)
     table=next(n for n in page.root.walk() if n.attrs.get('id')=='metrics-intervals')
     assert len([n for n in table.walk() if n.tag=='tr'])==25

@@ -1,4 +1,5 @@
 """Synthetic transport checks of bounded diagnostics; never measured inference."""
+from test_pipeline_mock import stage_mock
 import json,pytest
 from behavior_ai import DEFAULTS,infer,ModelOutputError
 from test_behavior_backend_telemetry import request_fixture
@@ -44,9 +45,10 @@ def test_model_job_persists_diagnostic_as_failure_without_verdict(tmp_path,monke
  b=behavior_ai.Brain(s);ident,packet,features=b.packet(s.describe('8.8.8.8'));before=s.describe('8.8.8.8')
  diagnostic={'stage':'response_schema','reason':'label_or_enum','field':'classification'}
  def reject(*a,**kw):raise ModelOutputError('invalid_assessment',{'validation_diagnostic':diagnostic})
- monkeypatch.setattr(behavior_ai,'infer',reject)
+ stage_mock(monkeypatch,behavior_ai,reject)
  assert behavior_ai.model_job(b,ident,packet,features,{**DEFAULTS,'model_enabled':True,'endpoint':'https://127.0.0.1','model':'test'})=='failed'
  with b.connect() as db:row=db.execute('SELECT status,error,result FROM assessments').fetchone()
  assert row['status']=='failed' and row['error']=='invalid_assessment'
- assert json.loads(row['result'])=={'metadata':{'validation_diagnostic':diagnostic}}
+ saved=json.loads(row['result']);assert set(saved)=={'metadata'} and saved['metadata']['validation_diagnostic']==diagnostic
+ assert len(saved['metadata']['generation_stages'])==2 and saved['metadata']['input_tokens'] is None
  after=s.describe('8.8.8.8');assert before['score']==after['score'] and before['retention']==after['retention']

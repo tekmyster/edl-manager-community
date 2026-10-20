@@ -37,6 +37,20 @@ def receipt(row):
     return (ident,row['packet_id'],start,finish,state,number('first_content_seconds'),
             number('input_tokens',True),number('output_tokens',True),number('request_seconds'))
 
+def receipts(row):
+    try:meta=json.loads(row['metadata'] or '{}')
+    except (ValueError,TypeError):return []
+    if 'generation_stages' not in meta:
+        value=receipt(row);return [value] if value else []
+    stages=meta['generation_stages']
+    if not isinstance(stages,list) or len(stages)>2:return []
+    result=[];seen=set()
+    for stage in stages:
+        if not isinstance(stage,dict):continue
+        item=receipt({**dict(row),'metadata':json.dumps(stage)})
+        if item and item[0] not in seen:result.append(item);seen.add(item[0])
+    return result
+
 
 def recover(brain,limit=50):
     """At most 50 rows; independent short ledger/cursor transactions.
@@ -66,7 +80,7 @@ def recover(brain,limit=50):
         saved_cursor,rows=retry_busy(load)
         result['scanned']=len(rows)
         if not rows:return result
-        values=[(row,v) for row in rows if (v:=receipt(row))]
+        values=[(row,v) for row in rows for v in receipts(row)]
         if values:
             phase='ledger_write'
             def persist(db):

@@ -1,3 +1,4 @@
+from test_pipeline_mock import stage_mock
 import datetime as dt,json,sqlite3
 import pytest
 from core import Store,now
@@ -130,13 +131,15 @@ def test_investigation_hold_requires_auth_csrf_and_renders_limits(tmp_path):
 
 def test_provider_failure_backs_off_other_packets_without_consuming_quota(tmp_path,monkeypatch):
  import behavior_ai
- s=Store(tmp_path/'native');b=Brain(s)
- with b.connect() as db:packet(db,'one');packet(db,'two')
- cfg={**DEFAULTS,'model':'test'}
- monkeypatch.setattr(behavior_ai,'infer',lambda *a:(_ for _ in ()).throw(TimeoutError()))
- assert model_job(b,'one',{'events':[]},set(),cfg)=='failed'
- assert model_job(b,'two',{'events':[]},set(),cfg)=='backoff'
- with b.connect() as db:assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
+ from test_pipeline_support import setup,close
+ s,b,cfg,packets=setup(tmp_path/'native',budget=24,count=2)
+ stage_mock(monkeypatch,behavior_ai,lambda *a:(_ for _ in ()).throw(TimeoutError()))
+ try:
+  assert model_job(b,packets[0]['packet_id'],packets[0],set(),cfg)=='failed'
+  assert model_job(b,packets[1]['packet_id'],packets[1],set(),cfg)=='backoff'
+  with b.connect() as db:assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
+ finally:close(s)
+
 
 def test_queue_drains_oldest_first_even_when_indexing_moves_on(tmp_path,monkeypatch):
  import behavior_ai

@@ -1,4 +1,5 @@
 """Lossless wire input, byte boundaries and persisted provenance; no model calls."""
+from test_pipeline_mock import stage_mock
 import copy,json
 import pytest
 import behavior_ai as ai
@@ -153,33 +154,21 @@ def test_omitted_candidate_is_not_available_to_decoder_even_when_preassembly_ref
  assert caught.value.metadata['input_preparation']['omission_reason']=='candidate_exceeds_input_limit'
 
 
-def test_saved_preassembly_refs_survive_wire_omission_cache_and_lease(tmp_path,monkeypatch):
+def test_complete_history_overflow_refuses_before_claim_without_withholding(tmp_path,monkeypatch):
  from test_behavior_drain import queue
- from test_behavior_retention import packet,hold,sweep
- from behavior_mapping import select
+ from test_behavior_retention import packet
  s,b,cfg=queue(tmp_path,1);p,c=legacy_overbudget_pair();p['packet_id']='packet0';c['padding']+='x'*100
  calls=[]
- def offline_infer(cfg,p,candidates,allowed,key,requester,attempt):
-  assert attempt.start();wire=gen.example(p,[],allowed)
-  (value,meta),sent=transport(p,wire,candidates,allowed);calls.extend(sent)
-  assert attempt.finish('accepted',meta);return value,meta
- monkeypatch.setattr(ai,'infer',offline_infer)
+ stage_mock(monkeypatch,ai,lambda *a:(calls.append(1),{}))
  with b.connect() as db:
   db.execute("UPDATE packets SET content=? WHERE id='packet0'",(json.dumps(p),));packet(db,'peer')
- cid=ai.config_id(cfg)+'-'+ai.digest([select({'version':'unavailable','attack':{},'d3fend':{}},p),[c],ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION])
- assert ai.model_job(b,'packet0',p,set(),cfg,[c])=='completed'
+ assert ai.model_job(b,'packet0',p,set(),cfg,[c])=='input_verification_required'
  with b.connect() as db:
-  row=db.execute('SELECT * FROM assessments').fetchone();meta=json.loads(row['result'])['metadata']
-  assert row['config_id']==cid and meta['supplied_packet_ids']==['packet0','peer'] and meta['wire_packet_ids']==['packet0']
-  assert meta['wire_candidate_ids']==[] and meta['input_preparation']['omission_reason']=='candidate_exceeds_input_limit'
-  assert {r[0] for r in db.execute("SELECT packet_id FROM retention_refs WHERE kind='assessment'")}=={'packet0','peer'}
-  job=db.execute('SELECT * FROM jobs').fetchone();assert job['state']=='completed' and job['lease']==0 and job['attempts']==1
- assert ai.model_job(b,'packet0',p,set(),cfg,[c])=='cached' and len(calls)==1
- with b.connect() as db:
-  db.execute("UPDATE assessments SET expires='2020'");db.execute("UPDATE jobs SET state='running',lease=?,attempts=2",(ai.time.time()+100,))
- assert ai.model_job(b,'packet0',p,set(),cfg,[c])=='leased_or_exhausted' and len(calls)==1
- hold(b,'assessment',row['id'],'offline retention check');sweep(b)
- with b.connect() as db:assert db.execute("SELECT 1 FROM packets WHERE id='peer'").fetchone()
+  assert db.execute('SELECT count(*) FROM assessments').fetchone()[0]==0
+  assert db.execute('SELECT count(*) FROM usage').fetchone()[0]==0
+  assert db.execute('SELECT count(*) FROM pipeline_stages').fetchone()[0]==0
+  assert db.execute("SELECT 1 FROM packets WHERE id='peer'").fetchone()
+ assert calls==[]
 
 
 def test_protocol_change_deliberately_changes_job_identity_not_settings_or_candidate_references(monkeypatch):

@@ -1,6 +1,7 @@
 """Prompt-only factual-coverage experiment; mocked outputs do not measure utility."""
+from test_pipeline_mock import stage_mock
 from test_generation_fixtures import decision
-import copy
+import copy,json
 import pytest
 import behavior_ai as ai
 import behavior_generation as gen
@@ -22,7 +23,7 @@ def test_neutral_preference_keeps_all_omit_unknown_and_inconclusive_valid():
  assert result['classification']=='inconclusive'
  assert result['automation']==result['intent']=={'classification':'unknown','confidence':0}
  ai.validate_result(result,packet,[],{})
- assert metadata['prompt_version']=='behavior-3.28'
+ assert metadata['prompt_version']=='behavior-3.29'
  assert metadata['generation_schema_version']==gen.VERSION=='grounded-groups-12'
  assert requests[0]['messages'][0]['content']==gen.INSTRUCTION
 
@@ -50,19 +51,18 @@ def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monke
  def fake(*args):
   calls.append(ai.PROMPT_VERSION)
   return result(packet),{'prompt_version':ai.PROMPT_VERSION,'generation_schema_version':ai.GENERATION_SCHEMA_VERSION}
- monkeypatch.setattr(ai,'infer',fake)
+ stage_mock(monkeypatch,ai,fake)
  cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':None}
- monkeypatch.setattr(ai,'PROMPT_VERSION',old_version)
- assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  with brain.connect() as db:
+  historical=result(packet);historical['metadata']={'prompt_version':old_version,'generation_schema_version':'grounded-groups-12'}
+  db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',('old-assessment',ident,'old-'+old_version,now(),'2099','completed',json.dumps(historical),'',.1))
   old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.28')
- assert ai.GENERATION_SCHEMA_VERSION=='grounded-groups-12'
+ assert ai.PROMPT_VERSION=='behavior-3.29' and ai.GENERATION_SCHEMA_VERSION=='account-then-selection-1'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='cached'
  with brain.connect() as db:
   rows=[tuple(row) for row in db.execute('SELECT * FROM assessments')]
- assert old in rows and len(rows)==2 and calls==[old_version,'behavior-3.28']
+ assert old in rows and len(rows)==2 and calls==['behavior-3.29']
  assert len({row[2] for row in rows})==2
  native_after=store.describe('8.8.8.8')
  assert native_before['score']==native_after['score'] and native_before['retention']==native_after['retention']

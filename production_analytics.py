@@ -83,9 +83,18 @@ def summary(brain, timezone='UTC', at=None, *, include_providers=True):
     for r in rows:
         result=json.loads(r['result']);v=result.get('metadata',{})
         if r['status']=='completed' and parse(r['created'])>=start:classifications[result.get('classification','unknown')]+=1
-        if v.get('request_id') in ledger_ids:continue
-        historical+=1
-        token_records.append((r['created'],v.get('input_tokens'),v.get('output_tokens')))
+        stages=v.get('generation_stages')
+        if isinstance(stages,list):
+            # Per-stage receipts fill only missing ledger history. The aggregate
+            # pipeline metadata is never a third request or token report.
+            for stage in stages[:2]:
+                if not isinstance(stage,dict) or stage.get('request_id') in ledger_ids or not parse(stage.get('request_started_at')):continue
+                historical+=1
+                token_records.append((stage.get('request_finished_at') or r['created'],stage.get('input_tokens'),stage.get('output_tokens')))
+        else:
+            if v.get('request_id') in ledger_ids:continue
+            historical+=1
+            token_records.append((r['created'],v.get('input_tokens'),v.get('output_tokens')))
     token_records += [(r['finished'],r['input_tokens'],r['output_tokens']) for r in attempts if r['finished']]
     # Saved assessment time is an explicit legacy token-time proxy, never an
     # invented exact transport finish. Future queries still mask later outcomes.
