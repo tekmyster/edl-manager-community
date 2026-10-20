@@ -67,6 +67,34 @@ def offers(packet,candidates,registry):
     support.append(list(pair));break
  return tables,{'classifications':c['classifications'],'malicious_support_pairs':support,'support_coverage':c['support_coverage'],'available_facts':c['available_facts'],'offered_facts':c['offered_facts'],'selection_bounds':{k:len(tables[k]) for k in SELECTION_BOUNDS},'relation_pairs_examined':examined,'relation_pair_bound':64,'available_relations':len(relations),'offered_relations':len(tables['relations']),'relation_choice_bound':MAX_RELATIONS}
 
+RECORD_FIELDS=('seen','source','sensor','action','method','path','status','port','client_type','client_claim.label','parameter_names','destination.scope','destination.asset_id','destination.address','source_observation.semantic','source_observation.syntax_categories','source_observation.connection_id','source_observation.lookup_status','provider','classification','verified','cache_fresh','observation_fresh','expires')
+RECORD_DETAIL_DEFINITION='record_fields and record_provenance align with evidence_ids in order. Fields are nonempty allowlisted paths in the cited original record, not fields necessarily printed by summary. Provenance is the supplied sample/summary detail, not verification or a usefulness/intent/truth rating. Field presence can include unknown values and is not a detail-quality rating. Null means unavailable or ambiguous. Selecting a role still emits only the fixed summary and its citations.'
+
+def observation_records(fact,records):
+ """Wire-only field names; never copy values or assign a relevance rating."""
+ fields=[];provenance=[]
+ for ident in fact['evidence_ids']:
+  matches=records.get(ident,[]);record=matches[0] if len(matches)==1 else None
+  names=None;detail=None
+  if record is not None:
+   names=[]
+   for path in RECORD_FIELDS:
+    value=record
+    for part in path.split('.'):value=value.get(part) if isinstance(value,dict) else None
+    if value is not None and value!='' and value!=[] and value!={}:names.append(path)
+   supplied=record.get('provenance')
+   detail=supplied.get('detail') if isinstance(supplied,dict) else None
+   if detail not in ('sample','summary'):detail=None
+  fields.append(names);provenance.append(detail)
+ return {'record_fields':fields,'record_provenance':provenance}
+
+def without_observation_records(prompt):
+ """Only for byte-admission diagnostics; never send a reduced representation."""
+ value=copy.deepcopy(prompt);value.pop('observation_record_definition',None)
+ for fact in value['offered']['facts'].values():
+  fact.pop('record_fields',None);fact.pop('record_provenance',None)
+ return value
+
 def prepare(packet,candidates,registry):
  from behavior_ai import obj,text,array,now
  tables,coverage=offers(packet,candidates,registry)
@@ -87,7 +115,10 @@ def prepare(packet,candidates,registry):
   schema['properties']={'observable_synthesis':schema['properties']['observable_synthesis'],**{key:value for key,value in schema['properties'].items() if key!='observable_synthesis'}}
   schema['required']=['observable_synthesis',*[key for key in schema['required'] if key!='observable_synthesis']]
  offered={k:v for k,v in tables.items() if k!='counterevidence'}
- offered['facts']={key:{**fact,'allowed_roles':roles[key]} for key,fact in tables['facts'].items()}
+ records={}
+ for record in list(packet.get('events',[]))+list(packet.get('context',[])):
+  if record.get('id'):records.setdefault(record['id'],[]).append(record)
+ offered['facts']={key:{**fact,'allowed_roles':roles[key],**observation_records(fact,records)} for key,fact in tables['facts'].items()}
  # Wire-only references replace exact duplicate bodies, never partial matches.
  # Canonical offers, decoding and validation continue to use the original inputs.
  own={event['id']:event for event in packet.get('events',[]) if event.get('id')}
@@ -102,6 +133,7 @@ def prepare(packet,candidates,registry):
  if any('packet_event_ref' in event for candidate in wire_candidates for event in candidate.get('current_events',[])):
   prompt['event_reference_definition']='packet_event_ref selects the complete identical event in packet.events by id; no fields are omitted from that observation.'
  prompt['synthesis_options']=options(packet)
+ prompt['observation_record_definition']=RECORD_DETAIL_DEFINITION
  return schema,provenance_projection(prompt)
 
 def provenance_projection(prompt):
@@ -135,7 +167,8 @@ def prepare_bounded(packet,candidates,registry):
  schema,prompt=prepare(packet,selected,registry) if selected else (base_schema,base)
  considered_bytes=len(prompt_json(prompt).encode('utf-8'))
  reason='none' if selected else 'no_candidate'
- if base_bytes>INPUT_BYTE_LIMIT:reason='base_exceeds_input_limit'
+ if (base_bytes>INPUT_BYTE_LIMIT and len(prompt_json(without_observation_records(base)).encode('utf-8'))<=INPUT_BYTE_LIMIT) or (considered_bytes>INPUT_BYTE_LIMIT and len(prompt_json(without_observation_records(prompt)).encode('utf-8'))<=INPUT_BYTE_LIMIT):reason='observation_records_exceed_input_limit'
+ elif base_bytes>INPUT_BYTE_LIMIT:reason='base_exceeds_input_limit'
  elif considered_bytes>INPUT_BYTE_LIMIT:
   # Cards must not turn previously admissible history into silent context loss.
   without_cards={**prompt,'synthesis_options':{key:{field:value[field] for field in ('kind','evidence_ids','interpretations')} for key,value in prompt['synthesis_options'].items()}}
@@ -143,7 +176,7 @@ def prepare_bounded(packet,candidates,registry):
   else:selected=[];schema,prompt=base_schema,base;reason='candidate_exceeds_input_limit'
  actual_ids=[candidate['candidate_id'] for candidate in selected]
  metadata={'historical_windows_supplied':len(selected),'wire_candidate_ids':actual_ids,'wire_packet_ids':[packet['packet_id']]+actual_ids,'input_preparation':{'version':VERSION,'byte_limit':INPUT_BYTE_LIMIT,'base_prompt_bytes':base_bytes,'considered_prompt_bytes':considered_bytes,'user_prompt_bytes':len(prompt_json(prompt).encode('utf-8')),'omission_reason':reason,'omitted_candidate_ids':[candidate['candidate_id'] for candidate in considered if candidate['candidate_id'] not in actual_ids]}}
- if base_bytes>INPUT_BYTE_LIMIT or reason=='group_cards_exceed_input_limit':
+ if base_bytes>INPUT_BYTE_LIMIT or reason in ('group_cards_exceed_input_limit','observation_records_exceed_input_limit'):
   # Preparation failed before dispatch: no candidate or packet was sent.
   metadata.update(historical_windows_supplied=0,wire_candidate_ids=[],wire_packet_ids=[])
   metadata['input_preparation']['user_prompt_bytes']=None

@@ -44,7 +44,7 @@ def test_sparse_one_detail_retains_exact_statement_and_citations_with_group():
 def test_sparse_each_legal_role_is_available_and_one_identity_cannot_take_two_roles():
  p=positive();tables,_=gen.offers(p,[],{});schema,prompt=gen.prepare(p,[],{})
  for key,fact in tables['facts'].items():
-  assert prompt['offered']['facts'][key]=={**fact,'allowed_roles':schema['properties']['observations']['properties'][key]['enum']}
+  assert {k:v for k,v in prompt['offered']['facts'][key].items() if k not in ('record_fields','record_provenance')}=={**fact,'allowed_roles':schema['properties']['observations']['properties'][key]['enum']}
   for role in schema['properties']['observations']['properties'][key]['enum']:
    wire=sparse(p);wire['observations']={key:role};value=transport(p,wire)[0][0]
    assert value['findings']==([fact] if role=='finding' else [])
