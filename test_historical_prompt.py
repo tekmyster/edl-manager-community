@@ -78,7 +78,7 @@ def boundary_pair():
 def legacy_overbudget_pair():
  p,c=boundary_pair();_,prompt=gen.prepare(p,[c],{})
  old={**prompt,'synthesis_options':{key:{k:v[k] for k in ('kind','evidence_ids','interpretations')} for key,v in prompt['synthesis_options'].items()}}
- old=gen.without_observation_records(old)
+ old=gen.without_summary_fields(old)
  c['padding']+='x'*(len(gen.prompt_json(prompt).encode())-len(gen.prompt_json(old).encode())+1)
  return p,c
 
@@ -99,7 +99,7 @@ def test_exact_escaped_utf8_boundary_keeps_history_and_card_overflow_fails_befor
  # infer selects registry metadata before preparing; its honest byte count can
  # exceed the direct empty-registry assembly above without dispatching either.
  assert meta['input_preparation']['considered_prompt_bytes']>=18001 and meta['input_preparation']['user_prompt_bytes'] is None
- assert meta['input_preparation']['omission_reason']=='observation_records_exceed_input_limit'
+ assert meta['input_preparation']['omission_reason']=='summary_fields_exceed_input_limit'
  assert meta['input_preparation']['omitted_candidate_ids']==['peer'] and (p,c)==(before[0],{**before[1],'padding':before[1]['padding']+'x'})
  assert meta['failure_diagnostic']['phase']=='request_preparation'
 

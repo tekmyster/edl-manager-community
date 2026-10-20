@@ -28,7 +28,7 @@ def test_nonempty_groups_are_first_at_infer_requester_and_prepared_body_boundary
  assert body['messages'][0]['content']==gen.INSTRUCTION
  assert body['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
  assert p==original and value['observable_synthesis']==value['findings']==[]
- assert metadata['prompt_version']=='behavior-3.24' and metadata['generation_schema_version']=='grounded-groups-9'
+ assert metadata['prompt_version']=='behavior-3.25' and metadata['generation_schema_version']=='grounded-groups-9'
 
 def test_empty_groups_keep_old_schema_property_and_required_order():
  p={'packet_id':'empty','events':[],'context':[],'coverage':'saved_samples'}

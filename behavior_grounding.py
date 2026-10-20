@@ -105,6 +105,51 @@ are required. Copies, repeated labels, paths alone and generic failures abstain.
   if len(bundles)==MAX_SUPPORT_BUNDLES:break
  return bundles,{'available_signal_events':available,'examined_signal_events':len(signals),'signal_bound':MAX_SIGNAL_EVENTS,'support_bundle_bound':MAX_SUPPORT_BUNDLES,'pair_bound':276}
 
+def observation_statement(e,connection=None):
+ """Construct the fixed fact and describe its content without adding source values."""
+ from behavior_ai import safe_text,timestamp
+ from behavior_mapping import FAILURE
+ action=safe_text(e.get('action'),60);source=safe_text(e.get('source'),20);sensor=safe_text(e.get('sensor'),30)
+ fields=(['source'] if source else [])+(['sensor'] if sensor else [])+['action']
+ statement=f'Saved {source} / {sensor} sample reports {action or "unspecified activity"}.'
+ semantic=(e.get('source_observation') or {}).get('semantic')
+ if action=='cowrie.session.file_download' and semantic=='file_capture':
+  statement=f'Saved {source} / {sensor} sample reports file capture; network transfer is unverified.';fields=fields[:-1]+['source_observation.semantic']
+ if action=='cowrie.session.file_download' and semantic=='network_fetch':
+  statement=f'Saved {source} / {sensor} sample reports a network file fetch; intent and execution are unverified.';fields=fields[:-1]+['source_observation.semantic']
+ if action=='cowrie.command.input' and semantic in ('shell_input','interactive_input'):
+  statement=f'Saved {source} / {sensor} sample reports '+('shell input; execution is unverified.' if semantic=='shell_input' else 'interactive input; command execution is unverified.');fields=fields[:-1]+['source_observation.semantic']
+ if e.get('method') and e.get('path') and not re.fullmatch(FAILURE,action.casefold()):
+  method=safe_text(e['method'],8);path=safe_text(e['path'],70)
+  statement=f'Saved request: {method} {path}; status {safe_text(e.get("status"),3) or "unavailable"}; source {source}.'
+  fields=(['method'] if method else [])+(['path'] if path else [])+['status']+(['source'] if source else [])
+ if action=='cowrie.command.input' and semantic=='shell_input':
+  syntax=recorded_syntax(e.get('source_observation') or {})
+  if syntax is not None:
+   names=[SYNTAX_LABELS[k] for k in syntax]
+   statement+=(' Recorded syntax categories: '+', '.join(names)+'.') if names else ' No allowlisted syntax category was recorded.'
+  else:statement+=' Syntax detail unavailable.'
+  fields.append('source_observation.syntax_categories')
+ interval=bool(connection and action in ('cowrie.command.input','cowrie.session.file_download'))
+ if interval:
+  seconds=(timestamp(e['seen'])-timestamp(connection['seen'])).total_seconds()
+  elapsed=f'{seconds:.3f}'.rstrip('0').rstrip('.')
+  statement+=f' Same-source session link: about {elapsed} seconds after its cited connection.'
+  fields.append('seen:elapsed')
+ refs=list(dict.fromkeys([e['id']]+([connection['id']] if connection else [])))
+ by_id={e['id']:list(dict.fromkeys(fields))}
+ if connection and connection['id']!=e['id']:by_id[connection['id']]=['seen:elapsed'] if interval else []
+ return {'summary':statement,'evidence_ids':refs},[by_id[ident] for ident in refs]
+
+
+def positive_statement(c):
+ """Fixed positive context; freshness eligibility remains owned by contract()."""
+ if c.get('provider')=='crawler' and c.get('verified') is True:
+  return {'summary':'Fresh cached crawler verification is positive context; historical ownership and request authorization are unverified.','evidence_ids':[c['id']]},[['provider','verified','cache_fresh']]
+ if c.get('provider')=='greynoise' and c.get('classification')=='benign' and c.get('observation_fresh') is True:
+  return {'summary':'Fresh cached GreyNoise benign classification is positive context, not independent proof of request authorization.','evidence_ids':[c['id']]},[['provider','classification','cache_fresh']]
+ return None
+
 def contract(packet,registry):
  from behavior_ai import safe_text,timestamp,now
  from behavior_mapping import select,FAILURE
@@ -121,36 +166,12 @@ def contract(packet,registry):
  events=sorted(events,key=priority)
  for e in events:
   if not e.get('id'):continue
-  action=safe_text(e.get('action'),60);source=safe_text(e.get('source'),20);sensor=safe_text(e.get('sensor'),30)
-  statement=f'Saved {source} / {sensor} sample reports {action or "unspecified activity"}.'
-  semantic=(e.get('source_observation') or {}).get('semantic')
-  if action=='cowrie.session.file_download' and semantic=='file_capture':statement=f'Saved {source} / {sensor} sample reports file capture; network transfer is unverified.'
-  if action=='cowrie.session.file_download' and semantic=='network_fetch':statement=f'Saved {source} / {sensor} sample reports a network file fetch; intent and execution are unverified.'
-  if action=='cowrie.command.input' and semantic in ('shell_input','interactive_input'):statement=f'Saved {source} / {sensor} sample reports '+('shell input; execution is unverified.' if semantic=='shell_input' else 'interactive input; command execution is unverified.')
-  if e.get('method') and e.get('path') and not re.fullmatch(FAILURE,action.casefold()):
-   statement=f'Saved request: {safe_text(e["method"],8)} {safe_text(e["path"],70)}; status {safe_text(e.get("status"),3) or "unavailable"}; source {source}.'
-  connection=linked.get(e['id'])
-  # Describe existing privacy-safe machine metadata, never reconstruct input
-  # text or promote syntax/session linkage into execution or authorization.
-  if action=='cowrie.command.input' and semantic=='shell_input':
-   syntax=recorded_syntax(e.get('source_observation') or {})
-   if syntax is not None:
-    names=[SYNTAX_LABELS[k] for k in syntax]
-    statement+=(' Recorded syntax categories: '+', '.join(names)+'.') if names else ' No allowlisted syntax category was recorded.'
-   else:statement+=' Syntax detail unavailable.'
-  if connection and action in ('cowrie.command.input','cowrie.session.file_download'):
-   seconds=(timestamp(e['seen'])-timestamp(connection['seen'])).total_seconds()
-   elapsed=f'{seconds:.3f}'.rstrip('0').rstrip('.')
-   statement+=f' Same-source session link: about {elapsed} seconds after its cited connection.'
-  refs=list(dict.fromkeys([e['id']]+([connection['id']] if connection else [])))
-  facts.append({'summary':statement,'evidence_ids':refs})
+  fact,_=observation_statement(e,linked.get(e['id']));facts.append(fact)
  for c in packet.get('context',[]):
   expiry=timestamp(c.get('expires'));fresh=c.get('status')=='ok' and c.get('cache_fresh') is True and expiry is not None and expiry>timestamp(now())
   if c.get('kind')!='intelligence' or not fresh or not c.get('id'):continue
-  if c.get('provider')=='crawler' and c.get('verified') is True:
-   positive.append({'summary':'Fresh cached crawler verification is positive context; historical ownership and request authorization are unverified.','evidence_ids':[c['id']]})
-  if c.get('provider')=='greynoise' and c.get('classification')=='benign' and c.get('observation_fresh') is True:
-   positive.append({'summary':'Fresh cached GreyNoise benign classification is positive context, not independent proof of request authorization.','evidence_ids':[c['id']]})
+  value=positive_statement(c)
+  if value:positive.append(value[0])
  # Leave space for up to two positive references, with explicit bounded coverage.
  offered=(positive[:2]+facts)[:MAX_FACTS]
  offered_ids={i for f in offered for i in f['evidence_ids']}
