@@ -7,11 +7,11 @@ import behavior_synthesis as synth
 from test_source_observations import linked_packet
 from test_generation_choices import transport
 
-PRIOR_ORDER=['generation_schema_version','packet_id','classification','maliciousness_confidence','automation','intent','finding_ids','counterevidence_ids','attack_techniques','d3fend_context','actor_correlation','observable_synthesis']
+PRIOR_ORDER=['generation_schema_version','packet_id','classification','maliciousness_confidence','automation','intent','observations','attack_techniques','d3fend_context','actor_correlation','observable_synthesis']
 
 def omitted(packet):
  wire=gen.example(packet);wire.update(maliciousness_confidence=0)
- wire['finding_ids']=[];wire['counterevidence_ids']=[]
+ wire['observations']={key:'omit' for key in wire['observations']}
  return wire
 
 def prepared(body):
@@ -28,7 +28,7 @@ def test_nonempty_groups_are_first_at_infer_requester_and_prepared_body_boundary
  assert body['messages'][0]['content']==gen.INSTRUCTION
  assert body['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
  assert p==original and value['observable_synthesis']==value['findings']==[]
- assert metadata['prompt_version']=='behavior-3.26' and metadata['generation_schema_version']=='grounded-groups-10'
+ assert metadata['prompt_version']=='behavior-3.27' and metadata['generation_schema_version']=='grounded-groups-11'
 
 def test_empty_groups_keep_old_schema_property_and_required_order():
  p={'packet_id':'empty','events':[],'context':[],'coverage':'saved_samples'}

@@ -220,7 +220,7 @@ def describe(group):
   connection=next(r for r in rows if r['action']=='cowrie.session.connect')
   shell=next(r for r in rows if r['action']=='cowrie.command.input')
   capture=next(r for r in rows if r['action']=='cowrie.session.file_download')
-  return ('Bound source session: connection -> shell input -> file capture; shell input '+elapsed(connection['seen'],shell['seen'])+' seconds after connection, capture '+elapsed(shell['seen'],capture['seen'])+' seconds after input. Recorded shell syntax: '+(shell['syntax'] or 'unavailable')+'. Source time: '+window+'.')
+  return ('Bound source session: connection -> shell input -> file capture; shell input '+elapsed(connection['seen'],shell['seen'])+' seconds after connection, capture '+elapsed(shell['seen'],capture['seen'])+' seconds after input and '+elapsed(connection['seen'],capture['seen'])+' seconds after connection. Recorded shell syntax: '+(shell['syntax'] or 'unavailable')+'. Source time: '+window+'.')
  if kind=='authentication_failure':return str(len(clusters(rows,'auth')))+' sampled failed-login observation(s), after coalescing identical source-time/action representations. Source time: '+window+'.'
  if kind in ('http_navigation','resource_discovery'):
   grouped=clusters(rows,'http');bindings={}

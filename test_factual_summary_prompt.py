@@ -10,7 +10,7 @@ from test_generation_choices import transport
 
 def empty_wire(packet):
  wire=gen.example(packet)
- wire['finding_ids']=[];wire['counterevidence_ids']=[]
+ wire['observations']={key:'omit' for key in wire['observations']}
  return wire
 
 
@@ -21,8 +21,8 @@ def test_neutral_preference_keeps_all_omit_unknown_and_inconclusive_valid():
  assert result['classification']=='inconclusive'
  assert result['automation']==result['intent']=={'classification':'unknown','confidence':0}
  ai.validate_result(result,packet,[],{})
- assert metadata['prompt_version']=='behavior-3.26'
- assert metadata['generation_schema_version']==gen.VERSION=='grounded-groups-10'
+ assert metadata['prompt_version']=='behavior-3.27'
+ assert metadata['generation_schema_version']==gen.VERSION=='grounded-groups-11'
  assert requests[0]['messages'][0]['content']==gen.INSTRUCTION
 
 
@@ -38,7 +38,7 @@ def test_neutral_session_account_needs_no_intent_verdict_or_support_pair():
  ai.validate_result(result,packet,[],{})
 
 
-@pytest.mark.parametrize('old_version',['behavior-3.21','behavior-3.22','behavior-3.23','behavior-3.24','behavior-3.25'])
+@pytest.mark.parametrize('old_version',['behavior-3.21','behavior-3.22','behavior-3.23','behavior-3.24'])
 def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monkeypatch,old_version):
  from core import Store,now
  from test_behavior_ai import result
@@ -55,13 +55,13 @@ def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monke
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  with brain.connect() as db:
   old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.26')
- assert ai.GENERATION_SCHEMA_VERSION=='grounded-groups-10'
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.27')
+ assert ai.GENERATION_SCHEMA_VERSION=='grounded-groups-11'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='cached'
  with brain.connect() as db:
   rows=[tuple(row) for row in db.execute('SELECT * FROM assessments')]
- assert old in rows and len(rows)==2 and calls==[old_version,'behavior-3.26']
+ assert old in rows and len(rows)==2 and calls==[old_version,'behavior-3.27']
  assert len({row[2] for row in rows})==2
  native_after=store.describe('8.8.8.8')
  assert native_before['score']==native_after['score'] and native_before['retention']==native_after['retention']

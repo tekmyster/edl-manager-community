@@ -17,15 +17,14 @@ def positive():
 def test_positive_observation_has_one_identity_and_exclusive_role_slot():
  p=positive();t,_=offers(p,[],{});schema,prompt=prepare(p,[],{})
  assert set(t['counterevidence'])<=set(t['facts']) and 'counterevidence' not in prompt['offered']
- key=next(iter(t['counterevidence']));spec=schema['properties']
- assert spec['finding_ids']['items']['enum']==list(t['facts'])
- assert spec['counterevidence_ids']['items']['enum']==list(t['counterevidence'])
- for role in ('omit','finding','counterevidence'):
-  wire=example(p);observation_roles(wire,[key] if role=='finding' else [],[key] if role=='counterevidence' else [])
+ key=next(iter(t['counterevidence']));spec=schema['properties']['observations']
+ assert spec['properties'][key]['enum']==['omit','detail','support','counterevidence']
+ assert spec['required']==[] and list(spec['properties'])==list(t['facts'])
+ for role in ('omit','detail','support','counterevidence'):
+  wire=example(p);observation_roles(wire);wire['observations'][key]=role
   value=decode(wire,p,[],{});validate_result(value,p,[],{})
   assert sum(t['facts'][key] in value[f] for f in ('findings','contradictory_evidence'))==int(role!='omit')
- assert prompt['offered']['facts'][key]['allowed_roles']==['omit','finding','counterevidence']
-
+ assert all('counterevidence' not in v['enum'] for k,v in spec['properties'].items() if k not in t['counterevidence'])
 
 
 def test_single_mapping_has_one_optional_switch_not_two_repeatable_slots():
@@ -40,7 +39,7 @@ def test_single_mapping_has_one_optional_switch_not_two_repeatable_slots():
  with pytest.raises(ValueError):decode(wire,p,[],registry)
 
 
-@pytest.mark.parametrize('roles',[('finding','counterevidence'),('include','include'),('include','omit')])
+@pytest.mark.parametrize('roles',[('detail','counterevidence'),('include','include'),('include','omit')])
 def test_duplicate_json_members_reject_before_overwriting_including_escaped_keys(roles):
  key='PRIVATE-KEY';escaped='\\u0050RIVATE-KEY'
  raw='{"'+key+'":"'+roles[0]+'","'+escaped+'":"'+roles[1]+'"}'
@@ -52,8 +51,8 @@ def test_duplicate_json_members_reject_before_overwriting_including_escaped_keys
 def test_actual_infer_rejects_duplicate_members_without_normalizing_or_retaining_values():
  from behavior_ai import infer,DEFAULTS
  p=positive();t,_=offers(p,[],{});wire=example(p);key=next(iter(t['counterevidence']))
- raw=json.dumps(wire);old=json.dumps('finding_ids')+': '+json.dumps(wire['finding_ids'])
- raw=raw.replace(old,old+', '+old,1)
+ raw=json.dumps(wire);old=json.dumps(key)+': '+json.dumps(wire['observations'][key])
+ raw=raw.replace(old,json.dumps(key)+': "finding", '+json.dumps(key)+': "counterevidence"',1)
  class Response:
   status_code=200
   def close(self):pass
@@ -68,13 +67,13 @@ def test_all_omit_and_unknown_stay_empty_without_forced_fact_or_mapping():
  value=transport(p,wire)[0][0]
  assert all(value[f]==[] for f in ('findings','contradictory_evidence','attack_techniques','d3fend_context','actor_correlation'))
  assert value['automation']==value['intent']=={'classification':'unknown','confidence':0}
- assert wire['finding_ids']==wire['counterevidence_ids']==[]
+ assert wire['observations']=={k:'omit' for k in t['facts']}
 
 
 @pytest.mark.parametrize('mutation',[
- lambda w:w['finding_ids'].append('foreign'),
- lambda w:w.update(finding_ids=[['finding','counterevidence']]),
- lambda w:w.update(finding_ids=[True]),
+ lambda w:w['observations'].update({'foreign':'detail'}),
+ lambda w:w['observations'].__setitem__(next(iter(w['observations'])),['detail','counterevidence']),
+ lambda w:w['observations'].__setitem__(next(iter(w['observations'])),True),
  lambda w:w.update(generation_schema_version='grounded-choices-2'),
 ])
 def test_foreign_cross_role_or_legacy_structures_reject(mutation):
@@ -84,9 +83,9 @@ def test_foreign_cross_role_or_legacy_structures_reject(mutation):
 
 def test_all_offered_slots_fit_accepted_counts_without_filtering(catalog):
  p={'packet_id':'bounds','coverage':'saved_samples','events':[event('a','powershell execution'),event('b','network service discovery'),event('c','credential dump attempt')],'context':[]}
- w=example(p,registry=catalog);w['finding_ids']=list(offers(p,[],catalog)[0]['facts']);before=copy.deepcopy(w)
+ w=example(p,registry=catalog);w['observations']={k:'detail' for k in w['observations']};before=copy.deepcopy(w)
  value=decode(w,p,[],catalog);validate_result(value,p,[],catalog)
- assert len(value['findings'])==len(w['finding_ids'])>2 and w==before
+ assert len(value['findings'])==len(w['observations'])>2 and w==before
  w['attack_techniques']={k:'include' for k in w['attack_techniques']}
  w['d3fend_context']={k:'include' for k in w['d3fend_context']}
  before=copy.deepcopy(w);value=decode(w,p,[],catalog);validate_result(value,p,[],catalog)
@@ -104,15 +103,13 @@ def test_maximum_source_offers_are_structurally_count_safe(catalog):
  assert {k:len(t[k]) for k in SELECTION_BOUNDS}==SELECTION_BOUNDS
  assert prompt['grounding']['selection_bounds']==SELECTION_BOUNDS
  w=example(p,registry=catalog)
- w['finding_ids']=list(t['facts'])
+ w['observations']={k:'detail' for k in t['facts']}
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:w[field]={k:'include' for k in t[kind]}
  before=copy.deepcopy(w);shape(schema,w);v=decode(w,p,[],catalog);validate_result(v,p,[],catalog)
  assert (len(v['findings']),len(v['attack_techniques']),len(v['d3fend_context']))==(12,12,6)
  assert w==before
- for field in ('finding_ids','attack_techniques','d3fend_context'):
-  bad=copy.deepcopy(w)
-  if field=='finding_ids':bad[field].append('foreign')
-  else:bad[field]['foreign']='include'
+ for field in ('observations','attack_techniques','d3fend_context'):
+  bad=copy.deepcopy(w);bad[field]['foreign']='detail' if field=='observations' else 'include'
   with pytest.raises(ValueError):decode(bad,p,[],catalog)
  bad=copy.deepcopy(v);bad['findings']*=2
  with pytest.raises(ValueError):validate_result(bad,p,[],catalog)

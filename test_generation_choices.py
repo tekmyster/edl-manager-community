@@ -21,7 +21,7 @@ def transport(packet,wire,candidates=None,registry=None):
 def test_conservative_choice_round_trip_has_exact_bound_facts_and_zero_unknowns():
  p=linked_packet();wire=example(p);(value,metadata),calls=transport(p,wire)
  assert value['findings'][0] in contract(p,{})['facts'] and value['automation']==value['intent']=={'classification':'unknown','confidence':0}
- assert metadata['generation_schema_version']==VERSION and metadata['prompt_version']=='behavior-3.26'
+ assert metadata['generation_schema_version']==VERSION and metadata['prompt_version']=='behavior-3.27'
  assert calls[0]['stream'] is True and calls[0]['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
  assert set(calls[0]['format']['properties'])==set(wire)
  assert not {'analysis_summary','limitations','evidence_ids','explanation'}&set(wire)
@@ -37,9 +37,9 @@ def test_complete_pair_optional_malicious_class_still_requires_full_cited_suppor
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 @pytest.mark.parametrize('mutation',[
- lambda w:w.update(observations={}),
- lambda w:w.update(contradictory_evidence=list(w['finding_ids'])),
- lambda w:w['finding_ids'].append('PRIVATE-UNKNOWN-CHOICE'),
+ lambda w:w.update(observations=list(w['observations'])),
+ lambda w:w.update(contradictory_evidence=list(w['observations'])),
+ lambda w:w['observations'].update({'PRIVATE-UNKNOWN-CHOICE':'detail'}),
  lambda w:w.update(packet_id='other-packet'),
  lambda w:w.update(generation_schema_version='grounded-observations-3'),
  lambda w:w.update(analysis_summary='PRIVATE-TEXT'),
@@ -57,7 +57,7 @@ def test_fact_choice_cannot_be_reused_across_packets_or_bind_new_citations():
  p=linked_packet();other=copy.deepcopy(p);other['packet_id']='other';wire=example(p)
  assert set(offers(p,[],{})[0]['facts']).isdisjoint(offers(other,[],{})[0]['facts'])
  with pytest.raises(ModelOutputError):transport(other,{**wire,'packet_id':'other'})
- wire['finding_ids']=[{'evidence_ids':['PRIVATE']}]
+ wire['observations'][next(iter(wire['observations']))]={'evidence_ids':['PRIVATE']}
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 def test_mapping_choice_renders_exact_explanation_and_complete_technique_refs(catalog):
@@ -128,7 +128,7 @@ def test_benign_requires_actual_cited_positive_context_and_malicious_cannot_borr
  assert transport(p,wire)[0][0]['classification']=='benign'
  observation_roles(wire,[k for k,v in table['facts'].items() if 'ctx-positive' not in v['evidence_ids']][:1])
  with pytest.raises(ModelOutputError):transport(p,wire)
- wire['classification']='malicious';pair=c['malicious_support_pairs'][0];observation_roles(wire,pair[:1]);wire['counterevidence_ids']=[pair[1]]
+ wire['classification']='malicious';pair=c['malicious_support_pairs'][0];observation_roles(wire,pair[:1]);wire['observations'][pair[1]]='counterevidence'
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 def test_repeated_current_record_cannot_be_its_own_historical_relationship():

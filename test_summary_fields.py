@@ -102,7 +102,7 @@ def test_positive_summary_content_has_no_unprinted_status_expiry_or_verification
 
 def test_every_annotation_is_wire_only_and_all_legal_label_selections_remain_available():
  from test_generation_choices import transport
- packet={'packet_id':'label','coverage':'saved_samples','events':[event(path='/unprinted',port='8088')],'context':[]};before=copy.deepcopy(packet);tables,_=gen.offers(packet,[],{});key=next(iter(tables['facts']));wire=gen.example(packet);wire['finding_ids']=[key];wire['maliciousness_confidence']=0
+ packet={'packet_id':'label','coverage':'saved_samples','events':[event(path='/unprinted',port='8088')],'context':[]};before=copy.deepcopy(packet);tables,_=gen.offers(packet,[],{});key=next(iter(tables['facts']));wire=gen.example(packet);wire['observations']={key:'detail'};wire['maliciousness_confidence']=0
  value=transport(packet,wire)[0][0];assert value['findings']==[tables['facts'][key]] and 'summary_fields' not in json.dumps(value)
  assert packet==before
 

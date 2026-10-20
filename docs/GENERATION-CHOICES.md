@@ -1,37 +1,54 @@
 # Versioned grounded choices
 
-The local exploratory contract is prompt `behavior-3.26` and generation
-`grounded-groups-10`. It has not been evaluated with new model responses and is
-not a deployed or demonstrated semantic repair. Stored canonical results remain
-`behavior-3`; grounding and synthesis, rendering, scoring and existing source
-and eligibility rules are unchanged.
+The local offline candidate uses prompt `behavior-3.27` and generation
+`grounded-groups-11`. It is untested with new model responses and is not deployed.
+The failed 3.26 comparison retained five strict duplicate-ID rejections, generic
+label regressions and missing explicit capture intervals; those outputs and
+rejections remain historical evidence. No runtime conversion or retry is added.
 
-`finding_ids` and `counterevidence_ids` are required arrays of offered fact IDs.
-Both may be empty. The first admits every offered fact; the second admits only
-qualifying fresh positive context using the same fact identity. The arrays
-jointly select at most the existing twelve offered facts. There is no smaller
-presentation limit. The decoder rejects unknown IDs, within-array duplicates,
-cross-role reuse and invalid roles before copying complete statements and
-ordered citations in each array's order. It never sorts, clips, deduplicates,
-postfills support or hides a legal generic-label choice. Strict JSON member and
-schema checks reject old dictionaries, old versions, mixed forms and extra text.
-Mapping switches, actor and hypothesis contracts retain their existing form.
+`observations` maps an offered ID to a contribution purpose. The object may be
+empty; missing keys and `omit` select nothing. `detail` selects a fixed statement
+for concrete detail beyond selected group accounts. `support` selects that same
+complete statement as cited support for the chosen verdict. Both emit a finding;
+neither is verified usefulness or a stronger source claim. `counterevidence` is
+available only for the same qualifying positive-context identities as before.
+Original `allowed_roles` metadata describes canonical roles; the new wire uses
+purposes for selection. Every offered statement, original ordered citation,
+role, support pair, context and history remains available. No generic-label
+postfilter, withheld offer, smaller cap, forced finding or automatic support is
+introduced. A bad legal selection remains visible for semantic review.
 
-The offered-ID namespace is explicitly frozen at `grounded-groups-9` for all
-choice kinds, independent of the new wire version. All 3.25 source offers,
-summary metadata and historical input remain intact. The prompt and generation
-version changes separate new cache/job identities; they do not migrate stored
-assessments, replay pending dispatches or mass-requeue jobs. Observable synthesis
-remains first in schemas with groups; output member order is not an acceptance
-requirement. Empty inconclusive/unknown results remain legal, and selecting a
-group never replaces explicit support or positive-context visibility checks.
+Keys give each offered observation one exclusive contribution. Strict raw JSON
+parsing rejects repeated keys, including escaped equivalents and cross-role
+repeats, before decoding; it never keeps the last value. Old `finding` values,
+arrays, old versions, hybrids and unknown fields reject. All selected statements
+are copied exactly in emitted key order. The maximum remains twelve combined
+observations, twelve ATT&CK and six D3FEND mappings. Malicious support, benign
+positive context and synthesis positive-visibility validation are unchanged.
 
-Array duplicates and cross-role reuse are now expressible, so rejection risk
-must be measured in a separately authorized comparison. Offline conversions of
-old responses verify binding and compatibility only, including preservation of
-known bad selections and missing explicit display details. They are not new
-model outcomes, noise improvement or accuracy evidence. No additional inference
-pass, model change, preparation grant or delivery follows from offline tests.
+Group-first synthesis remains optional. The general linked-session account now
+states capture time after both input and connection, computed from the validated
+source tuples, alongside shell-input timing, syntax, original times/citations and
+execution/transfer/payload/authorization caveats. This is deterministic source
+presentation, not new model reasoning. No finding is forced or postfilled.
+Group identities/tuples and canonical compact summaries do not change; historical
+stored objects are not rewritten. Valid old groups receive the more explicit
+read-only disclosure account. Invalid links do not gain an account.
+
+The prompt asks for a comparison of the fixed statement with the selected group
+account, then a contribution purpose. This differs from container-only changes,
+but still relies on model judgment: a purpose enum cannot prove usefulness.
+Actual noise reduction and all locked explicit-detail/control gates require a
+separately reviewed and authorized comparison followed by independent semantic
+QA. There is no claim of model root cause, calibrated accuracy or runtime gain.
+
+The stable offered-ID namespace remains `grounded-groups-9`; storage remains
+`behavior-3`, grounding `grounded-observations-5`, synthesis `observable-groups-2`.
+Both prompt/generation versions isolate new cache/job identities. No assessment
+migration, pending dispatch replay, requeue, scoring/eligibility/default/privacy
+change, additional inference pass or deployment is authorized. The existing
+18,000-byte user bound, qwen2.5:3b 8192 context/1800 output and temperature0 remain.
+Measured request bytes are representation costs, not tokens or effective fit.
 
 ## Historical contracts
 
