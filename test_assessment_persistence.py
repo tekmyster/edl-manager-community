@@ -55,10 +55,10 @@ def test_consumed_legacy_marker_cleanup_race_and_owner_guard(tmp_path,monkeypatc
  from concurrent.futures import ThreadPoolExecutor
  s,b,cfg=queue(tmp_path,1);owner='synthetic-race-owner';p=pending.location(b,'packet0','cfg')
  pending.reserve(b,'packet0','cfg',owner,'assessment','a'*32)
- barrier=threading.Barrier(2);original=json.loads
+ barrier=threading.Barrier(2);original=json.loads;thread=threading.local()
  def parsed(value,*args,**kw):
   result=original(value,*args,**kw)
-  if isinstance(result,dict) and result.get('owner')==owner:barrier.wait(3)
+  if isinstance(result,dict) and result.get('owner')==owner and not getattr(thread,'checked',False):thread.checked=True;barrier.wait(3)
   return result
  with monkeypatch.context() as patch:
   patch.setattr(json,'loads',parsed)

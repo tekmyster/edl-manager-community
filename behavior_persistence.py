@@ -120,13 +120,19 @@ def stage(brain,value):
 
 def clear_reservation(p,owner):
     marker=p.with_suffix('.inflight')
-    if marker.is_symlink():raise ValueError('Invalid assessment dispatch marker')
-    if marker.exists():
+    for attempt in range(3):
+        if marker.is_symlink():raise ValueError('Invalid assessment dispatch marker')
         try:
             with marker.open('rb') as f:body=f.read(4097)
         except FileNotFoundError:return
         if len(body)>4096:raise ValueError('Invalid assessment dispatch marker')
-    if json.loads(body).get('owner')==owner:marker.unlink(missing_ok=True)
+        if json.loads(body).get('owner')!=owner:return
+        try:marker.unlink(missing_ok=True);return
+        except PermissionError:
+            # Windows may briefly report a peer's deletion as access denied.
+            # Reopen and recheck ownership before retrying; never change ACLs.
+            if attempt==2:raise
+            time.sleep(.005)
 
 
 def resolve_dispatch(brain,marker):
