@@ -52,7 +52,7 @@ def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monke
   calls.append(ai.PROMPT_VERSION)
   return result(packet),{'prompt_version':ai.PROMPT_VERSION,'generation_schema_version':ai.GENERATION_SCHEMA_VERSION}
  stage_mock(monkeypatch,ai,fake)
- cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':None}
+ cfg={**ai.DEFAULTS,'enabled':True,'model_enabled':True,'daily_budget':None}
  with brain.connect() as db:
   historical=result(packet);historical['metadata']={'prompt_version':old_version,'generation_schema_version':'grounded-groups-12'}
   db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',('old-assessment',ident,'old-'+old_version,now(),'2099','completed',json.dumps(historical),'',.1))

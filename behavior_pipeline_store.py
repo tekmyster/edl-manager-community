@@ -166,6 +166,20 @@ class Ledger:
   self.hook('before_entry%d'%stage)
   if self.verify is not None:budget=self.verify()['daily_budget']
   self.tx(commit);self.hook('after_entry%d'%stage)
+ def dispatch(self,ident,stage,config,request_hash,budget,receipt_hash=None):
+  """Last read-only dispatch snapshot; no writer remains held during POST."""
+  from behavior_ai import now
+  with self.connection() as db:
+   db.execute('BEGIN')
+   self.guard(db,ident,config)
+   row=db.execute('SELECT * FROM pipeline_stages WHERE parent=? AND ordinal=?',(ident,stage)).fetchone()
+   if row['state']!='entered' or row['request_hash']!=request_hash:raise Refused('pipeline_entry_identity')
+   if stage==2:self.frozen_identity(db,ident,receipt_hash)
+   day=now()[:10]
+   if row['charged_day']!=day:raise Refused('pipeline_dispatch_day_changed')
+   used=db.execute('SELECT coalesce(sum(requests),0) FROM usage WHERE day=?',(day,)).fetchone()[0];held=db.execute('SELECT coalesce(sum(held),0) FROM pipeline_reservations WHERE day=?',(day,)).fetchone()[0]
+   if budget is not None and used+held>budget:raise Refused('budget')
+   self.check()
  def freeze(self,ident,config,receipt,metadata):
   def commit(db):
    plan=self.guard(db,ident,config)

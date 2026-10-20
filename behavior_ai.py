@@ -418,7 +418,7 @@ def failure_diagnostic(exc,phase,http_status=None):
  return result
 
 
-def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire=None,_deadline=None,_before_call=None):
+def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire=None,_deadline=None,_before_call=None,_before_post=None):
  import requests,copy
  from behavior_mapping import select
  registry=select(registry,packet)
@@ -445,6 +445,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire
    nonlocal transport_start
    if _deadline:_deadline.check()
    if _before_call:_before_call()
+   if _before_post:_before_post()
    if attempt:attempt.start()
    if _deadline:_deadline.check()
    transport_start=time.monotonic()

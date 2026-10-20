@@ -156,7 +156,7 @@ def test_prompt_and_wire_schema_versions_invalidate_cache_without_native_changes
  store=Store(tmp_path/'native');store.evidence('8.8.8.8','tpot','fixture',now(),'ssh',50);brain=ai.Brain(store);ident,packet,features=brain.packet(store.describe('8.8.8.8'));before=store.describe('8.8.8.8')
  calls=[]
  def fake(*a):calls.append(1);return result(packet),{'prompt_version':ai.PROMPT_VERSION}
- stage_mock(monkeypatch,ai,fake);cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':6}
+ stage_mock(monkeypatch,ai,fake);cfg={**ai.DEFAULTS,'enabled':True,'model_enabled':True,'daily_budget':6}
  monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.4');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','legacy')
  assert ai.model_job(brain,ident,packet,features,cfg)=='completed'
  monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.6');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','taxonomy-choices-1')

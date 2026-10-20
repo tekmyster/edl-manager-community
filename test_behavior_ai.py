@@ -50,7 +50,7 @@ def test_model_cache_budget_failure_and_shadow_score_invariant(evidence,monkeypa
 
 def test_expired_success_can_refresh_after_three_analyses(evidence,monkeypatch):
  import behavior_ai
- cfg={**DEFAULTS,'model_enabled':True,'model':'test','endpoint':'https://10.1.1.1','daily_budget':10};b=Brain(evidence);ident,packet,features=b.packet(evidence.describe('8.8.8.8'))
+ cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'model':'test','endpoint':'https://10.1.1.1','daily_budget':10};b=Brain(evidence);ident,packet,features=b.packet(evidence.describe('8.8.8.8'))
  stage_mock(monkeypatch,behavior_ai,lambda *args:(result(packet),{}))
  for unused in range(5):
   assert model_job(b,ident,packet,features,cfg)=='completed'
@@ -142,7 +142,7 @@ def test_small_gpu_response_is_compact_and_truncation_is_rejected(evidence):
 def test_model_failure_records_token_usage_without_storing_reply(evidence,monkeypatch):
  import behavior_ai
  b=Brain(evidence);ident,packet,features=b.packet(evidence.describe('8.8.8.8'))
- cfg={**DEFAULTS,'model_enabled':True,'model':'test','daily_budget':2}
+ cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'model':'test','daily_budget':2}
  def fail(*args):raise behavior_ai.ModelOutputError('output_limit',{'input_tokens':200,'output_tokens':1800})
  stage_mock(monkeypatch,behavior_ai,fail)
  assert model_job(b,ident,packet,features,cfg)=='failed'

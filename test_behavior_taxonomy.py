@@ -188,7 +188,7 @@ def test_catalog_identity_invalidates_cache_without_native_changes(catalog,tmp_p
  calls=[]
  def fake(*args):calls.append(args[3]);return result(packet),{}
  stage_mock(monkeypatch,behavior_ai,fake)
- cfg={**DEFAULTS,'model_enabled':True,'daily_budget':6}
+ cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'daily_budget':6}
  assert model_job(brain,'packet',packet,[],cfg)=='completed'
  assert model_job(brain,'packet',packet,[],cfg)=='cached'
  catalog['version']='new synthetic release';catalog.pop('registry_sha256');catalog['registry_sha256']=fingerprint(catalog);p.write_text(json.dumps(catalog))

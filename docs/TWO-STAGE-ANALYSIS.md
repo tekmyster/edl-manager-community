@@ -118,3 +118,20 @@ This source change requires independent implementation review and controlled
 evaluation before deployment. Offline mocks establish protocol and durability
 properties; they do not establish semantic improvement, live grammar behavior,
 operational throughput or independently calibrated confidence.
+
+## Final dispatch gate
+
+After entry hooks finish, each request rechecks the live master/model switches,
+configuration, source generation, packet, frozen receipt, ownership, quota and
+UTC day. A final read-only SQLite snapshot checks the entered request hash and
+claimed units. It closes before request instrumentation and transport begin;
+no database transaction is held during file checks or network I/O. Disabling
+analysis prevents another request and final acceptance without resetting claims
+or creating provider backoff.
+
+This is a last dispatch check, not atomic configuration-to-network delivery.
+An unrelated writer can still change state after the check while instrumentation,
+DNS/TLS setup or socket transmission occurs. A process-wide/distributed update
+protocol would be needed to eliminate that residual window. The entry hooks
+cannot bypass the new gate; later changes cannot authorize a different request
+body, reuse a consumed claim or accept a changed final context.

@@ -244,7 +244,7 @@ def persist(brain,p,should_stop=None):
             db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',row)
             if owned:
                 db.execute("UPDATE jobs SET state=?,lease=0,updated=? WHERE id=? AND state='running'",(row[5],frozen[3],value['owner']))
-                if frozen[7] not in ('invalid_assessment','output_limit','budget','configuration_changed','input_identity_changed','pipeline_frozen_identity_changed','pipeline_dispatch_day_changed','pipeline_ownership_lost','superseded_before_request','Cancelled'):
+                if frozen[7] not in ('invalid_assessment','output_limit','budget','configuration_changed','analysis_disabled','input_identity_changed','pipeline_frozen_identity_changed','pipeline_dispatch_day_changed','pipeline_ownership_lost','superseded_before_request','Cancelled'):
                     prior=db.execute('SELECT value FROM retention_state WHERE name=?',(value['backoff_key'],)).fetchone()
                     previous=prior[0] if prior else None
                     # An older saved result must not overwrite a newer provider guard.

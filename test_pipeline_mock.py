@@ -28,9 +28,10 @@ def stage_mock(monkeypatch,target,value,*,before_persist=None):
     kw['hook']=hook
    return previous(*args,**kw)
   fixture_run.stage_fixture=True;monkeypatch.setattr(job,'run',fixture_run)
- def infer(cfg,packet,candidates,allowed,key,requester=None,attempt=None,*,_wire=None,_deadline=None,_before_call=None):
+ def infer(cfg,packet,candidates,allowed,key,requester=None,attempt=None,*,_wire=None,_deadline=None,_before_call=None,_before_post=None):
   if _wire is None:return value(cfg,packet,candidates,allowed,key,requester,attempt)
   if _before_call:_before_call()
+  if _before_post:_before_post()
   if attempt:attempt.start()
   meta={}
   try:

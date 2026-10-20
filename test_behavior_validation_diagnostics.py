@@ -46,7 +46,7 @@ def test_model_job_persists_diagnostic_as_failure_without_verdict(tmp_path,monke
  diagnostic={'stage':'response_schema','reason':'label_or_enum','field':'classification'}
  def reject(*a,**kw):raise ModelOutputError('invalid_assessment',{'validation_diagnostic':diagnostic})
  stage_mock(monkeypatch,behavior_ai,reject)
- assert behavior_ai.model_job(b,ident,packet,features,{**DEFAULTS,'model_enabled':True,'endpoint':'https://127.0.0.1','model':'test'})=='failed'
+ assert behavior_ai.model_job(b,ident,packet,features,{**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://127.0.0.1','model':'test'})=='failed'
  with b.connect() as db:row=db.execute('SELECT status,error,result FROM assessments').fetchone()
  assert row['status']=='failed' and row['error']=='invalid_assessment'
  saved=json.loads(row['result']);assert set(saved)=={'metadata'} and saved['metadata']['validation_diagnostic']==diagnostic

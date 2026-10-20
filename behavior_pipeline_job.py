@@ -19,6 +19,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
  def live():
   current=deadline.call(lambda:brain.store.state('behavior_settings'))
   value={**ai.DEFAULTS,**current} if current is not None else cfg
+  if not value.get('enabled') or not value.get('model_enabled'):raise Refused('analysis_disabled')
   if ai.config_id(value)!=ai.config_id(cfg):raise Refused('configuration_changed')
   return value
  def persist(plan,units=0):
@@ -96,11 +97,15 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    charged_units+=1
    attempt=Attempt(brain.store,ident);attempt.id=request_id
    def entry():active=guard();ledger.entry(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
+   def before_post():
+    active=guard()
+    if hash_value(request)!=request_hash:raise Refused('pipeline_entry_identity')
+    ledger.dispatch(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
    preparation=copy.deepcopy(pipe.preparation)
    preparation['input_preparation'].update(version=STAGE1 if stage==1 else STAGE2,user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
    wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':pipe.input_key},'version':STAGE1 if stage==1 else STAGE2,'expected_input':check['input_tokens']}
    try:
-    value,meta=deadline.call(lambda:ai.infer(cfg,packet,candidates,allowed,key,requester,attempt,_wire=wire,_deadline=deadline,_before_call=entry))
+    value,meta=deadline.call(lambda:ai.infer(cfg,packet,candidates,allowed,key,requester,attempt,_wire=wire,_deadline=deadline,_before_call=entry,_before_post=before_post))
    except Exception as exc:
     last=copy.deepcopy(exc.metadata if isinstance(exc,ai.ModelOutputError) else getattr(exc,'_edl_failure_metadata',{}));last.update(stage=stage)
     if attempt.started is not None:last.setdefault('request_id',attempt.id);last.setdefault('request_started_at',attempt.started);last.setdefault('request_transport_state','failed')
