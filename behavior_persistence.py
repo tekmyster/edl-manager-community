@@ -126,7 +126,7 @@ def clear_reservation(p,owner):
             with marker.open('rb') as f:body=f.read(4097)
         except FileNotFoundError:return
         if len(body)>4096:raise ValueError('Invalid assessment dispatch marker')
-        if json.loads(body).get('owner')==owner:marker.unlink()
+    if json.loads(body).get('owner')==owner:marker.unlink(missing_ok=True)
 
 
 def resolve_dispatch(brain,marker):

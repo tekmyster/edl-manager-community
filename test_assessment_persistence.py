@@ -51,6 +51,26 @@ def fake(monkeypatch,b,after=None):
 def files(b):return list(pending.directory(b).glob('*.json'))
 
 
+def test_consumed_legacy_marker_cleanup_race_and_owner_guard(tmp_path,monkeypatch):
+ from concurrent.futures import ThreadPoolExecutor
+ s,b,cfg=queue(tmp_path,1);owner='synthetic-race-owner';p=pending.location(b,'packet0','cfg')
+ pending.reserve(b,'packet0','cfg',owner,'assessment','a'*32)
+ barrier=threading.Barrier(2);original=json.loads
+ def parsed(value,*args,**kw):
+  result=original(value,*args,**kw)
+  if isinstance(result,dict) and result.get('owner')==owner:barrier.wait(3)
+  return result
+ with monkeypatch.context() as patch:
+  patch.setattr(json,'loads',parsed)
+  with ThreadPoolExecutor(max_workers=2) as pool:
+   futures=[pool.submit(pending.clear_reservation,p,owner) for _ in range(2)]
+   for future in futures:future.result(timeout=5)
+ assert not p.with_suffix('.inflight').exists()
+ pending.reserve(b,'packet0','cfg','new-owner','next-assessment','b'*32)
+ pending.clear_reservation(p,owner)
+ assert json.loads(p.with_suffix('.inflight').read_bytes())['owner']=='new-owner'
+
+
 def verify_once(b,calls):
  rows=records(b);assert len(rows['assessments'])==1 and rows['assessments'][0][5]=='completed'
  assert rows['jobs'][0][3]=='completed' and rows['jobs'][0][4]==0 and rows['jobs'][0][5]==1

@@ -8,7 +8,7 @@ STAGE2='grounded-selection-1'
 def hash_value(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode()).hexdigest()
 
 def source_identity():
- names=('behavior_pipeline.py','behavior_pipeline_job.py','behavior_pipeline_store.py','behavior_deadline.py','behavior_ai.py','behavior_generation.py','behavior_grounding.py','behavior_synthesis.py','behavior_tokens.py','behavior_mapping.py','behavior_taxonomy.py','behavior_retention.py')
+ names=('behavior_pipeline.py','behavior_pipeline_job.py','behavior_pipeline_store.py','behavior_deadline.py','behavior_ai.py','behavior_generation.py','behavior_grounding.py','behavior_synthesis.py','behavior_tokens.py','behavior_mapping.py','behavior_taxonomy.py','behavior_retention.py','behavior_persistence.py')
  return {n:hashlib.sha256(pathlib.Path(__file__).with_name(n).read_bytes()).hexdigest() for n in names}
 
 class Pipeline:
