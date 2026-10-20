@@ -71,6 +71,39 @@ def test_consumed_legacy_marker_cleanup_race_and_owner_guard(tmp_path,monkeypatc
  assert json.loads(p.with_suffix('.inflight').read_bytes())['owner']=='new-owner'
 
 
+def test_consumed_result_cleanup_race_preserves_different_result(tmp_path,monkeypatch):
+ from concurrent.futures import ThreadPoolExecutor
+ s,b,cfg=queue(tmp_path,1);value={'version':1,'row':['id','packet0','cfg',ai.now(),'2099','completed','{}','',.1],'owner':'result-owner','backoff_key':'backoff','backoff_previous':None,'backoff_at':time.time()};p=pending.stage(b,value)
+ barrier=threading.Barrier(2);original=json.loads;thread=threading.local()
+ def parsed(body,*args,**kw):
+  result=original(body,*args,**kw)
+  if result==value and not getattr(thread,'checked',False):thread.checked=True;barrier.wait(3)
+  return result
+ with monkeypatch.context() as patch:
+  patch.setattr(json,'loads',parsed)
+  with ThreadPoolExecutor(max_workers=2) as pool:
+   futures=[pool.submit(pending.discard_saved,p,value) for _ in range(2)]
+   for future in futures:future.result(timeout=5)
+ assert not p.exists()
+ different={**value,'owner':'next-owner'};pending.stage(b,different)
+ with pytest.raises(ValueError,match='Conflicting consumed'):pending.discard_saved(p,value)
+ assert pending.read(p)==different
+
+
+@pytest.mark.parametrize('blocked',[1,3])
+def test_marker_read_retry_is_bounded_and_preserves_another_owner(tmp_path,monkeypatch,blocked):
+ s,b,cfg=queue(tmp_path,1);p=pending.location(b,'packet0','cfg');pending.reserve(b,'packet0','cfg','next-owner','assessment','a'*32);marker=p.with_suffix('.inflight');original=pathlib.Path.open;calls=[]
+ def open_file(self,*args,**kw):
+  if self==marker and len(calls)<blocked:calls.append(1);raise PermissionError('Synthetic transient sharing failure')
+  return original(self,*args,**kw)
+ with monkeypatch.context() as patch:
+  patch.setattr(pathlib.Path,'open',open_file)
+  if blocked==3:
+   with pytest.raises(PermissionError):pending.clear_reservation(p,'prior-owner')
+  else:pending.clear_reservation(p,'prior-owner')
+ assert len(calls)==blocked and json.loads(marker.read_bytes())['owner']=='next-owner'
+
+
 def verify_once(b,calls):
  rows=records(b);assert len(rows['assessments'])==1 and rows['assessments'][0][5]=='completed'
  assert rows['jobs'][0][3]=='completed' and rows['jobs'][0][4]==0 and rows['jobs'][0][5]==1

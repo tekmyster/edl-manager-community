@@ -94,8 +94,10 @@ alive, so a returned or uncooperative transport cannot hold the local permit
 forever. Simultaneous database and filesystem failures can prevent retention;
 no success or refund is inferred in that case.
 
+Legacy marker cleanup tolerates bounded concurrent deletion, rechecking the owner before retrying. Completed-result cleanup rechecks the full frozen result. Genuine permission failures remain visible; cleanup never changes ACLs.
+
 Request telemetry records each stage separately. Assessment outcomes and total
-assessment latency remain assessment measures. Pipeline totals never create a
+assessment latency remain assessment measures. Assessment duration covers coordinator start through final validation and outcome preparation; delayed persistence is separate. Pipeline totals never create a
 third request or a synthetic first-response sample. Reported token totals are
 known only when all required stage reports are known; measured stage reports
 remain available independently.

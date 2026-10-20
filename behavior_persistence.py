@@ -125,6 +125,9 @@ def clear_reservation(p,owner):
         try:
             with marker.open('rb') as f:body=f.read(4097)
         except FileNotFoundError:return
+        except PermissionError:
+            if attempt==2:raise
+            time.sleep(.005);continue
         if len(body)>4096:raise ValueError('Invalid assessment dispatch marker')
         if json.loads(body).get('owner')!=owner:return
         try:marker.unlink(missing_ok=True);return
@@ -198,6 +201,23 @@ def retain_review(brain,p):
 class Cancelled(Exception):pass
 
 
+def discard_saved(p,value):
+    """Idempotent consumed-result cleanup, preserving a different journal."""
+    for attempt in range(3):
+        if p.is_symlink():raise ValueError('Invalid assessment journal file')
+        try:
+            with p.open('rb') as stream:body=stream.read(1048577)
+        except FileNotFoundError:return
+        except PermissionError:
+            if attempt==2:raise
+            time.sleep(.005);continue
+        if len(body)>1048576 or json.loads(body)!=value:raise ValueError('Conflicting consumed assessment journal')
+        try:p.unlink(missing_ok=True);return
+        except PermissionError:
+            if attempt==2:raise
+            time.sleep(.005)
+
+
 def persist(brain,p,should_stop=None):
     try:value=read(p)
     except FileNotFoundError:return 'persistence_deferred'
@@ -250,7 +270,7 @@ def persist(brain,p,should_stop=None):
         return status
     # Also safe after a crash between commit and unlink: the same ID is checked.
     clear_reservation(p,value['owner'])
-    p.unlink(missing_ok=True);sync_directory(p.parent)
+    discard_saved(p,value);sync_directory(p.parent)
     return status
 
 
