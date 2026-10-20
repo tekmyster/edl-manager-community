@@ -1,4 +1,5 @@
 """Offline role, real SQLite contention and queue fairness regressions."""
+from test_generation_fixtures import decision
 import copy
 import datetime as dt
 import json
@@ -30,7 +31,7 @@ def test_more_probes_are_facts_not_opposing_evidence(status):
     probe=next(v for v in contract(p,{})['facts'] if '/.env.swp' in v['summary'])
     result=canonical(p);result['contradictory_evidence']=[probe]
     with pytest.raises(GroundingError,match='positive opposing context'):validate_result(result,p,[],{})
-    wire['observations'][next(k for k,v in tables['facts'].items() if v==probe)]='counterevidence'
+    wire['observations'][next(k for k,v in tables['facts'].items() if v==probe)]=decision('counterevidence')
     with pytest.raises(ValueError):decode(wire,p,[],{})
     assert decode(example(p),p,[],{})['contradictory_evidence']==[]
 
@@ -39,7 +40,7 @@ def test_positive_context_has_separate_role_scope_and_cannot_be_used_twice():
     p=positive(linked_packet());tables,_=offers(p,[],{});wire=example(p)
     assert set(tables['counterevidence'])<=set(tables['facts'])
     assert all(len(k)<=32 for table in tables.values() for k in table)
-    wire['observations']={k:'counterevidence' if k in tables['counterevidence'] else 'omit' for k in tables['facts']}
+    wire['observations']={k:decision('counterevidence' if k in tables['counterevidence'] else 'omit') for k in tables['facts']}
     result=decode(wire,p,[],{});validate_result(result,p,[],{})
     assert result['contradictory_evidence'][0]['evidence_ids']==['positive']
     wire['findings']=[next(k for k,v in tables['facts'].items() if v==result['contradictory_evidence'][0])]

@@ -1,5 +1,47 @@
 # Versioned grounded choices
 
+The offline candidate is prompt `behavior-3.28`, wire `grounded-groups-12`.
+It has no new model results and is not deployed. The failed 3.27 run had
+42/42 valid candidate outputs, but added generic findings in cases 3 and 19
+both rounds and failed the locked case 8 round 2 reduction. Six comparisons
+contain 504 attempts, 496 accepted and eight rejected; this is not accuracy.
+
+Each optional observation ID now selects an object with `reason` followed by
+`purpose`. The reason briefly explains what the complete fixed statement adds
+to selected rendered accounts or the verdict. It is at most 96 characters;
+non-omitted choices require nonblank text. Missing keys, an empty object, and
+explicit `omit` remain legal abstention. Detail/support/counterevidence purposes
+and eligibility are unchanged. Canonical `allowed_roles` metadata still describes
+finding/counterevidence roles, while the wire schema names the purposes.
+
+This changes the generated decision contract from an unexplained purpose label
+to an explicit comparison. It does not score reasons for usefulness or truth.
+A bad reason and a noisy legal selection still emit the entire offered statement
+and ordered citations. A reason cannot add evidence, provide missing support,
+change a group account, override a validator, or alter policy/scoring. It is
+untrusted generation-only text, discarded before canonical validation/storage
+and never displayed in the UI or copied to diagnostics. Evaluation tools may
+retain the actual raw response separately. No narrative factual output is added.
+
+All offered IDs/statements, source records, history, positive context, support
+pairs, typed input/capture timing and caveats remain intact. There is no utility
+filter, hidden cap, selection repair, deduplication, retry, forced support or
+withheld offer. Nested/repeated JSON keys reject before overwrite; unknown IDs,
+old scalar/array wires and invalid reasons reject without repair. Stored
+`behavior-3` assessments remain unchanged. Prompt/wire version changes isolate
+cache/job identity without replaying pending or historical jobs.
+
+The model, temperature 0, 8192 context, 1800 output tokens and 18,000-byte user
+bound are unchanged. Reasons enlarge the schema and possible output. Full
+request bytes are measured separately from user bytes; neither proves token
+fit or latency. Output truncation remains a rejection, with no retry. Synthetic
+compatibility, passing tests and rationale fluency cannot establish selection
+utility. Independent manager QA and a fresh grant are required before a real
+comparison. All existing locked semantic gates and historical rejections remain.
+
+## Prior 3.27 contract (historical)
+
+
 The local offline candidate uses prompt `behavior-3.27` and generation
 `grounded-groups-11`. It is untested with new model responses and is not deployed.
 The failed 3.26 comparison retained five strict duplicate-ID rejections, generic
@@ -93,7 +135,7 @@ array explicitly means unknown with confidence zero. A nonempty array must selec
 an offered known label and a bounded confidence. There is no valid wire
 representation of unknown with nonzero confidence: supplying one is rejected,
 never silently zeroed. Maliciousness confidence remains uncalibrated and bounded
-to0â€“1. Inconclusive always remains available. Benign still requires cited positive
+to0Ã¢â‚¬â€œ1. Inconclusive always remains available. Benign still requires cited positive
 fresh context; malicious still requires a complete source-supported findings
 bundle. Missing support and unsupported conclusions reject the entire assessment.
 

@@ -1,4 +1,5 @@
 """Typed source binding, grouped interpretation, and rejection regressions."""
+from test_generation_fixtures import decision
 import copy,json
 import pytest
 from behavior_synthesis import offers,decode,validate,render,presentation
@@ -10,7 +11,7 @@ from test_generation_choices import transport
 def event(ident,action='request',seen='2026-10-18T12:00:00+00:00',**kw):return {'id':ident,'action':action,'seen':seen,'source':'test','sensor':'test','provenance':{'detail':'sample'},**kw}
 def packet(*events):return {'packet_id':'typed-test','events':list(events),'context':[],'coverage':'saved_samples'}
 def choose(p,kind,meaning=None):
- table=offers(p);wire={k:'omit' for k in table};key=next(k for k,v in table.items() if v['kind']==kind);wire[key]=meaning or table[key]['interpretations'][-1];return wire
+ table=offers(p);wire={k:decision('omit') for k in table};key=next(k for k,v in table.items() if v['kind']==kind);wire[key]=meaning or table[key]['interpretations'][-1];return wire
 def http():return packet(event('a',method='GET',path='/config.json',status=404),event('b',seen='2026-10-18T12:00:01+00:00',method='GET',path='/sitemap.xml',status=200))
 
 @pytest.mark.parametrize('text',['GET /config.json returned 200 and GET /sitemap.xml returned 404.','GET /config.json returned 2.'])
@@ -95,9 +96,9 @@ def test_no_http_ftp_cause_and_no_private_address_disclosure():
  assert destination({'destination':{'scope':'public','address':'10.0.0.1'}})=='unavailable'
 
 def test_synthesis_not_malicious_support_and_positive_opposition_cannot_be_hidden():
- p=linked_packet();wire=example(p);wire['observable_synthesis']=choose(p,'session_sequence');wire['classification']='malicious';wire['observations']={k:'omit' for k in wire['observations']}
+ p=linked_packet();wire=example(p);wire['observable_synthesis']=choose(p,'session_sequence');wire['classification']='malicious';wire['observations']={k:decision('omit') for k in wire['observations']}
  with pytest.raises(ModelOutputError):transport(p,wire)
- p['context']=[{'id':'positive','kind':'intelligence','provider':'crawler','status':'ok','verified':True,'cache_fresh':True,'expires':'2099-01-01T00:00:00+00:00'}];wire=example(p);wire['observable_synthesis']=choose(p,'session_sequence');wire['observations']={k:'omit' for k in wire['observations']}
+ p['context']=[{'id':'positive','kind':'intelligence','provider':'crawler','status':'ok','verified':True,'cache_fresh':True,'expires':'2099-01-01T00:00:00+00:00'}];wire=example(p);wire['observable_synthesis']=choose(p,'session_sequence');wire['observations']={k:decision('omit') for k in wire['observations']}
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 def test_duplicate_selected_group_or_authored_fields_reject_without_leaking_text():

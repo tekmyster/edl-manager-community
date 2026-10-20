@@ -1,4 +1,5 @@
 """Prompt-only factual-coverage experiment; mocked outputs do not measure utility."""
+from test_generation_fixtures import decision
 import copy
 import pytest
 import behavior_ai as ai
@@ -10,7 +11,7 @@ from test_generation_choices import transport
 
 def empty_wire(packet):
  wire=gen.example(packet)
- wire['observations']={key:'omit' for key in wire['observations']}
+ wire['observations']={key:decision('omit') for key in wire['observations']}
  return wire
 
 
@@ -21,8 +22,8 @@ def test_neutral_preference_keeps_all_omit_unknown_and_inconclusive_valid():
  assert result['classification']=='inconclusive'
  assert result['automation']==result['intent']=={'classification':'unknown','confidence':0}
  ai.validate_result(result,packet,[],{})
- assert metadata['prompt_version']=='behavior-3.27'
- assert metadata['generation_schema_version']==gen.VERSION=='grounded-groups-11'
+ assert metadata['prompt_version']=='behavior-3.28'
+ assert metadata['generation_schema_version']==gen.VERSION=='grounded-groups-12'
  assert requests[0]['messages'][0]['content']==gen.INSTRUCTION
 
 
@@ -55,13 +56,13 @@ def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monke
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  with brain.connect() as db:
   old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.27')
- assert ai.GENERATION_SCHEMA_VERSION=='grounded-groups-11'
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.28')
+ assert ai.GENERATION_SCHEMA_VERSION=='grounded-groups-12'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='cached'
  with brain.connect() as db:
   rows=[tuple(row) for row in db.execute('SELECT * FROM assessments')]
- assert old in rows and len(rows)==2 and calls==[old_version,'behavior-3.27']
+ assert old in rows and len(rows)==2 and calls==[old_version,'behavior-3.28']
  assert len({row[2] for row in rows})==2
  native_after=store.describe('8.8.8.8')
  assert native_before['score']==native_after['score'] and native_before['retention']==native_after['retention']

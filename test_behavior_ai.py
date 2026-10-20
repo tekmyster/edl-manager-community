@@ -131,7 +131,7 @@ def test_small_gpu_response_is_compact_and_truncation_is_rejected(evidence):
  def send(*args,**kwargs):
   schema=kwargs['json']['format']['properties']
   assert schema['observations']['type']=='object'
-  assert 'detail' in next(iter(schema['observations']['properties'].values()))['enum']
+  assert 'detail' in next(iter(schema['observations']['properties'].values()))['properties']['purpose']['enum']
   assert 'analysis_summary' not in schema
   return Response()
  with pytest.raises(ValueError,match='output_limit'):

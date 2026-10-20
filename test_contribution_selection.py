@@ -1,4 +1,5 @@
 """Keyed contribution choices and explicit source timing. Synthetic, not model utility."""
+from test_generation_fixtures import decision
 import copy,itertools,json
 import pytest
 import behavior_ai as ai
@@ -20,10 +21,10 @@ def test_zero_one_and_all_twelve_contributions_keep_every_selected_statement():
   p={'packet_id':'boundary-'+str(n),'events':[{'id':str(i),'source':'tpot','sensor':'Cowrie','action':'Cowrie','seen':'2026-10-17T10:00:00+00:00'} for i in range(n)],'context':[],'coverage':'saved_samples'}
   t,_=gen.offers(p,[],{});assert len(t['facts'])==n
   for purpose in ['detail','support']:
-   w=empty(p);w['observations']={k:purpose for k in t['facts']};before=copy.deepcopy((p,w));v=transport(p,w)[0][0]
+   w=empty(p);w['observations']={k:decision(purpose) for k in t['facts']};before=copy.deepcopy((p,w));v=transport(p,w)[0][0]
    assert v['findings']==list(t['facts'].values()) and (p,w)==before
    assert v['contradictory_evidence']==[]
-  w=empty(p);w['observations']['foreign']='detail'
+  w=empty(p);w['observations']['foreign']=decision('detail')
   with pytest.raises(ValueError):gen.decode(w,p,[],{})
 
 
@@ -31,9 +32,9 @@ def test_each_purpose_assignment_is_lossless_and_order_preserved_not_a_utility_f
  p=positive();t,_=gen.offers(p,[],{});ids=list(t['facts']);before=copy.deepcopy(p)
  choices=[['omit','detail','support']+(['counterevidence'] if k in t['counterevidence'] else []) for k in ids]
  for roles in itertools.product(*choices):
-  w=empty(p);w['observations']=dict(zip(reversed(ids),reversed(roles)));v=gen.decode(w,p,[],{});ai.validate_result(v,p,[],{})
-  assert v['findings']==[t['facts'][k] for k,r in w['observations'].items() if r in ['detail','support']]
-  assert v['contradictory_evidence']==[t['facts'][k] for k,r in w['observations'].items() if r=='counterevidence']
+  w=empty(p);w['observations']={k:decision(r) for k,r in zip(reversed(ids),reversed(roles))};v=gen.decode(w,p,[],{});ai.validate_result(v,p,[],{})
+  assert v['findings']==[t['facts'][k] for k,r in w['observations'].items() if r['purpose'] in ['detail','support']]
+  assert v['contradictory_evidence']==[t['facts'][k] for k,r in w['observations'].items() if r['purpose']=='counterevidence']
  assert p==before
 
 
@@ -63,7 +64,7 @@ def test_old_array_wire_hybrid_and_old_dictionary_version_reject(mutation):
 
 
 def test_detail_and_support_emit_identical_canonical_findings_without_judging_purpose_as_truth():
- p=linked_packet();k=next(iter(gen.offers(p,[],{})[0]['facts']));a=empty(p);a['observations']={k:'detail'};b=copy.deepcopy(a);b['observations'][k]='support'
+ p=linked_packet();k=next(iter(gen.offers(p,[],{})[0]['facts']));a=empty(p);a['observations']={k:decision('detail')};b=copy.deepcopy(a);b['observations'][k]=decision('support')
  assert transport(p,a)[0][0]==transport(p,b)[0][0]
 
 
@@ -84,17 +85,17 @@ def test_positive_can_be_support_or_opposition_and_all_context_visible_with_synt
  t,_=gen.offers(p,[],{});k=next(iter(t['counterevidence']));w=empty(p);w['observable_synthesis'][next(iter(w['observable_synthesis']))]='reported_session_sequence'
  with pytest.raises(ai.ModelOutputError):transport(p,w)
  for purpose,classification in [('support','benign'),('counterevidence','inconclusive')]:
-  w['observations']={k:purpose};w['classification']=classification;v=transport(p,w)[0][0]
+  w['observations']={k:decision(purpose)};w['classification']=classification;v=transport(p,w)[0][0]
   assert t['facts'][k] in v['findings']+v['contradictory_evidence']
 
 
 def test_malicious_support_must_remain_cited_findings_not_opposition_or_auto_added():
- p=linked_packet();t,c=gen.offers(p,[],{});pair=c['malicious_support_pairs'][0];w=empty(p);w['classification']='malicious';w['observations']={k:'support' for k in pair}
+ p=linked_packet();t,c=gen.offers(p,[],{});pair=c['malicious_support_pairs'][0];w=empty(p);w['classification']='malicious';w['observations']={k:decision('support') for k in pair}
  assert transport(p,w)[0][0]['classification']=='malicious'
  w['observations'].pop(pair[1])
  with pytest.raises(ai.ModelOutputError):transport(p,w)
  assert pair[1] not in w['observations']
- w['observations'][pair[1]]='counterevidence'
+ w['observations'][pair[1]]=decision('counterevidence')
  with pytest.raises(ai.ModelOutputError):transport(p,w)
  assert transport(p,empty(p))[0][0]['classification']=='inconclusive'
 
@@ -122,9 +123,9 @@ def test_prompt_selection_and_generation_boundaries_separate_cache_from_failed_a
  s=Store(tmp_path/'native');s.evidence('8.8.8.8','tpot','fixture',now(),'ssh',50);b=ai.Brain(s);ident,p,f=b.packet(s.describe('8.8.8.8'));calls=[]
  def fake(*args):calls.append((ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION));return result(p),{}
  monkeypatch.setattr(ai,'infer',fake);cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':None}
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.26');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','grounded-groups-10');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed'
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.27');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','grounded-groups-11');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed'
  with b.connect() as db:old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.27');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','grounded-groups-11');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed';assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='cached'
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.28');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','grounded-groups-12');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed';assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='cached'
  with b.connect() as db:rows=[tuple(r) for r in db.execute('SELECT * FROM assessments')]
  assert old in rows and len(rows)==2 and len(calls)==2
 @pytest.mark.parametrize('constant',['NaN','Infinity','-Infinity'])
@@ -136,7 +137,7 @@ def test_nonfinite_raw_json_constants_remain_strictly_rejected(constant):
 def test_twelve_combined_unique_observations_in_both_roles_not_twelve_each_and_no_hidden_cap():
  p=positive();base=p['events'][0];p['context'].append({**p['context'][0],'id':'other-positive'});p['events'] += [{**base,'id':'extra-'+str(i)} for i in range(7)]
  t,_=gen.offers(p,[],{});assert len(t['facts'])==12 and len(t['counterevidence'])==2
- w=empty(p);w['observations']={k:'counterevidence' if k in t['counterevidence'] else 'detail' for k in t['facts']};before=copy.deepcopy(w);v=transport(p,w)[0][0]
+ w=empty(p);w['observations']={k:decision('counterevidence' if k in t['counterevidence'] else 'detail') for k in t['facts']};before=copy.deepcopy(w);v=transport(p,w)[0][0]
  assert len(v['findings'])==10 and len(v['contradictory_evidence'])==2 and w==before
- w['observations']['unoffered-thirteenth']='support'
+ w['observations']['unoffered-thirteenth']=decision('support')
  with pytest.raises(ai.ModelOutputError):transport(p,w)

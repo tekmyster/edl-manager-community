@@ -1,4 +1,5 @@
 """Requester order is intentional; omission and output member order remain legal."""
+from test_generation_fixtures import decision
 import copy,json
 import pytest,requests
 import behavior_ai as ai
@@ -11,7 +12,7 @@ PRIOR_ORDER=['generation_schema_version','packet_id','classification','malicious
 
 def omitted(packet):
  wire=gen.example(packet);wire.update(maliciousness_confidence=0)
- wire['observations']={key:'omit' for key in wire['observations']}
+ wire['observations']={key:decision('omit') for key in wire['observations']}
  return wire
 
 def prepared(body):
@@ -28,7 +29,7 @@ def test_nonempty_groups_are_first_at_infer_requester_and_prepared_body_boundary
  assert body['messages'][0]['content']==gen.INSTRUCTION
  assert body['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
  assert p==original and value['observable_synthesis']==value['findings']==[]
- assert metadata['prompt_version']=='behavior-3.27' and metadata['generation_schema_version']=='grounded-groups-11'
+ assert metadata['prompt_version']=='behavior-3.28' and metadata['generation_schema_version']=='grounded-groups-12'
 
 def test_empty_groups_keep_old_schema_property_and_required_order():
  p={'packet_id':'empty','events':[],'context':[],'coverage':'saved_samples'}
