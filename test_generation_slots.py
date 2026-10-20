@@ -19,7 +19,7 @@ def test_positive_observation_has_one_identity_and_exclusive_role_slot():
  assert set(t['counterevidence'])<=set(t['facts']) and 'counterevidence' not in prompt['offered']
  key=next(iter(t['counterevidence']));spec=schema['properties']['observations']
  assert spec['properties'][key]['enum']==['omit','finding','counterevidence']
- assert spec['required']==list(t['facts'])
+ assert spec['required']==[] and list(spec['properties'])==list(t['facts'])
  for role in ('omit','finding','counterevidence'):
   wire=example(p);observation_roles(wire);wire['observations'][key]=role
   value=decode(wire,p,[],{});validate_result(value,p,[],{})
@@ -72,12 +72,11 @@ def test_all_omit_and_unknown_stay_empty_without_forced_fact_or_mapping():
 
 @pytest.mark.parametrize('mutation',[
  lambda w:w['observations'].update({'foreign':'finding'}),
- lambda w:w['observations'].pop(next(iter(w['observations']))),
  lambda w:w['observations'].__setitem__(next(iter(w['observations'])),['finding','counterevidence']),
  lambda w:w['observations'].__setitem__(next(iter(w['observations'])),True),
  lambda w:w.update(generation_schema_version='grounded-choices-2'),
 ])
-def test_foreign_missing_cross_role_or_legacy_structures_reject(mutation):
+def test_foreign_cross_role_or_legacy_structures_reject(mutation):
  p=positive();w=example(p);mutation(w)
  with pytest.raises(ModelOutputError):transport(p,w)
 

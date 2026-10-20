@@ -2,8 +2,8 @@
 import contextlib,copy,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.22'
-GENERATION_SCHEMA_VERSION='grounded-groups-8'
+PROMPT_VERSION='behavior-3.23'
+GENERATION_SCHEMA_VERSION='grounded-groups-9'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -312,7 +312,7 @@ class AssessmentShapeError(ValueError):
 def shape(spec,value,path=()):
  kind=spec['type']
  if kind=='object':
-  if not isinstance(value,dict) or set(value)!=set(spec['required']):raise AssessmentShapeError('Unexpected assessment fields','object_fields',path)
+  if not isinstance(value,dict) or not set(spec['required'])<=set(value)<=set(spec['properties']):raise AssessmentShapeError('Unexpected assessment fields','object_fields',path)
   for k,item in value.items():shape(spec['properties'][k],item,path+(k,))
  elif kind=='array':
   if not isinstance(value,list) or not spec.get('minItems',0)<=len(value)<=spec['maxItems']:raise AssessmentShapeError('Invalid assessment list','list_bounds_or_type',path)
