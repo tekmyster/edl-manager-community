@@ -1,5 +1,6 @@
 """Prompt-only factual-coverage experiment; mocked outputs do not measure utility."""
 import copy
+import pytest
 import behavior_ai as ai
 import behavior_generation as gen
 from behavior_synthesis import offers, render
@@ -37,7 +38,8 @@ def test_neutral_session_account_needs_no_intent_verdict_or_support_pair():
  ai.validate_result(result,packet,[],{})
 
 
-def test_prompt_only_version_gets_fresh_job_preserves_old_assessment(tmp_path,monkeypatch):
+@pytest.mark.parametrize('old_version',['behavior-3.21','behavior-3.22'])
+def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monkeypatch,old_version):
  from core import Store,now
  from test_behavior_ai import result
  store=Store(tmp_path/'native')
@@ -49,7 +51,7 @@ def test_prompt_only_version_gets_fresh_job_preserves_old_assessment(tmp_path,mo
   return result(packet),{'prompt_version':ai.PROMPT_VERSION,'generation_schema_version':ai.GENERATION_SCHEMA_VERSION}
  monkeypatch.setattr(ai,'infer',fake)
  cfg={**ai.DEFAULTS,'model_enabled':True,'daily_budget':None}
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.21')
+ monkeypatch.setattr(ai,'PROMPT_VERSION',old_version)
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  with brain.connect() as db:
   old=tuple(db.execute('SELECT * FROM assessments').fetchone())
@@ -59,7 +61,7 @@ def test_prompt_only_version_gets_fresh_job_preserves_old_assessment(tmp_path,mo
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='cached'
  with brain.connect() as db:
   rows=[tuple(row) for row in db.execute('SELECT * FROM assessments')]
- assert old in rows and len(rows)==2 and calls==['behavior-3.21','behavior-3.23']
+ assert old in rows and len(rows)==2 and calls==[old_version,'behavior-3.23']
  assert len({row[2] for row in rows})==2
  native_after=store.describe('8.8.8.8')
  assert native_before['score']==native_after['score'] and native_before['retention']==native_after['retention']
