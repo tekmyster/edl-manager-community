@@ -55,7 +55,8 @@ create a provider outage backoff.
 
 One configured deadline (default 120 seconds, maximum 180) covers preparation,
 both requests, admission, streaming and validation. Stage two receives the time
-remaining. The 180-second setting preserves the existing 15-second gateway
+remaining. Preparation/file checks and full decoding run under the same bounded
+controller; late returns cannot claim another stage or publish a result. The 180-second setting preserves the existing 15-second gateway
 admission header. There is no POST retry. Cancellation closes local connections
 and rejects late output; it cannot prove that a remote backend immediately
 stopped computation. An injected transport that ignores cancellation may finish

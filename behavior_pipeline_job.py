@@ -28,9 +28,10 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   cleanup=Ledger(brain);cleanup.recovered(plan['id'],status)
   return Status(status,units)
  try:
-  candidates=(brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else candidates[:1]
-  registry=load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json');allowed=select(registry,packet)
-  cid=ai.config_id(cfg)+'-'+ai.digest([allowed,candidates,ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION,VERSION,source_identity()])
+  candidates=deadline.call(lambda:brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else candidates[:1]
+  registry=deadline.call(lambda:load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'));allowed=select(registry,packet)
+  client_sources=deadline.call(source_identity)
+  cid=ai.config_id(cfg)+'-'+ai.digest([allowed,candidates,ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION,VERSION,client_sources])
   ledger=Ledger(brain,hook=hook);ledger.recover_active()
   existing=ledger.inspect(ident,cid)
   if existing:
@@ -52,7 +53,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    backoff=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
    if backoff and json.loads(backoff[0])['until']>time.time():return Status('backoff')
   deadline.check();livecfg=live()
-  try:pipe=Pipeline(cfg,packet,candidates,allowed,deadline.check)
+  try:pipe=deadline.call(lambda:Pipeline(cfg,packet,candidates,allowed,deadline.check))
   except (ValueError,OSError,KeyError):return Status('input_verification_required')
   deadline.call(lambda:ai.local_endpoint(cfg['endpoint']))
   secret=pathlib.Path(brain.store.path).parent/'behavior-provider.json'
@@ -70,7 +71,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   refs=[ident]+[c['candidate_id'] for c in candidates]
   parent=ledger.begin(ident,cid,pipe.input_key,livecfg,time.time()+deadline.left(),refs)
   plan=ledger.plan(parent);frozen_receipt=None;ledger.packet_hash=hash_value(pipe.packet)
-  def guard():
+  def verify_inputs():
    deadline.check();value=live()
    if source_identity()!=pipe.identity['client_sources']:raise Refused('input_identity_changed')
    with brain.connect() as db:
@@ -85,6 +86,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    from behavior_tokens import load as verified
    if verified(value).value!=pipe.tokenizer.value:raise Refused('input_identity_changed')
    return value
+  def guard():return deadline.call(verify_inputs)
   ledger.verify=guard
   def execute(stage,request,decode,check):
    nonlocal last,charged_units
@@ -98,9 +100,10 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    preparation['input_preparation'].update(version=STAGE1 if stage==1 else STAGE2,user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
    wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':pipe.input_key},'version':STAGE1 if stage==1 else STAGE2,'expected_input':check['input_tokens']}
    try:
-    value,meta=ai.infer(cfg,packet,candidates,allowed,key,requester,attempt,_wire=wire,_deadline=deadline,_before_call=entry)
+    value,meta=deadline.call(lambda:ai.infer(cfg,packet,candidates,allowed,key,requester,attempt,_wire=wire,_deadline=deadline,_before_call=entry))
    except Exception as exc:
     last=copy.deepcopy(exc.metadata if isinstance(exc,ai.ModelOutputError) else getattr(exc,'_edl_failure_metadata',{}));last.update(stage=stage)
+    if attempt.started is not None:last.setdefault('request_id',attempt.id);last.setdefault('request_started_at',attempt.started);last.setdefault('request_transport_state','failed')
     raise
    meta['stage']=stage;last=meta;stages.append(meta);deadline.check();return value,meta
   check=pipe.tokenizer.check(pipe.stage1)

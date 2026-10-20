@@ -61,3 +61,43 @@ def test_shared_deadline_aborts_late_first_stage_before_second(tmp_path,monkeypa
   assert calls[0]['headers'].get('X-EDL-Admission-Wait')==('15' if seconds==180 else None)
   with b.connect() as db:assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
  finally:closed.set();close(s)
+
+@pytest.mark.parametrize('blocked',['preparation','identity','decode'])
+def test_blocked_preparation_identity_or_decode_cannot_hold_controller_past_deadline(tmp_path,monkeypatch,blocked):
+ from behavior_deadline import Deadline
+ import behavior_pipeline_job as job
+ monkeypatch.setattr(behavior_tokens,'load',lambda cfg:SyntheticCounter());monkeypatch.setattr(ai,'local_endpoint',lambda _:None)
+ monkeypatch.setattr(job,'Deadline',lambda value,stop:Deadline(.18,stop))
+ s,b,cfg,p=setup(tmp_path/'native');calls=[];release=threading.Event();entered=threading.Event();exited=threading.Event()
+ if blocked=='preparation':
+  original=job.Pipeline
+  def wait(*args,**kw):
+   entered.set();release.wait(2)
+   try:return original(*args,**kw)
+   finally:exited.set()
+  monkeypatch.setattr(job,'Pipeline',wait)
+ elif blocked=='identity':
+  original=job.source_identity
+  def wait():
+   entered.set();release.wait(2)
+   try:return original()
+   finally:exited.set()
+  monkeypatch.setattr(job,'source_identity',wait)
+ else:
+  original=Pipeline.freeze
+  def wait(self,wire):
+   entered.set();release.wait(2)
+   try:return original(self,wire)
+   finally:exited.set()
+  monkeypatch.setattr(Pipeline,'freeze',wait)
+ def send(url,**kw):calls.append(kw['json']);return Reply(kw['json'],choices(kw['json']))
+ start=time.monotonic()
+ try:
+  status=run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)
+  assert entered.is_set() and status!='completed' and time.monotonic()-start<1
+  assert len(calls)==(1 if blocked=='decode' else 0)
+  with b.connect() as db:assert db.execute("SELECT count(*) FROM assessments WHERE status='completed'").fetchone()[0]==0
+  if blocked=='decode':
+   with b.connect() as db:metadata=json.loads(db.execute('SELECT result FROM assessments').fetchone()[0])['metadata']
+   assert metadata['request_count']==1 and metadata['input_tokens'] is None and metadata['generation_stages'][0]['request_started_at']
+ finally:release.set();assert exited.wait(1);time.sleep(.05);close(s)
