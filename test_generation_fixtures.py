@@ -19,9 +19,8 @@ def wire_from_storage(packet,value,candidates=None,registry=None):
  table,_=offers(packet,candidates,registry);wire=example(packet,candidates,registry)
  wire.update(classification=canonical['classification'],maliciousness_confidence=canonical['maliciousness_confidence'])
  def find(kind,value):return next(k for k,v in table[kind].items() if v==value)
- wire['observations']={k:'omit' for k in wire['observations']}
- for field,role in [('findings','finding'),('contradictory_evidence','counterevidence')]:
-  for claim in canonical[field]:wire['observations'][find('facts',claim)]=role
+ wire['finding_ids']=[find('facts',claim) for claim in canonical['findings']]
+ wire['counterevidence_ids']=[find('facts',claim) for claim in canonical['contradictory_evidence']]
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
   chosen=[next(k for k,v in table[kind].items() if {f:x for f,x in v.items() if f!='name'}==item) for item in canonical[field]]
   if len(set(chosen))!=len(chosen):raise ValueError('Duplicate fixture selection')
@@ -37,9 +36,7 @@ def wire_or_invalid_legacy(packet,value,candidates=None,registry=None):
 
 
 def observation_roles(wire,findings=(),counterevidence=()):
- wire['observations']={k:'omit' for k in wire['observations']}
- for key in findings:wire['observations'][key]='finding'
- for key in counterevidence:
-  if wire['observations'].get(key)=='finding':raise ValueError('Fixture cannot assign both roles')
-  wire['observations'][key]='counterevidence'
+ wire['finding_ids']=list(findings)
+ wire['counterevidence_ids']=list(counterevidence)
+ if any(key in wire['finding_ids'] for key in wire['counterevidence_ids']):raise ValueError('Fixture cannot assign both roles')
  return wire

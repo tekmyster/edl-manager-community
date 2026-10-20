@@ -95,9 +95,9 @@ def test_no_http_ftp_cause_and_no_private_address_disclosure():
  assert destination({'destination':{'scope':'public','address':'10.0.0.1'}})=='unavailable'
 
 def test_synthesis_not_malicious_support_and_positive_opposition_cannot_be_hidden():
- p=linked_packet();wire=example(p);wire['observable_synthesis']=choose(p,'session_sequence');wire['classification']='malicious';wire['observations']={k:'omit' for k in wire['observations']}
+ p=linked_packet();wire=example(p);wire['observable_synthesis']=choose(p,'session_sequence');wire['classification']='malicious';wire['finding_ids']=[];wire['counterevidence_ids']=[]
  with pytest.raises(ModelOutputError):transport(p,wire)
- p['context']=[{'id':'positive','kind':'intelligence','provider':'crawler','status':'ok','verified':True,'cache_fresh':True,'expires':'2099-01-01T00:00:00+00:00'}];wire=example(p);wire['observable_synthesis']=choose(p,'session_sequence');wire['observations']={k:'omit' for k in wire['observations']}
+ p['context']=[{'id':'positive','kind':'intelligence','provider':'crawler','status':'ok','verified':True,'cache_fresh':True,'expires':'2099-01-01T00:00:00+00:00'}];wire=example(p);wire['observable_synthesis']=choose(p,'session_sequence');wire['finding_ids']=[];wire['counterevidence_ids']=[]
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 def test_duplicate_selected_group_or_authored_fields_reject_without_leaking_text():

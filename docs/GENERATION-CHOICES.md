@@ -1,5 +1,43 @@
 # Versioned grounded choices
 
+The local exploratory contract is prompt `behavior-3.26` and generation
+`grounded-groups-10`. It has not been evaluated with new model responses and is
+not a deployed or demonstrated semantic repair. Stored canonical results remain
+`behavior-3`; grounding and synthesis, rendering, scoring and existing source
+and eligibility rules are unchanged.
+
+`finding_ids` and `counterevidence_ids` are required arrays of offered fact IDs.
+Both may be empty. The first admits every offered fact; the second admits only
+qualifying fresh positive context using the same fact identity. The arrays
+jointly select at most the existing twelve offered facts. There is no smaller
+presentation limit. The decoder rejects unknown IDs, within-array duplicates,
+cross-role reuse and invalid roles before copying complete statements and
+ordered citations in each array's order. It never sorts, clips, deduplicates,
+postfills support or hides a legal generic-label choice. Strict JSON member and
+schema checks reject old dictionaries, old versions, mixed forms and extra text.
+Mapping switches, actor and hypothesis contracts retain their existing form.
+
+The offered-ID namespace is explicitly frozen at `grounded-groups-9` for all
+choice kinds, independent of the new wire version. All 3.25 source offers,
+summary metadata and historical input remain intact. The prompt and generation
+version changes separate new cache/job identities; they do not migrate stored
+assessments, replay pending dispatches or mass-requeue jobs. Observable synthesis
+remains first in schemas with groups; output member order is not an acceptance
+requirement. Empty inconclusive/unknown results remain legal, and selecting a
+group never replaces explicit support or positive-context visibility checks.
+
+Array duplicates and cross-role reuse are now expressible, so rejection risk
+must be measured in a separately authorized comparison. Offline conversions of
+old responses verify binding and compatibility only, including preservation of
+known bad selections and missing explicit display details. They are not new
+model outcomes, noise improvement or accuracy evidence. No additional inference
+pass, model change, preparation grant or delivery follows from offline tests.
+
+## Historical contracts
+
+The following retained notes describe earlier versions, not the current array
+wire format or authorization to deploy it.
+
 Prompt `behavior-3.14` uses generation schema `grounded-choices-5`. Stored results
 remain `behavior-3` and are independently checked by `grounded-observations-5`.
 Older assessments, rejections, reviews and labels remain unchanged.
@@ -38,7 +76,7 @@ array explicitly means unknown with confidence zero. A nonempty array must selec
 an offered known label and a bounded confidence. There is no valid wire
 representation of unknown with nonzero confidence: supplying one is rejected,
 never silently zeroed. Maliciousness confidence remains uncalibrated and bounded
-to0–1. Inconclusive always remains available. Benign still requires cited positive
+to0â€“1. Inconclusive always remains available. Benign still requires cited positive
 fresh context; malicious still requires a complete source-supported findings
 bundle. Missing support and unsupported conclusions reject the entire assessment.
 
