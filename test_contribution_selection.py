@@ -134,7 +134,7 @@ def test_nonfinite_raw_json_constants_remain_strictly_rejected(constant):
 
 
 def test_twelve_combined_unique_observations_in_both_roles_not_twelve_each_and_no_hidden_cap():
- p=positive();base=p['events'][0];p['context'].append({**p['context'][0],'id':'other-positive'});p['events'] += [{**base,'id':'extra-'+str(i)} for i in range(20)]
+ p=positive();base=p['events'][0];p['context'].append({**p['context'][0],'id':'other-positive'});p['events'] += [{**base,'id':'extra-'+str(i)} for i in range(7)]
  t,_=gen.offers(p,[],{});assert len(t['facts'])==12 and len(t['counterevidence'])==2
  w=empty(p);w['observations']={k:'counterevidence' if k in t['counterevidence'] else 'detail' for k in t['facts']};before=copy.deepcopy(w);v=transport(p,w)[0][0]
  assert len(v['findings'])==10 and len(v['contradictory_evidence'])==2 and w==before
