@@ -46,6 +46,20 @@ def test_cancel_stops_blocked_io():
   assert time.monotonic()-start<.5
  finally:d.finish()
 
+def test_nested_uncooperative_work_is_bounded_by_original_absolute_deadline():
+ release=threading.Event();entered=threading.Event();late=threading.Event();d=Deadline(.12)
+ def nested():
+  entered.set();release.wait(2);return 'late'
+ def outer():
+  try:d.call(nested)
+  finally:late.set()
+ start=time.monotonic()
+ try:
+  with pytest.raises(Expired):d.call(outer)
+  assert entered.is_set() and time.monotonic()-start<.7
+ finally:d.finish();release.set()
+ assert late.wait(1)
+
 def test_production_transport_has_one_post_and_remaining_timeout(monkeypatch):
  events=[];clock=[0.0]
  class Sock:

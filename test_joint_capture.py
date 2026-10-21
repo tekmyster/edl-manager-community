@@ -11,7 +11,7 @@ from test_pipeline_support import setup,close,SyntheticCounter,Reply,choices
 def offline(monkeypatch):
  monkeypatch.setattr(ai,'local_endpoint',lambda _:None);monkeypatch.setattr(behavior_tokens,'load',lambda cfg:SyntheticCounter())
 
-def request_directory(b):return next(pathlib.Path(b.path).with_suffix('.request-evidence').iterdir())
+def request_directory(b):return next(pathlib.Path(b.path).with_suffix('.request-evidence').iterdir())/'stage1'
 
 @pytest.mark.parametrize('fault',['close','raw-response.bin','envelope.json','capture.json','finalization.json','incomplete','length','invalid'])
 def test_capture_or_terminal_failure_retains_raw_and_never_accepts_or_retries(tmp_path,monkeypatch,fault):
@@ -50,7 +50,7 @@ def test_rejected_raw_counter_string_remains_private_not_public_diagnostic(tmp_p
   directory=request_directory(b);private=(directory/'outcome.json').read_text();assert 'PRIVATE_BAD_COUNT' in private
   with b.connect() as db:
    result=db.execute('SELECT result FROM assessments').fetchone()[0];assert 'PRIVATE_BAD_COUNT' not in result
-   meta=json.loads(result)['metadata'];assert meta['input_tokens'] is None and meta['request_evidence']['usage']['invalid_report_count']>0
+   meta=json.loads(result)['metadata'];assert meta['input_tokens'] is None and all(stage['request_evidence']['usage']['invalid_report_count']>0 for stage in meta['generation_stages'])
  finally:close(s)
 
 def test_delayed_snapshot_late_metadata_never_extends_request_or_changes_outcome(tmp_path,monkeypatch):
@@ -81,15 +81,15 @@ def test_busy_final_commit_keeps_validated_review_and_no_redispatch(tmp_path):
  def send(url,**kw):calls.append(1);return Reply(kw['json'],choices(kw['json']))
  def hook(point):
   if point=='before_final' and not locks:
-   db=sqlite3.connect(str(b.path),timeout=.01);db.execute('BEGIN IMMEDIATE');locks.append(db)
+   db=sqlite3.connect(str(b.path),timeout=.01,check_same_thread=False);db.execute('BEGIN IMMEDIATE');locks.append(db)
  try:
   status=run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send,hook=hook)
-  assert status=='persistence_review_required' and status.request_units==1 and calls==[1]
+  assert status=='persistence_review_required' and status.request_units==2 and calls==[1,1]
   assert len(list(pathlib.Path(b.path).with_suffix('.pipeline-review').glob('*.json')))==1
  finally:
   for db in locks:db.rollback();db.close()
  with b.connect() as db:db.execute('UPDATE pipeline_plans SET deadline=0')
- try:assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='persistence_review_required' and calls==[1]
+ try:assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='persistence_review_required' and calls==[1,1]
  finally:close(s)
 
 def test_evidence_follows_existing_compaction_and_never_prunes_pending_or_uncertain(tmp_path):
@@ -100,7 +100,7 @@ def test_evidence_follows_existing_compaction_and_never_prunes_pending_or_uncert
   directory=request_directory(b);assert evidence.prune(b)==0 and directory.exists()
   with b.connect() as db:
    db.execute('DELETE FROM assessments');db.execute("UPDATE pipeline_plans SET created='2000'");assert compact(db,10,'2020')['compacted']==1
-  assert evidence.prune(b)==1 and not directory.exists()
+  assert evidence.prune(b)==1 and not directory.parent.exists()
   with b.connect() as db:assert db.execute('SELECT count(*) FROM pipeline_plans').fetchone()[0]==1
  finally:close(s)
 
@@ -130,6 +130,11 @@ def test_blocked_outcome_publication_cannot_extend_deadline_or_accept_late(tmp_p
 def test_blocked_pending_journal_defers_already_durable_result_without_redispatch(tmp_path,monkeypatch):
  import behavior_persistence as pending
  s,b,cfg,p=setup(tmp_path/'native');gate=threading.Event();released=threading.Event();old=pending.stage;calls=[]
+ # Keep the unchanged200ms journal deadline/assertions. A minimal complete
+ # source fixture isolates blocked persistence after the two required calls;
+ # full-source preparation/decode deadlines have their own unchanged tests.
+ p[0]={**p[0],'events':[],'context':[]}
+ with b.connect() as db:db.execute('UPDATE packets SET content=? WHERE id=?',(json.dumps(p[0]),p[0]['packet_id']))
  monkeypatch.setattr('behavior_pipeline_job.Deadline',lambda value,stop:Deadline(.2,stop))
  def blocked(*a,**k):
   gate.wait(3)
@@ -139,7 +144,7 @@ def test_blocked_pending_journal_defers_already_durable_result_without_redispatc
  def send(url,**kw):calls.append(1);return Reply(kw['json'],choices(kw['json']))
  start=time.monotonic()
  try:
-  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='persistence_deferred' and time.monotonic()-start<1 and calls==[1]
+  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='persistence_deferred' and time.monotonic()-start<1 and calls==[1,1]
   with b.connect() as db:
    plan=dict(db.execute('SELECT * FROM pipeline_plans').fetchone());assert plan['state']=='final_pending' and json.loads(plan['outcome'])['row'][5]=='completed'
   gate.set();assert released.wait(2)
@@ -149,6 +154,6 @@ def test_blocked_pending_journal_defers_already_durable_result_without_redispatc
    with b.connect() as db:
     if db.execute('SELECT state FROM pipeline_plans').fetchone()[0]=='completed':break
    time.sleep(.01)
-  with b.connect() as db:assert db.execute('SELECT count(*) FROM pipeline_stages').fetchone()[0]==1 and db.execute('SELECT requests FROM usage').fetchone()[0]==1
-  assert calls==[1]
+  with b.connect() as db:assert db.execute('SELECT count(*) FROM pipeline_stages').fetchone()[0]==2 and db.execute('SELECT requests FROM usage').fetchone()[0]==2
+  assert calls==[1,1]
  finally:gate.set();close(s)

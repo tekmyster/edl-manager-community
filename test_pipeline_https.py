@@ -49,7 +49,7 @@ def test_actual_tls_ca_and_no_redirect_or_post_retry(server):
  url,ca,seen=server;d=Deadline(10)
  try:
   response=d.call(lambda:post(url+'/redirect',{},json={'fixture':2},verify=ca,deadline=d,admission=True))
-  assert response.status_code==302 and len(seen)==1 and seen[0][2]['X-EDL-Admission-Wait']=='15'
+  assert response.status_code==302 and len(seen)==1 and 0<=int(seen[0][2]['X-EDL-Admission-Wait'])<=10
  finally:d.finish()
  d=Deadline(10)
  try:

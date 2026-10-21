@@ -7,7 +7,7 @@ class Cancelled(TimeoutError):pass
 class Deadline:
  def __init__(self,seconds,should_stop=None,clock=time.monotonic):
   if type(seconds) not in (int,float) or not 0<seconds<=180:raise ValueError('Invalid assessment deadline')
-  self.clock=clock;self.started=clock();self.end=self.started+seconds;self.seconds=seconds;self.stopped=should_stop or (lambda:False);self.cancelled=threading.Event();self.resources=[];self.lock=threading.Lock();self.timer=threading.Timer(seconds,self.abort);self.timer.daemon=True;self.timer.start()
+  self.clock=clock;self.started=clock();self.end=self.started+seconds;self.seconds=seconds;self.stopped=should_stop or (lambda:False);self.cancelled=threading.Event();self.resources=[];self.lock=threading.Lock();self.worker=threading.local();self.timer=threading.Timer(seconds,self.abort);self.timer.daemon=True;self.timer.start()
  def left(self):
   if self.stopped():self.abort();raise Cancelled('Analysis cancelled')
   left=self.end-self.clock()
@@ -36,8 +36,15 @@ class Deadline:
   for value in values:
    t=threading.Thread(target=self.close,args=(value,),daemon=True);t.start()
  def call(self,fn):
-  self.check();out=queue.Queue(maxsize=1)
+  self.check()
+  # Nested work is already isolated by this deadline's outer caller. Avoid
+  # another thread/queue at every state guard; the outer caller still bounds
+  # an uncooperative nested function, and checks reject all late returns.
+  if getattr(self.worker,'bounded',False):
+   value=fn();self.check();return value
+  out=queue.Queue(maxsize=1)
   def run():
+   self.worker.bounded=True
    try:
     self.check();value=fn()
     if self.cancelled.is_set():
@@ -97,7 +104,7 @@ def post(url,headers,*,json,verify,deadline,admission=False,**kwargs):
  body=__import__('json').dumps(json,ensure_ascii=True,separators=(',',':')).encode()
  if len(body)>65536:raise ValueError('Model request exceeds size limit')
  headers={**headers,'Content-Type':'application/json','Connection':'close'}
- if admission:headers['X-EDL-Admission-Wait']='15'
+ if admission:headers['X-EDL-Admission-Wait']=str(min(15,int(deadline.left())))
  connection.connect();deadline.watch(connection.sock);deadline.check();connection.sock.settimeout(deadline.left())
  connection.request('POST',parsed.path or '/',body=body,headers=headers);deadline.check();connection.sock.settimeout(deadline.left())
  raw=connection.getresponse();deadline.watch(raw);deadline.check()

@@ -39,8 +39,8 @@ def test_old_and_duplicate_wire_reject(pipeline):
 
 def test_single_receipt_has_actual_counts_and_unknowns_without_phantom_sum():
  result=aggregate([{'request_started_at':'synthetic','input_tokens':4,'output_tokens':None,'first_content_seconds':.1}],1)
- assert result['planned_requests']==result['request_count']==1 and result['input_tokens']==4 and result['output_tokens'] is None and result['first_content_seconds']==.1
- with pytest.raises(ValueError):aggregate([{},{}],1)
+ assert result['planned_requests']==2 and result['request_count']==1 and result['input_tokens'] is None and result['output_tokens'] is None and result['first_content_seconds'] is None and result['generation_stages'][0]['first_content_seconds']==.1
+ with pytest.raises(ValueError):aggregate([{},{},{}],1)
 
 @pytest.mark.parametrize('seconds',[10,120,180])
 def test_shared_deadline_aborts_late_first_stage_before_second(tmp_path,monkeypatch,seconds):
@@ -58,7 +58,7 @@ def test_shared_deadline_aborts_late_first_stage_before_second(tmp_path,monkeypa
   status=run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)
   assert status in ('failed','persistence_review_required','persistence_deferred') and len(calls)==1 and time.monotonic()-start<1
   assert closed.wait(.5)
-  assert calls[0]['headers'].get('X-EDL-Admission-Wait')==('15' if seconds==180 else None)
+  assert (int(calls[0]['headers']['X-EDL-Admission-Wait'])<=15 if seconds==180 else 'X-EDL-Admission-Wait' not in calls[0]['headers'])
   with b.connect() as db:assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
  finally:closed.set();close(s)
 

@@ -1,4 +1,4 @@
-"""Durable assessment coordinator. One joint request, exactly one final save."""
+"""Durable assessment coordinator. Two serial full joint requests, exactly one final save."""
 import copy,datetime as dt,json,pathlib,sqlite3,time
 from behavior_deadline import Deadline
 from behavior_pipeline import Pipeline,VERSION,aggregate,hash_value,source_identity,request_digest
@@ -35,11 +35,12 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   registry=deadline.call(lambda:load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'));allowed=select(registry,packet)
   client_sources=deadline.call(source_identity)
   cid=ai.config_id(cfg)+'-'+ai.digest([allowed,candidates,ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION,gen.VERSION,VERSION,client_sources])
-  ledger=Ledger(brain,check=deadline.check,hook=hook);ledger.recover_active()
-  existing=ledger.inspect(ident,cid)
+  ledger=deadline.call(lambda:Ledger(brain,check=deadline.check,hook=hook));deadline.call(ledger.recover_active)
+  existing=deadline.call(lambda:ledger.inspect(ident,cid))
   if existing:
    if existing['state']=='final_pending':return deadline.call(lambda:persist(existing))
    if existing['state']=='completed':
+    if existing['topology']!=VERSION or existing['outcome'] is None:return Status('persistence_review_required')
     with brain.connect() as db:db.execute("INSERT INTO analysis_counters VALUES(?,'cached',1) ON CONFLICT(hour,kind) DO UPDATE SET count=count+1",(ai.now(),))
     return Status('cached')
    if existing['state'] in ('failed','uncertain','review'):return Status('persistence_review_required')
@@ -73,10 +74,12 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   key=deadline.call(provider);deadline.check()
   ledger.check=deadline.check
   refs=[ident]+[c['candidate_id'] for c in candidates]
-  parent=ledger.begin(ident,cid,pipe.input_key,livecfg,time.time()+deadline.left(),refs)
-  plan=ledger.plan(parent);ledger.packet_hash=hash_value(pipe.packet);ledger.bound_request=pipe.request
+  def reserved(value):
+   nonlocal parent
+   parent=value
+  deadline.call(lambda:ledger.begin(ident,cid,pipe.input_key,livecfg,time.time()+deadline.left(),refs,_committed=reserved))
+  plan=deadline.call(lambda:ledger.plan(parent));ledger.packet_hash=hash_value(pipe.packet);ledger.bound_request=pipe.request;ledger.bound_requests[1]=pipe.request
   from behavior_request_evidence import RequestEvidence
-  evidence=deadline.call(lambda:RequestEvidence(brain,parent,pipe.request,pipe.input_key,deadline,cfg['model']))
   def verify_inputs():
    deadline.check();value=live()
    if source_identity()!=pipe.identity['client_sources']:raise Refused('input_identity_changed')
@@ -91,39 +94,49 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    return value
   def guard():return deadline.call(verify_inputs)
   ledger.verify=guard
-  def execute(stage,request,decode,check):
-   nonlocal last,charged_units
+  def execute(stage,assembly):
+   request=assembly.request;decode=assembly.decode;check=assembly.verification
+   nonlocal last,charged_units,evidence
+   # A new stage never inherits the preceding child's counters or capture.
+   last={'stage':stage,'generation_schema_version':request['format']['properties']['generation_schema_version']['enum'][0],'request_transport_state':'not_entered'};evidence=None
    active=guard();request_hash=request_digest(request)
-   if request_hash!=pipe.request_hash:raise Refused('pipeline_entry_identity')
+   if request_hash!=assembly.request_hash:raise Refused('pipeline_entry_identity')
    receipt_hash=None
-   request_id=ledger.claim(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
-   charged_units+=1
+   def claimed(value):last['request_id']=value
+   request_id=deadline.call(lambda:ledger.claim(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash,_committed=claimed))
    attempt=Attempt(brain.store,ident);attempt.id=request_id
-   def entry():active=guard();ledger.entry(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
+   def entry():
+    nonlocal charged_units
+    active=guard();ledger.entry(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash);charged_units=ledger.charges(parent)
    def before_post():
     active=guard()
     if request_digest(request)!=request_hash:raise Refused('pipeline_entry_identity')
     ledger.dispatch(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
    preparation=copy.deepcopy(pipe.preparation)
-   preparation['input_preparation'].update(version=pipe.generation_version,user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
-   wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':pipe.input_key},'generation_schema_version':pipe.generation_version,'expected_input':check['input_tokens'],'capture':evidence.wrap,'metadata_report':evidence.publish}
+   preparation['input_preparation'].update(version=request['format']['properties']['generation_schema_version']['enum'][0],user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
+   evidence=deadline.call(lambda:RequestEvidence(brain,parent,request,assembly.input_key,deadline,cfg['model'],stage=stage))
+   wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':assembly.input_key},'generation_schema_version':request['format']['properties']['generation_schema_version']['enum'][0],'expected_input':check['input_tokens'],'capture':evidence.wrap,'metadata_report':evidence.publish}
    try:
     value,meta=deadline.call(lambda:ai.infer(cfg,packet,candidates,allowed,key,requester,attempt,_wire=wire,_deadline=deadline,_before_call=entry,_before_post=before_post))
    except Exception as exc:
-    last=copy.deepcopy(exc.metadata if isinstance(exc,ai.ModelOutputError) else getattr(exc,'_edl_failure_metadata',{}));last.update(stage=stage)
+    last=copy.deepcopy(exc.metadata if isinstance(exc,ai.ModelOutputError) else getattr(exc,'_edl_failure_metadata',{}));last.update(stage=stage,request_id=attempt.id)
     if attempt.started is not None:last.setdefault('request_id',attempt.id);last.setdefault('request_started_at',attempt.started);last.setdefault('request_transport_state','failed')
     raise
-   meta['stage']=stage;last=meta;stages.append(meta);deadline.check();return value,meta
-  result,meta=execute(1,pipe.request,pipe.decode,pipe.verification)
+   meta['stage']=stage;last=meta
+   guard();deadline.check()
+   evidence_receipt=deadline.call(lambda:evidence.finish('validated',True,meta));meta['request_evidence']=evidence_receipt
+   for field in ('input_tokens','output_tokens','cached_input_tokens','uncached_input_tokens'):meta[field]=evidence_receipt['usage'][field]
+   stages.append(meta);deadline.check();return value,meta
+  draft,meta=execute(1,pipe)
+  deadline.call(lambda:ledger.accept_draft(parent,cid,pipe,draft,meta,evidence))
+  guard();revision=deadline.call(lambda:ledger.revision(parent,cid,pipe));guard()
+  result,meta=execute(2,revision)
   guard();deadline.check()
-  evidence_receipt=deadline.call(lambda:evidence.finish('validated',True,meta))
-  meta['request_evidence']=evidence_receipt
-  for field in ('input_tokens','output_tokens','cached_input_tokens','uncached_input_tokens'):meta[field]=evidence_receipt['usage'][field]
   metadata=aggregate(stages,time.monotonic()-deadline.started)
-  metadata.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=pipe.generation_version,input_binding=pipe.input_key,supplied_packet_ids=refs,wire_packet_ids=refs,identity=pipe.identity)
+  metadata.update(charged_request_units=charged_units,model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=pipe.generation_version,input_binding=revision.input_key,supplied_packet_ids=refs,wire_packet_ids=refs,identity=pipe.identity)
   result={**result,'metadata':metadata};created=ai.now();expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=cfg['assessment_hours'])).isoformat(timespec='seconds')
   outcome={'version':1,'row':[plan['assessment'],ident,cid,created,expires,'completed',json.dumps(result,allow_nan=False),'',round(time.monotonic()-deadline.started,3)],'owner':plan['owner'],'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
-  ledger.final(parent,cid,outcome,meta,True)
+  deadline.call(lambda:ledger.final(parent,cid,outcome,meta,True,assembly=revision,evidence=evidence))
   try:return deadline.call(lambda:persist(Ledger(brain).plan(parent),charged_units))
   finally:deadline.finish()
  except Refused as exc:
@@ -150,7 +163,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
  if outcome is not None and outcome['row'][5]=='completed':
   try:
    known=Ledger(brain).plan(parent)
-   if known['state']=='final_pending' and known['outcome'] is not None:
+   if known['state'] in ('final_pending','completed') and known['outcome'] is not None and json.loads(known['outcome'])==outcome:
     deadline.finish();return Status('persistence_deferred' if error in ('Expired','Cancelled') else 'persistence_review_required',charged_units)
   except (sqlite3.Error,Refused):pass
   # If SQLite cannot commit the validated final outcome, retain it privately
@@ -169,12 +182,12 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    if evidence.capture is not None:
     try:evidence.capture.close()
     except Exception:pass
-   last=evidence.measurements.snapshot() or last
+   last={**last,**evidence.measurements.snapshot()}
    last['request_evidence']=evidence.failure_snapshot(bool(last.get('request_started_at')),last)
    for field in ('input_tokens','output_tokens','cached_input_tokens','uncached_input_tokens'):last[field]=last['request_evidence']['usage'][field]
   saved=Ledger(brain).receipts(parent)
   if last and not any(v.get('request_id')==last.get('request_id') and v.get('stage')==last.get('stage') for v in saved):saved.append(last)
-  meta=aggregate(saved,time.monotonic()-deadline.started);meta.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=gen.VERSION,supplied_packet_ids=refs,failure_diagnostic={'category':'pipeline','stage':'assessment','reason':error if error in ('budget','configuration_changed','deadline_expired','superseded_before_request','pipeline_ownership_lost') else 'assessment_failed'})
+  meta=aggregate(saved,time.monotonic()-deadline.started);meta.update(charged_request_units=charged_units,model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=gen.FINAL_VERSION,supplied_packet_ids=refs,failure_diagnostic={'category':'pipeline','stage':'assessment','reason':error if error in ('budget','configuration_changed','deadline_expired','superseded_before_request','pipeline_ownership_lost') else 'assessment_failed'})
   for field in ('failure_diagnostic','validation_diagnostic'):
    if isinstance(last.get(field),dict):meta[field]=copy.deepcopy(last[field])
   created=ai.now();outcome={'version':1,'row':[plan['assessment'],ident,cid,created,(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(timespec='seconds'),'failed',json.dumps({'metadata':meta},allow_nan=False),error[:60],round(time.monotonic()-deadline.started,3)],'owner':plan['owner'],'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}

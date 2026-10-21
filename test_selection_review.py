@@ -7,7 +7,7 @@ from test_generation_choices import transport
 
 @pytest.mark.parametrize('purpose',['omit','detail','support'])
 def test_structured_purpose_preserves_complete_statement_and_no_authored_text(purpose):
- packet=linked_packet();tables,_=gen.offers(packet,[],{});key=next(iter(tables['facts']));wire=gen.example(packet);wire['observations']={key:{**wire['observations'][key],'purpose':purpose}};before=copy.deepcopy(wire)
+ packet=linked_packet();tables,_=gen.offers(packet,[],{});key=next(iter(tables['facts']));wire=gen.example(packet);wire['observations']={key:purpose};before=copy.deepcopy(wire)
  value=transport(packet,wire)[0][0]
  assert wire==before and value['findings']==([] if purpose=='omit' else [tables['facts'][key]])
  assert 'reason' not in json.dumps(value)

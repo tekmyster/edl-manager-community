@@ -2,8 +2,8 @@
 import contextlib,copy,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.31'
-GENERATION_SCHEMA_VERSION='joint-statement-comparison-1'
+PROMPT_VERSION='behavior-3.32'
+GENERATION_SCHEMA_VERSION='joint-answer-revision-1'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','tokenizer_file':'','tokenizer_sha256':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -454,7 +454,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire
    if _deadline:_deadline.check()
    transport_start=time.monotonic()
    headers={'Authorization':'Bearer '+key}
-   if _deadline and cfg['timeout']==180:headers['X-EDL-Admission-Wait']='15'
+   if _deadline and cfg['timeout']==180:headers['X-EDL-Admission-Wait']=str(min(15,int(_deadline.left())))
    remaining=_deadline.left() if _deadline else cfg['timeout']
    response=call(cfg['endpoint']+'/api/chat',headers=headers,json=request,verify=cfg['ca_file'] or True,timeout=(min(5,remaining),remaining),allow_redirects=False,stream=True)
    return _wire['capture'](response) if _wire and 'capture' in _wire else response
@@ -588,21 +588,21 @@ def drain_queue(brain,store,cfg,retrieved=None,should_stop=None,refresh_index=No
   if stopped():return results,examined,'cancelled'
   cfg=settings(store)
   if not cfg['enabled'] or not cfg['model_enabled']:return results,examined,'disabled'
-  if cfg['daily_budget'] is not None and calls>=2:return results,examined,'finite_cycle_limit'
+  if cfg['daily_budget'] is not None and calls+2>2:return results,examined,'finite_cycle_limit'
   with brain.connect() as db:pending=schedule(db,excluded=skipped)
   if not pending:return results,examined,'idle'
   for queued in pending:
    if stopped():return results,examined,'cancelled'
    cfg=settings(store)
    if not cfg['enabled'] or not cfg['model_enabled']:return results,examined,'disabled'
-   if cfg['daily_budget'] is not None and calls>=2:return results,examined,'finite_cycle_limit'
+   if cfg['daily_budget'] is not None and calls+2>2:return results,examined,'finite_cycle_limit'
    # Indexing/maintenance remains live during a long drain; no request pacing.
    if refresh_index and time.monotonic()>=next_index:
     refresh_index();next_index=time.monotonic()+60
     if stopped():return results,examined,'cancelled'
     cfg=settings(store)
     if not cfg['enabled'] or not cfg['model_enabled']:return results,examined,'disabled'
-    if cfg['daily_budget'] is not None and calls>=2:return results,examined,'finite_cycle_limit'
+    if cfg['daily_budget'] is not None and calls+2>2:return results,examined,'finite_cycle_limit'
    packet=json.loads(queued['content']);clock=dt.datetime.now(dt.timezone.utc)
    waiting=max(0,(clock-timestamp(queued['queued'])).total_seconds())
    fresh=any(timestamp(e.get('seen')) and clock-dt.timedelta(days=cfg['window_days'])<=timestamp(e.get('seen'))<=clock+dt.timedelta(minutes=5) for e in packet.get('events',[]))

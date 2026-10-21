@@ -5,7 +5,7 @@ import behavior_ai as ai
 import behavior_tokens
 from behavior_pipeline_job import run
 from test_pipeline_support import setup,close,SyntheticCounter,Reply,choices
-@pytest.mark.parametrize('boundary,actual',[('after_entry1',0),('before_final',1)])
+@pytest.mark.parametrize('boundary,actual',[('after_entry1',0),('after_accept1',1),('after_entry2',1),('before_final',2)])
 @pytest.mark.parametrize('change',['config','packet'])
 def test_changes_after_entry_do_not_send_stale_request(tmp_path,monkeypatch,boundary,actual,change):
  monkeypatch.setattr(ai,'local_endpoint',lambda _:None)
@@ -37,6 +37,6 @@ def test_disable_after_response_prevents_final_acceptance(tmp_path,monkeypatch):
   calls.append(kw['json']);return Reply(kw['json'],choices(kw['json']))
  try:
   status=run(brain,p['packet_id'],p,set(),cfg,requester=send,hook=hook)
-  print(json.dumps({'change':'disable_analysis_after_stage1','status':str(status),'posts':len(calls)}))
-  assert len(calls)==1 and status!='completed'
+  print(json.dumps({'change':'disable_analysis_after_final_response','status':str(status),'posts':len(calls)}))
+  assert len(calls)==2 and status!='completed'
  finally:close(store)

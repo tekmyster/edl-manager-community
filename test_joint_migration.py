@@ -12,7 +12,7 @@ def offline(monkeypatch):
  monkeypatch.setattr(ai,'local_endpoint',lambda _:None);monkeypatch.setattr(behavior_tokens,'load',lambda cfg:SyntheticCounter())
 
 def old_fixture(tmp_path,state):
- s,b,cfg,p=setup(tmp_path/'native',budget=3,count=2)
+ s,b,cfg,p=setup(tmp_path/'native',budget=4,count=2)
  schema=pathlib.Path(__file__).with_name('testdata')/'pipeline-schema-v1.sql'
  with b.connect() as db:
   db.executescript(schema.read_text())
@@ -32,7 +32,7 @@ def test_old_topology_fenced_with_charges_and_receipts_preserved(tmp_path,state)
   with b.connect() as db:before=[tuple(r) for r in db.execute('SELECT * FROM pipeline_stages')]
   ledger=Ledger(b)
   with b.connect() as db:
-   assert db.execute('SELECT version FROM pipeline_schema').fetchone()[0]==2
+   assert db.execute('SELECT version FROM pipeline_schema').fetchone()[0]==3
    plan=dict(db.execute('SELECT * FROM pipeline_plans').fetchone());assert plan['topology']=='account-then-selection-1' and plan['state'] in ['uncertain','review']
    assert before==[tuple(r) for r in db.execute('SELECT * FROM pipeline_stages')]
    assert db.execute('SELECT requests FROM usage').fetchone()[0]==2 and db.execute('SELECT held FROM pipeline_reservations').fetchone()[0]==0
@@ -54,8 +54,8 @@ def test_old_final_pending_recovery_saves_original_bytes_without_new_inference(t
    assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
   # A distinct new prompt identity must not reinterpret/cache the old result.
   def send(url,**kw):calls.append(1);return Reply(kw['json'],choices(kw['json']))
-  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='completed' and calls==[1]
-  with b.connect() as db:assert db.execute('SELECT count(*) FROM assessments').fetchone()[0]==2 and db.execute('SELECT requests FROM usage').fetchone()[0]==3
+  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='persistence_review_required' and calls==[]
+  with b.connect() as db:assert db.execute('SELECT count(*) FROM assessments').fetchone()[0]==1 and db.execute('SELECT requests FROM usage').fetchone()[0]==2
  finally:close(s)
 
 def test_migration_transaction_rolls_back_schema_and_fences_on_interruption(tmp_path,monkeypatch):

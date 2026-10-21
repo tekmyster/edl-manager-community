@@ -107,10 +107,12 @@ def test_marker_read_retry_is_bounded_and_preserves_another_owner(tmp_path,monke
 def verify_once(b,calls):
  rows=records(b);assert len(rows['assessments'])==1 and rows['assessments'][0][5]=='completed'
  assert rows['jobs'][0][3]=='completed' and rows['jobs'][0][4]==0 and rows['jobs'][0][5]==1
- assert rows['usage'][0][1]==1 and calls==[1]
+ assert rows['usage'][0][1]==2 and calls==[1]
  with ledger.connect(b.store) as db:
-  actual=list(db.execute('SELECT * FROM requests'));assert len(actual)==1 and all(r['state']=='accepted' for r in actual)
-  meta=json.loads(rows['assessments'][0][6])['metadata']['generation_stages'][0];assert actual[0]['id']==meta['request_id'] and actual[0]['input_tokens']==23 and actual[0]['output_tokens']==7
+  actual=list(db.execute('SELECT * FROM requests'));assert len(actual)==2 and all(r['state']=='accepted' for r in actual)
+  stages=json.loads(rows['assessments'][0][6])['metadata']['generation_stages'];assert len(stages)==2
+  assert {r['id'] for r in actual}=={m['request_id'] for m in stages}
+  assert all(r['input_tokens']==23 and r['output_tokens']==7 for r in actual)
  return rows
 
 
@@ -118,7 +120,7 @@ def test_held_writer_preserves_result_and_fresh_process_saves_without_inference(
  s,b,cfg=queue(tmp_path,1);held=[];calls=fake(monkeypatch,b,lambda:held.append(Holder(b.path,['BEGIN IMMEDIATE'])))
  try:
   start=time.monotonic();assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='persistence_deferred';assert time.monotonic()-start<1.2
-  saved=pending.read(files(b)[0]);assert records(b)['assessments']==[] and records(b)['usage'][0][1]==1 and records(b)['jobs'][0][3]=='running'
+  saved=pending.read(files(b)[0]);assert records(b)['assessments']==[] and records(b)['usage'][0][1]==2 and records(b)['jobs'][0][3]=='running'
   assert 'sqlite_code=5' in caplog.text and saved['row'][0] not in caplog.text
   if os.name=='posix':assert files(b)[0].stat().st_mode&0o777==0o600 and pending.directory(b).stat().st_mode&0o777==0o700
  finally:
@@ -263,7 +265,7 @@ def test_corrupt_pending_result_stays_visible_without_new_request(tmp_path,monke
   for h in held:h.close()
  files(b)[0].write_text('{incomplete')
  assert ai.model_job(b,'packet0',packet(b),set(),cfg)=='failed'
- assert calls==[1] and records(b)['assessments']==[] and records(b)['usage'][0][1]==1
+ assert calls==[1] and records(b)['assessments']==[] and records(b)['usage'][0][1]==2
 
 
 def test_journal_recovery_page_is_bounded(tmp_path):

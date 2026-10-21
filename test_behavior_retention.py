@@ -147,7 +147,9 @@ def test_queue_drains_oldest_first_even_when_indexing_moves_on(tmp_path,monkeypa
  s.state('behavior_settings',cfg)
  for i in range(1,7):s.evidence('8.8.8.'+str(i),'waf','test',now(),'http',75)
  calls=[]
- def model(brain,ident,packet,features,cfg,**kwargs):calls.append(ident);return 'completed'
+ def model(brain,ident,packet,features,cfg,**kwargs):
+  from behavior_pipeline_job import Status
+  calls.append(ident);return Status('completed',2)
  monkeypatch.setattr(behavior_ai,'model_job',model)
  # Seed older pending work that is not in this indexing batch.
  oldrow=s.describe('8.8.8.6');ident=b.packet(oldrow)[0]
@@ -155,7 +157,10 @@ def test_queue_drains_oldest_first_even_when_indexing_moves_on(tmp_path,monkeypa
  run(s,index_only=True)
  assert calls==[]
  run(s)
- assert calls[0]==ident and len(calls)==2
+ assert calls[0]==ident and len(calls)==1
+ # Each finite cycle admits one complete two-request assessment.
+ run(s)
+ assert len(calls)==2
  with b.connect() as db:
   assert db.execute('SELECT count(*) FROM queue_samples').fetchone()[0]==2
   assert db.execute('SELECT wait_seconds FROM queue_samples ORDER BY id LIMIT 1').fetchone()[0]>86400

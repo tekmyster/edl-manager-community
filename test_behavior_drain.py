@@ -52,7 +52,7 @@ def test_cancellation_between_requests_preserves_unclaimed_queue(tmp_path,monkey
  assert reason=='persistence_deferred' and results=={'completed':2,'persistence_deferred':1}
  with b.connect() as db:
   assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==3
-  assert db.execute('SELECT requests FROM usage').fetchone()[0]==3
+  assert db.execute('SELECT requests FROM usage').fetchone()[0]==5
   assert db.execute("SELECT count(*) FROM jobs WHERE state='running'").fetchone()[0]==1
   pending_packet=json.loads(db.execute('SELECT content FROM packets WHERE id=?',(calls[-1],)).fetchone()[0])
  # Cancellation leaves the already durable failure save pending, not a retry.
@@ -132,7 +132,7 @@ def test_index_refresh_superseded_window_is_reselected_without_request_or_lost_w
  assert results=={'superseded_before_request':1,'completed':1} and calls==['new-window'] and reason=='idle'
  with b.connect() as db:
   assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==0
-  assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
+  assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
 
 @pytest.mark.skipif(os.name!='posix',reason='Native worker uses Linux flock')
 def test_worker_signal_is_cooperative_and_handlers_restored(tmp_path,monkeypatch):

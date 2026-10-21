@@ -87,12 +87,16 @@ class Capture:
   except (OSError,ValueError):return False
 
 class RequestEvidence:
- def __init__(self,brain,parent,request,input_key,deadline,model):
+ def __init__(self,brain,parent,request,input_key,deadline,model,stage=None):
   from behavior_persistence import private_directory
   from behavior_accounting import MetadataReports
   self.deadline=deadline;self.model=model;self.capture=None
   root=private_directory(pathlib.Path(brain.path).with_suffix('.request-evidence'),True)
-  self.path=root/parent;self.path.mkdir(mode=0o700)
+  self.path=root/parent
+  if stage is not None:
+   if stage not in (1,2):raise ValueError('Invalid evidence stage')
+   self.path.mkdir(mode=0o700,exist_ok=True);self.path=self.path/('stage%d'%stage)
+  self.path.mkdir(mode=0o700)
   self.measurements=MetadataReports(self.path)
   put(self.path/'request.json',compact(request));put(self.path/'binding.json',{'input_key':input_key,'request_sha256':sha(compact(request))})
  def wrap(self,response):

@@ -32,7 +32,7 @@ def test_untrusted_output_cannot_introduce_fields_scores_or_references(evidence,
 
 def test_model_cache_budget_failure_and_shadow_score_invariant(evidence,monkeypatch):
  import behavior_ai
- cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://10.1.1.1:11435','model':'test','daily_budget':1,'max_bump':25}
+ cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://10.1.1.1:11435','model':'test','daily_budget':2,'max_bump':25}
  evidence.state('behavior_settings',cfg);b=Brain(evidence);before=evidence.describe('8.8.8.8');ident,packet,features=b.packet(before);calls=[]
  def infer(*args):calls.append(1);return result(packet),{'model':'test'}
  stage_mock(monkeypatch,behavior_ai,infer)
@@ -41,20 +41,28 @@ def test_model_cache_budget_failure_and_shadow_score_invariant(evidence,monkeypa
  view=b.view('8.8.8.8');assert view['applied_bump']==0 and not view['scoring_eligible'] and view['hypothetical_score'] is None
  after=evidence.describe('8.8.8.8');assert after['score']==before['score'] and after['retention']==before['retention']
  with b.connect() as d:d.execute("UPDATE assessments SET expires='2020-01-01T00:00:00+00:00'")
- assert model_job(b,ident,packet,features,cfg)=='budget'
+ assert model_job(b,ident,packet,features,cfg)=='cached'
+ # A distinct source packet, not expiry, permits distinct logical work.
+ old_ident=ident;ident=ident+'-new';packet={**packet,'packet_id':ident}
+ with b.connect() as db:
+  row=list(db.execute('SELECT * FROM packets WHERE id=?',(old_ident,)).fetchone());row[0]=ident;row[3]=json.dumps(packet);db.execute('INSERT INTO packets VALUES(?,?,?,?,?,?)',row);db.execute('UPDATE current_packets SET packet_id=? WHERE packet_id=?',(ident,old_ident))
  cfg['daily_budget']=4;evidence.state('behavior_settings',cfg)
  def fail(*args):raise TimeoutError('private diagnostic must not escape')
  stage_mock(monkeypatch,behavior_ai,fail)
  assert model_job(b,ident,packet,features,cfg)=='failed' and b.view('8.8.8.8')['assessment'] is None
  with b.connect() as d:assert 'private diagnostic' not in json.dumps([dict(r) for r in d.execute('SELECT * FROM assessments')])
 
-def test_expired_success_can_refresh_after_three_analyses(evidence,monkeypatch):
+def test_expired_success_never_reopens_consumed_source_config(evidence,monkeypatch):
  import behavior_ai
  cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'model':'test','endpoint':'https://10.1.1.1','daily_budget':10};b=Brain(evidence);ident,packet,features=b.packet(evidence.describe('8.8.8.8'))
  stage_mock(monkeypatch,behavior_ai,lambda *args:(result(packet),{}))
+ assert model_job(b,ident,packet,features,cfg)=='completed'
  for unused in range(5):
-  assert model_job(b,ident,packet,features,cfg)=='completed'
+  assert model_job(b,ident,packet,features,cfg)=='cached'
   with b.connect() as d:d.execute("UPDATE assessments SET expires='2020-01-01T00:00:00+00:00'")
+ with b.connect() as db:
+  assert db.execute('SELECT count(*) FROM assessments').fetchone()[0]==1
+  assert db.execute('SELECT sum(requests) FROM usage').fetchone()[0]==2
 
 def test_similarity_is_reviewable_but_never_transfers_enforcement(evidence):
  b=Brain(evidence);first=evidence.describe('8.8.8.8');one,packet,features=b.packet(first)
@@ -132,7 +140,7 @@ def test_small_gpu_response_is_compact_and_truncation_is_rejected(evidence):
  def send(*args,**kwargs):
   schema=kwargs['json']['format']['properties']
   assert schema['observations']['type']=='object'
-  assert 'detail' in next(iter(schema['observations']['properties'].values()))['properties']['purpose']['enum']
+  assert 'detail' in next(iter(schema['observations']['properties'].values()))['enum']
   assert 'analysis_summary' not in schema
   return Response()
  with pytest.raises(ValueError,match='output_limit'):

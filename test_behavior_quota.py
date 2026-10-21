@@ -49,8 +49,8 @@ def test_no_finite_sentinel_usage_persists_cache_does_not_consume(sample,monkeyp
  assert model_job(b,ident,p,f,{**cfg,'daily_budget':1})=='cached'
  assert config_id(cfg)==config_id({**cfg,'daily_budget':96})
  with b.connect() as db:
-  assert dict(db.execute('SELECT day,requests FROM usage'))=={now()[:10]:10000002,'2020-01-01':96}
- assert calls==[1] and Brain(s).summary()['requests_today']==10000002
+  assert dict(db.execute('SELECT day,requests FROM usage'))=={now()[:10]:10000003,'2020-01-01':96}
+ assert calls==[1] and Brain(s).summary()['requests_today']==10000003
  assert settings(s)['daily_budget'] is None
 
 def test_finite_exhaustion_then_unlimited_then_finite_does_not_reset(sample,monkeypatch):
@@ -63,8 +63,8 @@ def test_finite_exhaustion_then_unlimited_then_finite_does_not_reset(sample,monk
  assert model_job(b,ident,p,f,cfg)=='completed'
  with b.connect() as db:db.execute("UPDATE assessments SET expires='2020-01-01'")
  s.state('behavior_settings',{**cfg,'daily_budget':96})
- assert model_job(b,ident,p,f,{**cfg,'daily_budget':96})=='budget'
- with b.connect() as db:assert db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()[0]==97
+ assert model_job(b,ident,p,f,{**cfg,'daily_budget':96})=='cached'
+ with b.connect() as db:assert db.execute('SELECT requests FROM usage WHERE day=?',(now()[:10],)).fetchone()[0]==98
 
 def test_unlimited_preserves_provider_backoff_and_retry_exhaustion(sample,monkeypatch):
  s,b,ident,p,f,cfg=sample;calls=[]
@@ -101,7 +101,7 @@ def test_worker_finite_cap_and_unlimited_drain(tmp_path,monkeypatch,limit):
  calls=[]
  def infer(cfg,p,*args):calls.append(p['packet_id']);return example(p),{}
  stage_mock(monkeypatch,'behavior_ai.infer',infer)
- expected=2 if limit is not None else 3
+ expected=1 if limit is not None else 3
  result=run(s);assert len(calls)==expected and result['analysis']=={'completed':expected}
  with Brain(s).connect() as db:assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==3-expected
 

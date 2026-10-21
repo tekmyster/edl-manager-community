@@ -28,6 +28,7 @@ def stage_mock(monkeypatch,target,value,*,before_persist=None):
     kw['hook']=hook
    return previous(*args,**kw)
   fixture_run.stage_fixture=True;monkeypatch.setattr(job,'run',fixture_run)
+ cached={}
  def infer(cfg,packet,candidates,allowed,key,requester=None,attempt=None,*,_wire=None,_deadline=None,_before_call=None,_before_post=None):
   if _wire is None:return value(cfg,packet,candidates,allowed,key,requester,attempt)
   if _before_call:_before_call()
@@ -36,8 +37,14 @@ def stage_mock(monkeypatch,target,value,*,before_persist=None):
   meta={}
   try:
    request=_wire['request']
-   canonical,meta=value(cfg,packet,candidates,allowed,key,requester,attempt)
-   w=wire_from_storage(packet,canonical,candidates,allowed);result=_wire['decode'](w)
+   stage=_wire['preparation']['stage']
+   if stage==1:
+    canonical,meta=value(cfg,packet,candidates,allowed,key,requester,attempt);cached[packet['packet_id']]=(copy.deepcopy(canonical),copy.deepcopy(meta))
+   else:canonical,meta=copy.deepcopy(cached[packet['packet_id']])
+   w=wire_from_storage(packet,canonical,candidates,allowed)
+   w['generation_schema_version']=request['format']['properties']['generation_schema_version']['enum'][0]
+   if stage==2:w['draft_binding']=request['format']['properties']['draft_binding']['enum'][0]
+   result=_wire['decode'](w)
    from test_pipeline_support import Reply
    counts={target:meta[source] for source,target in [('input_tokens','prompt_eval_count'),('output_tokens','eval_count'),('cached_input_tokens','prompt_eval_cached_count')] if source in meta}
    capture=_wire['capture'](Reply(request,w,metadata=counts))
