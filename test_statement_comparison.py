@@ -34,7 +34,7 @@ def test_immutable_final_decoder_and_private_binding_without_expensive_decode(mo
  final=choices(revision.request,groups='omit',purpose='detail');expected=revision.decode(final)
  assert expected['findings']==canonical['findings'] and expected['observable_synthesis']==[]
  assert plan.identity['topology']==TOPOLOGY=='full-joint-draft-revision-1'
- assert plan.identity['prompt_version']=='behavior-3.32' and plan.generation_version==gen.FINAL_VERSION==ai.GENERATION_SCHEMA_VERSION
+ assert plan.identity['prompt_version']=='behavior-3.33' and plan.generation_version==gen.FINAL_VERSION==ai.GENERATION_SCHEMA_VERSION
  assert gen.VERSION!=gen.FINAL_VERSION
  for name in ['prepare','prepare_bounded','offers','annotated_facts','statement_fields']:
   monkeypatch.setattr(gen,name,lambda *a,**kw:pytest.fail('No request/schema reconstruction during decode'))
