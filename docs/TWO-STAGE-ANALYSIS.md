@@ -1,3 +1,5 @@
+> Historical prompt 3.29 topology only. New assessments use the [one-request joint contract](JOINT-ANALYSIS.md). Existing durable outcomes remain recoverable; interrupted old generation is fenced and never resumed.
+
 # Two-stage behavioral analysis
 
 Prompt 3.29 uses one assessment with two serialized model requests. The first

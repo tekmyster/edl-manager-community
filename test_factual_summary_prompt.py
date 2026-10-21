@@ -23,8 +23,8 @@ def test_neutral_preference_keeps_all_omit_unknown_and_inconclusive_valid():
  assert result['classification']=='inconclusive'
  assert result['automation']==result['intent']=={'classification':'unknown','confidence':0}
  ai.validate_result(result,packet,[],{})
- assert metadata['prompt_version']=='behavior-3.29'
- assert metadata['generation_schema_version']==gen.VERSION=='grounded-groups-12'
+ assert metadata['prompt_version']=='behavior-3.30'
+ assert metadata['generation_schema_version']==gen.VERSION=='joint-keyed-purpose-1'
  assert requests[0]['messages'][0]['content']==gen.INSTRUCTION
 
 
@@ -57,12 +57,12 @@ def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monke
   historical=result(packet);historical['metadata']={'prompt_version':old_version,'generation_schema_version':'grounded-groups-12'}
   db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',('old-assessment',ident,'old-'+old_version,now(),'2099','completed',json.dumps(historical),'',.1))
   old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- assert ai.PROMPT_VERSION=='behavior-3.29' and ai.GENERATION_SCHEMA_VERSION=='account-then-selection-1'
+ assert ai.PROMPT_VERSION=='behavior-3.30' and ai.GENERATION_SCHEMA_VERSION=='joint-keyed-purpose-1'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
  assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='cached'
  with brain.connect() as db:
   rows=[tuple(row) for row in db.execute('SELECT * FROM assessments')]
- assert old in rows and len(rows)==2 and calls==['behavior-3.29']
+ assert old in rows and len(rows)==2 and calls==['behavior-3.30']
  assert len({row[2] for row in rows})==2
  native_after=store.describe('8.8.8.8')
  assert native_before['score']==native_after['score'] and native_before['retention']==native_after['retention']

@@ -18,9 +18,7 @@ class Reply:
 
 def choices(request,groups='omit',purpose=None,classification='inconclusive'):
  p=request['format']['properties']
- if 'contract' in p:
-  return {'contract':p['contract']['enum'][0],'packet_id':p['packet_id']['enum'][0],'accounts':{k:('omit' if groups=='omit' else v['enum'][-1]) for k,v in p['accounts']['properties'].items()}}
- wire={'generation_schema_version':p['generation_schema_version']['enum'][0],'packet_id':p['packet_id']['enum'][0],'classification':classification,'maliciousness_confidence':0,'automation':[],'intent':[],'observations':{},'attack_techniques':{k:'omit' for k in p['attack_techniques']['properties']},'d3fend_context':{k:'omit' for k in p['d3fend_context']['properties']},'actor_correlation':[],'account_binding':p['account_binding']['enum'][0]}
+ wire={'generation_schema_version':p['generation_schema_version']['enum'][0],'packet_id':p['packet_id']['enum'][0],'classification':classification,'maliciousness_confidence':0,'automation':[],'intent':[],'observations':{},'attack_techniques':{k:'omit' for k in p['attack_techniques']['properties']},'d3fend_context':{k:'omit' for k in p['d3fend_context']['properties']},'actor_correlation':[],'observable_synthesis':{k:('omit' if groups=='omit' else v['enum'][-1]) for k,v in p['observable_synthesis']['properties'].items()}}
  if purpose:wire['observations']={k:purpose for k in p['observations']['properties']}
  return wire
 

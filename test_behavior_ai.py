@@ -32,7 +32,7 @@ def test_untrusted_output_cannot_introduce_fields_scores_or_references(evidence,
 
 def test_model_cache_budget_failure_and_shadow_score_invariant(evidence,monkeypatch):
  import behavior_ai
- cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://10.1.1.1:11435','model':'test','daily_budget':2,'max_bump':25}
+ cfg={**DEFAULTS,'enabled':True,'model_enabled':True,'endpoint':'https://10.1.1.1:11435','model':'test','daily_budget':1,'max_bump':25}
  evidence.state('behavior_settings',cfg);b=Brain(evidence);before=evidence.describe('8.8.8.8');ident,packet,features=b.packet(before);calls=[]
  def infer(*args):calls.append(1);return result(packet),{'model':'test'}
  stage_mock(monkeypatch,behavior_ai,infer)
@@ -132,7 +132,7 @@ def test_small_gpu_response_is_compact_and_truncation_is_rejected(evidence):
  def send(*args,**kwargs):
   schema=kwargs['json']['format']['properties']
   assert schema['observations']['type']=='object'
-  assert 'detail' in next(iter(schema['observations']['properties'].values()))['properties']['purpose']['enum']
+  assert 'detail' in next(iter(schema['observations']['properties'].values()))['enum']
   assert 'analysis_summary' not in schema
   return Response()
  with pytest.raises(ValueError,match='output_limit'):
@@ -148,7 +148,7 @@ def test_model_failure_records_token_usage_without_storing_reply(evidence,monkey
  assert model_job(b,ident,packet,features,cfg)=='failed'
  with b.connect() as db:
   r=db.execute('SELECT result,error FROM assessments').fetchone()
- assert r['error']=='output_limit' and json.loads(r['result'])['metadata']['generation_stages'][1]['output_tokens']==1800
+ assert r['error']=='output_limit' and json.loads(r['result'])['metadata']['generation_stages'][0]['output_tokens']==1800
 
 
 def test_inference_separates_current_and_historical_references(evidence):

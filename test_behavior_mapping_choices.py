@@ -39,7 +39,7 @@ def send_result(packet,catalog,value,candidates=None):
 
 def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,catalog):
  wire=result(mixed);wire['attack_techniques']=[{'support_id':'attack:T1059.001','explanation':'Unconfirmed detector observation'},{'support_id':'attack:T1046','explanation':'Separate observation'}];wire['d3fend_context']=[{'support_id':'d3fend:D3-ANET','explanation':'Defensive context only'}]
- (value,metadata),calls=send_result(mixed,catalog,wire);payload=calls[0];prompt=json.loads(payload['messages'][1]['content']);choices={kind:{kind+':'+v['technique_id']:v for v in prompt['offered'][kind].values()} for kind in ('attack','d3fend')};schema=payload['format']['properties']
+ (value,metadata),calls=send_result(mixed,catalog,wire);payload=calls[0];prompt=__import__('behavior_representation').expand(json.loads(payload['messages'][1]['content']));choices={kind:{kind+':'+v['technique_id']:v for v in prompt['offered'][kind].values()} for kind in ('attack','d3fend')};schema=payload['format']['properties']
  assert {v['technique_id']:v['evidence_ids'] for v in value['attack_techniques']}=={'T1059.001':['ps'],'T1046':['net']}
  assert value['d3fend_context'][0]['evidence_ids']==['f1','f2']
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
@@ -49,7 +49,7 @@ def test_mixed_choices_bind_exact_technique_events_not_packet_or_context(mixed,c
   for claim in choices[kind].values():
    assert 'context-only' not in claim['evidence_ids'];validate_mapping(kind,claim,select(catalog,mixed),mixed)
  assert choices['attack']['attack:T1110']['evidence_ids']==['f1','f2']
- assert metadata['prompt_version']=='behavior-3.29' and metadata['generation_schema_version']=='grounded-groups-12'
+ assert metadata['prompt_version']=='behavior-3.30' and metadata['generation_schema_version']=='joint-keyed-purpose-1'
  assert len(payload['messages'][1]['content'].encode())<=18000 and payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
 
 @pytest.mark.parametrize('entry',[
@@ -89,14 +89,14 @@ def test_canonical_malformed_unknown_refs_remain_rejected(mixed,catalog,refs):
 
 def test_empty_unsupported_mapping_is_offered_and_remains_empty(catalog):
  packet={'packet_id':'ordinary','coverage':'saved_samples','events':[event()],'context':[{'id':'ctx'}]}
- (value,_),calls=send_result(packet,catalog,result(packet));prompt=json.loads(calls[0]['messages'][1]['content'])
+ (value,_),calls=send_result(packet,catalog,result(packet));prompt=__import__('behavior_representation').expand(json.loads(calls[0]['messages'][1]['content']))
  assert not prompt['offered']['attack'] and not prompt['offered']['d3fend']
  assert not value['attack_techniques'] and not value['d3fend_context']
  assert all(calls[0]['format']['properties'][f]['properties']=={} for f in ['attack_techniques','d3fend_context'])
 
 def test_single_failed_login_never_offers_bruteforce_choice(catalog):
  packet={'packet_id':'one','coverage':'saved_samples','events':[event(action='authentication failure')],'context':[]}
- (_,metadata),calls=send_result(packet,catalog,result(packet));prompt=json.loads(calls[0]['messages'][1]['content'])
+ (_,metadata),calls=send_result(packet,catalog,result(packet));prompt=__import__('behavior_representation').expand(json.loads(calls[0]['messages'][1]['content']))
  assert not prompt['offered']['attack']
 
 def test_bruteforce_pair_is_not_borrowed_from_another_mapping(catalog):
@@ -134,7 +134,7 @@ def test_selected_registry_recomputation_and_tampered_support_are_consistent(mix
  tampered=copy.deepcopy(selected);tampered['support']['attack']['T1059.001']=['context-only']
  with pytest.raises(ValueError):ai.taxonomy_choices(mixed,tampered)
  # Inference recomputes eligibility from observations even for an already selected registry.
- (_,unused),calls=send_result(mixed,tampered,result(mixed));prompt=json.loads(calls[0]['messages'][1]['content'])
+ (_,unused),calls=send_result(mixed,tampered,result(mixed));prompt=__import__('behavior_representation').expand(json.loads(calls[0]['messages'][1]['content']))
  assert {kind:{kind+':'+v['technique_id']:{k:x for k,x in v.items() if k!='explanation'} for v in prompt['offered'][kind].values()} for kind in ('attack','d3fend')}==full
 
 def test_complete_claim_normalization_still_invokes_canonical_validation(mixed,catalog,monkeypatch):

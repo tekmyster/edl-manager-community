@@ -2,8 +2,8 @@
 import contextlib,copy,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.29'
-GENERATION_SCHEMA_VERSION='account-then-selection-1'
+PROMPT_VERSION='behavior-3.30'
+GENERATION_SCHEMA_VERSION='joint-keyed-purpose-1'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','tokenizer_file':'','tokenizer_sha256':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -420,6 +420,7 @@ def failure_diagnostic(exc,phase,http_status=None):
 
 def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire=None,_deadline=None,_before_call=None,_before_post=None):
  import requests,copy
+ if requester is None and _wire is None:raise ValueError('Verified joint plan required for real transport')
  from behavior_mapping import select
  registry=select(registry,packet)
  from behavior_generation import prepare_bounded,prompt_json,decode,INSTRUCTION,ChoiceError,parse_wire
@@ -452,7 +453,8 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire
    headers={'Authorization':'Bearer '+key}
    if _deadline and cfg['timeout']==180:headers['X-EDL-Admission-Wait']='15'
    remaining=_deadline.left() if _deadline else cfg['timeout']
-   return call(cfg['endpoint']+'/api/chat',headers=headers,json=request,verify=cfg['ca_file'] or True,timeout=(min(5,remaining),remaining),allow_redirects=False,stream=True)
+   response=call(cfg['endpoint']+'/api/chat',headers=headers,json=request,verify=cfg['ca_file'] or True,timeout=(min(5,remaining),remaining),allow_redirects=False,stream=True)
+   return _wire['capture'](response) if _wire and 'capture' in _wire else response
   failure_phase='request_headers'
   response=_deadline.call(dispatch) if _deadline else dispatch()
   http_status=response.status_code
@@ -568,6 +570,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire
    if 'first_content' in locals():metadata['first_content_seconds']=first_content if streamed else None
    if attempt:attempt.finish(transport_state,metadata)
   session.close()
+  if _wire and _wire.get('metadata_report'):_wire['metadata_report'](metadata)
 
 def model_job(brain,ident,packet,features,cfg,candidates=None,should_stop=None):
  from behavior_pipeline_job import run

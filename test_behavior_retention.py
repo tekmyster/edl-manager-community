@@ -137,7 +137,7 @@ def test_provider_failure_backs_off_other_packets_without_consuming_quota(tmp_pa
  try:
   assert model_job(b,packets[0]['packet_id'],packets[0],set(),cfg)=='failed'
   assert model_job(b,packets[1]['packet_id'],packets[1],set(),cfg)=='backoff'
-  with b.connect() as db:assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
+  with b.connect() as db:assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
  finally:close(s)
 
 

@@ -166,7 +166,7 @@ def test_small_gpu_budget_and_validated_display_metadata(catalog):
   def close(self):pass
  def send(*args,**kwargs):captured.append(kwargs['json']);return Response()
  assessment,metadata=infer(cfg,packet,[],catalog,'unused',requester=send)
- payload=captured[0];prompt=json.loads(payload['messages'][1]['content'])
+ payload=captured[0];prompt=__import__('behavior_representation').expand(json.loads(payload['messages'][1]['content']))
  assert len(prompt['offered']['attack'])<=MAX_ATTACK and len(prompt['offered']['d3fend'])<=MAX_DEFEND
  assert len(payload['messages'][1]['content'].encode())<=18000
  assert payload['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}

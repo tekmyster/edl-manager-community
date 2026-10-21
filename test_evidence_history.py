@@ -60,7 +60,7 @@ def test_actual_transport_bounded_redacted_sequence(data):
    yield json.dumps({'done':True,'model':'test','message':{'content':json.dumps(result(packet))}}).encode()
  def send(url,**kwargs):captured.append(kwargs['json']['messages'][1]['content']);return Response()
  infer({**DEFAULTS,'endpoint':'https://127.0.0.1','model':'test'},packet,[],{},'test-only-key',requester=send)
- assert json.loads(captured[0])['packet']['sequence']==packet['sequence']
+ assert __import__('behavior_representation').expand(json.loads(captured[0]))['packet']['sequence']==packet['sequence']
  for secret in ('secret-user','secret-token','10.0.0.7'):assert secret not in captured[0]
  assert b.packet(s.describe('8.8.8.8'),at=at)[0]==packet['packet_id']
 def test_portable_http_structure_ignores_sensitive_headers_and_body():

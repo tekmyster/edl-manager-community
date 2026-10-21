@@ -16,7 +16,7 @@ The proposed maximum adjustment is optional and affects a simulation only. No pr
 
 Run `EDL_CONFIG=/private/config.json python behavior_worker.py` once per minute using a separate service/timer. Community Docker Compose includes the `behavior` worker; collection and model inspection start disabled. Do not run inference inside the ingestion or web request path.
 
-Initial operational defaults: 30-day evidence window, 25 IPs per indexing pass, at most two model requests per pass, 24 requests per UTC day, 120-second request timeout and 24-hour assessment validity. Optional Palo traffic refresh starts disabled in portable installs and has a separate 100-query daily budget and two-query pass limit. It reuses the existing five-minute investigation cache and respects pending work. These conservative test limits do not provide comprehensive coverage of a busy deployment. Raise budgets only after measuring workload and accuracy. Cache hits do not consume requests. Failures retry after one hour, with at most three attempts per UTC day. Successful assessments may refresh after expiry. Expired findings are not displayed as current.
+Initial operational defaults: 30-day evidence window, 25 IPs per indexing pass, at most two model requests per pass, 24 requests per UTC day, 120-second whole-assessment timeout and 24-hour assessment validity. Optional Palo traffic refresh starts disabled in portable installs and has a separate 100-query daily budget and two-query pass limit. It reuses the existing five-minute investigation cache and respects pending work. These conservative test limits do not provide comprehensive coverage of a busy deployment. Raise budgets only after measuring workload and accuracy. Cache hits do not consume requests. Consumed failed or uncertain assessments require review; retrying durable result persistence never reissues inference. Provider failures retain the existing backoff for unrelated work. Successful assessments may refresh after expiry. Expired findings are not displayed as current.
 
 ## Model endpoint
 
@@ -308,3 +308,7 @@ A later authorized rollout must refresh long-lived web/worker Python processes
 for all loaded functions to receive the repair, and validate fresh administrative
 access before closing the original administrative session if access settings are
 changed. No refresh, service change or deployment is part of implementation staging.
+
+## One-request contract
+
+Prompt 3.30 jointly selects optional source accounts, fixed observation purposes, verdict and mappings in one request. Complete inputs must fit with the full output reservation. See [Joint behavioral assessment contract](JOINT-ANALYSIS.md) for input verification, one-unit quota, old-topology recovery and private evidence retention. Offline tests do not establish model quality or release acceptance.

@@ -4,7 +4,7 @@ Reviews, group history, explicit investigation holds and their packets are perma
 Current packets and live/retained assessment citations remain resolvable. Deletion
 waits for a restartable reference-index backfill; transactions include sweep cursors.
 """
-import datetime as dt,json,time
+import datetime as dt,json,time,sqlite3
 
 DEFAULTS={'packet_retention_days':90,'assessment_retention_days':90,'metrics_retention_days':90,'cleanup_batch':100}
 SCHEMA='''
@@ -117,5 +117,10 @@ def cleanup(brain,cfg,at=None):
   from behavior_pipeline_store import compact
   cut=(at-dt.timedelta(days=int(cfg.get('assessment_retention_days',DEFAULTS['assessment_retention_days'])))).isoformat(timespec='seconds')
   result['pipeline_journal']=compact(db,limit,cut)
+ # File removal follows the existing committed retention decision, never while
+ # holding the packet writer; pending/uncertain evidence remains pinned.
+ from behavior_request_evidence import prune
+ try:result['request_evidence_removed']=prune(brain,limit)
+ except (OSError,ValueError,sqlite3.Error) as exc:result['request_evidence_error']=type(exc).__name__
  result['seconds']=round(time.monotonic()-started,4)
  return result

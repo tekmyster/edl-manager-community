@@ -19,7 +19,7 @@ def test_rejected_content_continues_unrelated_work_and_caches_same_packet(tmp_pa
  assert results=={'failed':1,'completed':3} and examined==4 and reason=='idle'
  with b.connect() as db:
   assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==0
-  assert db.execute('SELECT requests FROM usage').fetchone()[0]==8
+  assert db.execute('SELECT requests FROM usage').fetchone()[0]==4
   failed=db.execute("SELECT * FROM assessments WHERE status='failed'").fetchone()
   assert failed['error']==code and json.loads(failed['result'])['metadata']['validation_diagnostic']['stage']=='generation_choices'
   p=json.loads(db.execute('SELECT content FROM packets WHERE id=?',(calls[0],)).fetchone()[0])
@@ -92,10 +92,10 @@ def test_real_rejection_then_valid_response_survives_busy_receipts_and_restart(t
    receipts=[stage for r in db.execute('SELECT result FROM assessments ORDER BY rowid') for stage in json.loads(r[0])['metadata']['generation_stages']]
    assert all(r['request_started_at'] and r['request_finished_at'] for r in receipts)
  finally:lock.rollback();lock.close()
- assert recover(ai.Brain(s))['recovered']==4
+ assert recover(ai.Brain(s))['recovered']==2
  with ledger.connect(s) as db:
   rows=list(db.execute('SELECT * FROM requests ORDER BY rowid'))
-  assert [r['state'] for r in rows]==['accepted','rejected','accepted','accepted']
+  assert [r['state'] for r in rows]==['rejected','accepted']
   for row,meta in zip(rows,receipts):
    assert row['started']==meta['request_started_at'] and row['finished']==meta['request_finished_at']
    assert row['id']==meta['request_id'] and (row['input_tokens'],row['output_tokens']) in ((10,2),(11,7))

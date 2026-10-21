@@ -19,6 +19,16 @@ def pair():
 
 def expand(prompt):
  """Independent consumer of the documented wire references."""
+ if set(prompt)=={'reference_rule','symbols','input'}:
+  symbols=prompt['symbols']
+  def restore(node):
+   if isinstance(node,list):return [restore(x) for x in node]
+   if isinstance(node,dict):
+    if set(node)=={'symbol_ref'}:return symbols[node['symbol_ref']]
+    if set(node)=={'object_literal'}:return {k:restore(v) for k,v in node['object_literal']}
+    return {k:restore(v) for k,v in node.items()}
+   return node
+  prompt=restore(prompt['input'])
  result=copy.deepcopy(prompt);events=list(result['packet']['events'])
  for candidate in result['candidates']:events+=candidate.get('current_events',[])+candidate.get('historical_events',[])
  for event in events:
@@ -40,9 +50,10 @@ def test_wire_references_preserve_complete_facts_provenance_positive_context_and
  _,prompt,selected,meta=gen.prepare_bounded(p,[c],{});expanded=expand(prompt)
  assert expanded['packet']==p and expanded['candidates']==[c] and selected==[c]
  assert expanded['offered']['relations']==tables['relations']
- assert prompt['packet']['context']==p['context'] and tables['counterevidence']
+ logical=__import__('behavior_representation').expand(prompt)
+ assert logical['packet']['context']==p['context'] and tables['counterevidence']
  assert meta['wire_candidate_ids']==['peer'] and (p,c)==before
- assert 'provenance_templates' in prompt and prompt['candidates'][0]['current_events']==[{'packet_event_ref':p['events'][1]['id']}]
+ assert 'provenance_templates' in logical and logical['candidates'][0]['current_events']==[{'packet_event_ref':p['events'][1]['id']}]
  assert len(gen.prompt_json(prompt).encode())==meta['input_preparation']['user_prompt_bytes']
 
 
@@ -71,17 +82,15 @@ def test_shared_in_memory_provenance_objects_remain_lossless():
 
 def boundary_pair():
  p,c=pair();c['padding']='é漢🙂'
- _,prompt=gen.prepare(p,[c],{});gap=18000-len(gen.prompt_json(prompt).encode())
+ _,prompt=gen.prepare(p,[c],{});wire=__import__('behavior_representation').factor(prompt);gap=18000-len(gen.prompt_json(wire).encode())
  assert gap>0;c['padding']+='x'*gap
  return p,c
 
 
 def legacy_overbudget_pair():
- p,c=boundary_pair();_,prompt=gen.prepare(p,[c],{})
- old={**prompt,'synthesis_options':{key:{k:v[k] for k in ('kind','evidence_ids','interpretations')} for key,v in prompt['synthesis_options'].items()}}
- old=gen.without_summary_fields(old)
- c['padding']+='x'*(len(gen.prompt_json(prompt).encode())-len(gen.prompt_json(old).encode())+1)
- return p,c
+ # A complete factored request is oversized; the historical name is retained
+ # for callers, but silent history omission is no longer a permitted policy.
+ p,c=boundary_pair();c['padding']+='x';return p,c
 
 
 def test_exact_escaped_utf8_boundary_keeps_history_and_card_overflow_fails_before_dispatch():
@@ -100,19 +109,17 @@ def test_exact_escaped_utf8_boundary_keeps_history_and_card_overflow_fails_befor
  # infer selects registry metadata before preparing; its honest byte count can
  # exceed the direct empty-registry assembly above without dispatching either.
  assert meta['input_preparation']['considered_prompt_bytes']>=18001 and meta['input_preparation']['user_prompt_bytes'] is None
- assert meta['input_preparation']['omission_reason']=='summary_fields_exceed_input_limit'
- assert meta['input_preparation']['omitted_candidate_ids']==['peer'] and (p,c)==(before[0],{**before[1],'padding':before[1]['padding']+'x'})
+ assert meta['input_preparation']['omission_reason']=='complete_input_exceeds_limit'
+ assert meta['input_preparation']['omitted_candidate_ids']==[] and (p,c)==(before[0],{**before[1],'padding':before[1]['padding']+'x'})
  assert meta['failure_diagnostic']['phase']=='request_preparation'
 
 
-def test_history_already_overbudget_without_cards_preserves_original_omission_policy():
- p,c=legacy_overbudget_pair();_,prompt,selected,meta=gen.prepare_bounded(p,[c],{})
- assert not selected and not prompt['offered']['relations'] and not prompt['candidates']
- assert meta['historical_windows_supplied']==0 and meta['wire_candidate_ids']==[]
- assert meta['wire_packet_ids']==[p['packet_id']]
- assert meta['input_preparation']['considered_prompt_bytes']>18001
- assert meta['input_preparation']['omission_reason']=='candidate_exceeds_input_limit'
- assert meta['input_preparation']['omitted_candidate_ids']==['peer'] and prompt['packet']['context']==p['context']
+def test_complete_history_overbudget_rejects_instead_of_omitting_candidate():
+ p,c=legacy_overbudget_pair();before=copy.deepcopy((p,c))
+ with pytest.raises(ValueError) as caught:gen.prepare_bounded(p,[c],{})
+ meta=caught.value._edl_failure_metadata
+ assert meta['historical_windows_supplied']==0 and meta['wire_packet_ids']==[]
+ assert meta['input_preparation']['omission_reason']=='complete_input_exceeds_limit' and (p,c)==before
 
 
 def test_overbudget_base_fails_before_transport_without_clipping_positive_context():
@@ -121,15 +128,15 @@ def test_overbudget_base_fails_before_transport_without_clipping_positive_contex
  with pytest.raises(ValueError) as caught:ai.infer({**ai.DEFAULTS,'endpoint':'https://127.0.0.1'},p,[c],{},'',requester=forbidden)
  meta=caught.value._edl_failure_metadata
  assert meta['wire_packet_ids']==meta['wire_candidate_ids']==[] and meta['historical_windows_supplied']==0
- assert meta['input_preparation']['omission_reason']=='base_exceeds_input_limit' and meta['input_preparation']['user_prompt_bytes'] is None
+ assert meta['input_preparation']['omission_reason']=='complete_input_exceeds_limit' and meta['input_preparation']['user_prompt_bytes'] is None
  assert meta['failure_diagnostic']['phase']=='request_preparation' and (p,c)==before
 
 
 def test_no_candidate_and_single_candidate_bound_do_not_manufacture_relationships():
  p,c=pair();_,prompt,selected,meta=gen.prepare_bounded(p,[],{})
- assert selected==[] and prompt['offered']['relations']=={} and meta['input_preparation']['omission_reason']=='no_candidate'
+ assert selected==[] and __import__('behavior_representation').expand(prompt)['offered']['relations']=={} and meta['input_preparation']['omission_reason']=='no_candidate'
  other={**c,'candidate_id':'second'};_,prompt,selected,meta=gen.prepare_bounded(p,[c,other],{})
- assert selected==[c] and meta['wire_candidate_ids']==['peer'] and len(prompt['candidates'])==1
+ assert selected==[c,other] and meta['wire_candidate_ids']==['peer','second'] and expand(prompt)['candidates']==[c,other]
 
 
 def test_transport_uses_exact_measured_serialization_and_canonical_validator():
@@ -146,12 +153,11 @@ def test_transport_uses_exact_measured_serialization_and_canonical_validator():
  with pytest.raises(ValueError):ai.validate_result(changed,p,[c],{})
 
 
-def test_omitted_candidate_is_not_available_to_decoder_even_when_preassembly_reference_exists():
- p,c=legacy_overbudget_pair();w=gen.example(p,[c]);tables,_=gen.offers(p,[c],{})
- w['actor_correlation']=[{'choice_id':next(iter(tables['relations'])),'confidence':.4}]
- with pytest.raises(ai.ModelOutputError) as caught:transport(p,w,[c])
- assert caught.value.metadata['historical_windows_supplied']==0 and caught.value.metadata['wire_candidate_ids']==[]
- assert caught.value.metadata['input_preparation']['omission_reason']=='candidate_exceeds_input_limit'
+def test_oversized_candidate_never_reaches_transport_or_decoder():
+ p,c=legacy_overbudget_pair();before=copy.deepcopy((p,c));calls=[]
+ with pytest.raises(ValueError) as caught:ai.infer({**ai.DEFAULTS,'endpoint':'https://127.0.0.1'},p,[c],{},'',requester=lambda *a,**k:calls.append(1))
+ assert calls==[] and (p,c)==before
+ assert caught.value._edl_failure_metadata['wire_packet_ids']==[]
 
 
 def test_complete_history_overflow_refuses_before_claim_without_withholding(tmp_path,monkeypatch):

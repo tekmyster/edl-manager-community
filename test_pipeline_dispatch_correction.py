@@ -6,12 +6,13 @@ import behavior_tokens
 from behavior_pipeline_job import run
 from test_pipeline_support import setup,close,SyntheticCounter,Reply,choices
 
-@pytest.mark.parametrize('stage',[1,2])
+@pytest.mark.parametrize('stage',[1])
 @pytest.mark.parametrize('change',['config','source','packet','receipt','lease','quota','day','cancel','master','model'])
 def test_after_entry_change_prevents_post_and_keeps_claim(tmp_path,monkeypatch,stage,change):
- if change=='receipt' and stage==1:pytest.skip('No frozen receipt exists before stage1')
  monkeypatch.setattr(ai,'local_endpoint',lambda _:None);monkeypatch.setattr(behavior_tokens,'load',lambda cfg:SyntheticCounter());clock=['2026-10-17T10:01:00+00:00'];monkeypatch.setattr(ai,'now',lambda:clock[0])
  s,b,cfg,p=setup(tmp_path/'native-test.sqlite3');calls=[];stop=threading.Event()
+ if change=='quota':
+  with b.connect() as db:db.execute('INSERT INTO usage VALUES(?,1)',(ai.now()[:10],))
  def hook(phase):
   if phase!='after_entry'+str(stage):return
   if change in ('config','quota','master','model'):
@@ -29,13 +30,13 @@ def test_after_entry_change_prevents_post_and_keeps_claim(tmp_path,monkeypatch,s
   status=run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send,hook=hook,should_stop=stop.is_set)
   assert len(calls)==stage-1 and status!='completed' and status.request_units==stage
   with b.connect() as db:
-   assert db.execute('SELECT sum(requests) FROM usage').fetchone()[0]==stage
+   assert db.execute('SELECT sum(requests) FROM usage').fetchone()[0]==stage+(1 if change=='quota' else 0)
    assert not db.execute("SELECT 1 FROM assessments WHERE status='completed'").fetchone()
    assert db.execute('SELECT sum(held) FROM pipeline_reservations').fetchone()[0]==0
    if change in ('master','model','quota'):assert not db.execute("SELECT 1 FROM retention_state WHERE name LIKE 'provider_backoff:%'").fetchone()
  finally:close(s)
 
-@pytest.mark.parametrize('stage',[1,2])
+@pytest.mark.parametrize('stage',[1])
 @pytest.mark.parametrize('key',['enabled','model_enabled'])
 def test_disable_before_entry_prevents_stage(tmp_path,monkeypatch,stage,key):
  monkeypatch.setattr(ai,'local_endpoint',lambda _:None);monkeypatch.setattr(behavior_tokens,'load',lambda cfg:SyntheticCounter());s,b,cfg,p=setup(tmp_path/'native-test.sqlite3');calls=[]

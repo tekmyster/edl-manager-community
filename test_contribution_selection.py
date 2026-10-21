@@ -34,8 +34,8 @@ def test_each_purpose_assignment_is_lossless_and_order_preserved_not_a_utility_f
  choices=[['omit','detail','support']+(['counterevidence'] if k in t['counterevidence'] else []) for k in ids]
  for roles in itertools.product(*choices):
   w=empty(p);w['observations']={k:decision(r) for k,r in zip(reversed(ids),reversed(roles))};v=gen.decode(w,p,[],{});ai.validate_result(v,p,[],{})
-  assert v['findings']==[t['facts'][k] for k,r in w['observations'].items() if r['purpose'] in ['detail','support']]
-  assert v['contradictory_evidence']==[t['facts'][k] for k,r in w['observations'].items() if r['purpose']=='counterevidence']
+  assert v['findings']==[t['facts'][k] for k,r in w['observations'].items() if r in ['detail','support']]
+  assert v['contradictory_evidence']==[t['facts'][k] for k,r in w['observations'].items() if r=='counterevidence']
  assert p==before
 
 
@@ -126,7 +126,7 @@ def test_prompt_selection_and_generation_boundaries_separate_cache_from_failed_a
  stage_mock(monkeypatch,ai,fake);cfg={**ai.DEFAULTS,'enabled':True,'model_enabled':True,'daily_budget':None}
  monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.27');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','grounded-groups-11');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed'
  with b.connect() as db:old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.29');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','account-then-selection-1');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed';assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='cached'
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.30');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','joint-keyed-purpose-1');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed';assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='cached'
  with b.connect() as db:rows=[tuple(r) for r in db.execute('SELECT * FROM assessments')]
  assert old in rows and len(rows)==2 and len(calls)==2
 @pytest.mark.parametrize('constant',['NaN','Infinity','-Infinity'])

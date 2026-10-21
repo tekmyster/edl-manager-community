@@ -49,11 +49,16 @@ def test_cancellation_between_requests_preserves_unclaimed_queue(tmp_path,monkey
  def infer(cfg,p,*args):calls.append(p['packet_id']);return example(p),{}
  stage_mock(monkeypatch,'behavior_ai.infer',infer)
  results,examined,reason=drain_queue(b,s,cfg,should_stop=lambda:len(calls)>=3)
- assert reason=='cancelled' and results=={'completed':2,'failed':1}
+ assert reason=='persistence_deferred' and results=={'completed':2,'persistence_deferred':1}
  with b.connect() as db:
-  assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==2
-  assert db.execute('SELECT requests FROM usage').fetchone()[0]==6
-  assert db.execute("SELECT count(*) FROM jobs WHERE state='running'").fetchone()[0]==0
+  assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==3
+  assert db.execute('SELECT requests FROM usage').fetchone()[0]==3
+  assert db.execute("SELECT count(*) FROM jobs WHERE state='running'").fetchone()[0]==1
+  pending_packet=json.loads(db.execute('SELECT content FROM packets WHERE id=?',(calls[-1],)).fetchone()[0])
+ # Cancellation leaves the already durable failure save pending, not a retry.
+ status=model_job(b,calls[-1],pending_packet,set(),cfg)
+ assert status=='failed' and status.request_units==0 and len(calls)==3
+ with b.connect() as db:assert db.execute("SELECT count(*) FROM jobs WHERE state='running'").fetchone()[0]==0
 
 def test_cancellation_before_claim_does_not_consume_usage_or_lease(tmp_path,monkeypatch):
  s,b,cfg=queue(tmp_path,1)
@@ -72,7 +77,7 @@ def test_stop_on_real_provider_failure_backoff_not_request_quota(tmp_path,monkey
  results,examined,reason=drain_queue(b,s,cfg)
  assert reason=='backoff' and results=={'failed':1,'backoff':1}
  with b.connect() as db:
-  assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
+  assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
   assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==4
 
 def test_disabling_inspection_is_observed_before_next_request(tmp_path,monkeypatch):
@@ -80,7 +85,7 @@ def test_disabling_inspection_is_observed_before_next_request(tmp_path,monkeypat
  def infer(cfg,p,*args):s.state('behavior_settings',{**cfg,'model_enabled':False});return example(p),{}
  stage_mock(monkeypatch,'behavior_ai.infer',infer)
  assert drain_queue(b,s,cfg)[2]=='disabled'
- with b.connect() as db:assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
+ with b.connect() as db:assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
 
 def test_changing_to_finite_mode_honors_consumed_count(tmp_path,monkeypatch):
  s,b,cfg=queue(tmp_path,5);calls=[]
@@ -110,7 +115,7 @@ def test_lost_owner_cannot_publish_result_or_clear_successor_lease(tmp_path,monk
  with b.connect() as db:
   assert db.execute('SELECT count(*) FROM assessments').fetchone()[0]==0
   row=db.execute('SELECT id,state,lease FROM jobs').fetchone();assert tuple(row)==('successor-owner','running',9999999999)
-  assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
+  assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
 
 def test_index_refresh_superseded_window_is_reselected_without_request_or_lost_work(tmp_path,monkeypatch):
  s,b,cfg=queue(tmp_path,1);calls=[];clock=[0]
@@ -127,7 +132,7 @@ def test_index_refresh_superseded_window_is_reselected_without_request_or_lost_w
  assert results=={'superseded_before_request':1,'completed':1} and calls==['new-window'] and reason=='idle'
  with b.connect() as db:
   assert db.execute('SELECT count(*) FROM analysis_queue').fetchone()[0]==0
-  assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
+  assert db.execute('SELECT requests FROM usage').fetchone()[0]==1
 
 @pytest.mark.skipif(os.name!='posix',reason='Native worker uses Linux flock')
 def test_worker_signal_is_cooperative_and_handlers_restored(tmp_path,monkeypatch):

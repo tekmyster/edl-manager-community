@@ -113,13 +113,13 @@ def test_annotation_only_overflow_fails_before_dispatch_without_losing_history(m
  monkeypatch.setattr(ai,'now',lambda:'2026-10-19T00:00:00+00:00');packet,candidate=pair();candidates=[candidate] if history else [];target=candidate if history else packet
  from behavior_mapping import select
  registry=select({},packet);target['padding']='';_,prompt=gen.prepare(packet,candidates,registry)
- stripped=len(gen.prompt_json(gen.without_summary_fields(prompt)).encode());full=len(gen.prompt_json(prompt).encode());assert stripped<full<18000
- target['padding']='x'*(18000-stripped);_,prompt=gen.prepare(packet,candidates,registry);assert len(gen.prompt_json(gen.without_summary_fields(prompt)).encode())==18000
+ stripped=len(gen.prompt_json(__import__('behavior_representation').factor(gen.without_summary_fields(prompt))).encode());full=len(gen.prompt_json(__import__('behavior_representation').factor(prompt)).encode());assert stripped<full<18000
+ target['padding']='x'*(18000-stripped);_,prompt=gen.prepare(packet,candidates,registry);assert len(gen.prompt_json(__import__('behavior_representation').factor(gen.without_summary_fields(prompt))).encode())==18000
  before=copy.deepcopy((packet,candidates))
  def forbidden(*a,**kw):pytest.fail('Annotation overflow dispatched a request')
  with pytest.raises(ValueError) as caught:ai.infer({**ai.DEFAULTS,'endpoint':'https://127.0.0.1'},packet,candidates,{},'',requester=forbidden)
  meta=caught.value._edl_failure_metadata
- assert meta['input_preparation']['omission_reason']=='summary_fields_exceed_input_limit' and meta['input_preparation']['user_prompt_bytes'] is None
+ assert meta['input_preparation']['omission_reason']=='complete_input_exceeds_limit' and meta['input_preparation']['user_prompt_bytes'] is None
  assert meta['wire_packet_ids']==meta['wire_candidate_ids']==[] and meta['historical_windows_supplied']==0
- assert meta['input_preparation']['omitted_candidate_ids']==(['peer'] if history else []) and meta['failure_diagnostic']['phase']=='request_preparation'
+ assert meta['input_preparation']['omitted_candidate_ids']==[] and meta['failure_diagnostic']['phase']=='request_preparation'
  assert (packet,candidates)==before

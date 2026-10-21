@@ -1,7 +1,7 @@
-"""Durable assessment coordinator. Two planned calls, exactly one final save."""
+"""Durable assessment coordinator. One joint request, exactly one final save."""
 import copy,datetime as dt,json,pathlib,sqlite3,time
 from behavior_deadline import Deadline
-from behavior_pipeline import Pipeline,VERSION,STAGE1,STAGE2,aggregate,hash_value,source_identity
+from behavior_pipeline import Pipeline,VERSION,aggregate,hash_value,source_identity,request_digest
 from behavior_pipeline_store import Ledger,Refused,alive
 
 class Status(str):
@@ -15,7 +15,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
  import behavior_persistence as pending
  from analytics_store import Attempt
  if should_stop and should_stop():return Status('cancelled')
- deadline=Deadline(cfg['timeout'],should_stop);ledger=None;parent=None;stages=[];last={};cid=None;charged_units=0;outcome=None
+ deadline=Deadline(cfg['timeout'],should_stop);ledger=None;parent=None;stages=[];last={};cid=None;charged_units=0;outcome=None;evidence=None
  def live():
   current=deadline.call(lambda:brain.store.state('behavior_settings'))
   value={**ai.DEFAULTS,**current} if current is not None else cfg
@@ -29,14 +29,15 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   cleanup=Ledger(brain);cleanup.recovered(plan['id'],status)
   return Status(status,units)
  try:
-  candidates=deadline.call(lambda:brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else candidates[:1]
+  cfg=deadline.call(lambda:copy.deepcopy(cfg));packet=deadline.call(lambda:copy.deepcopy(packet))
+  candidates=deadline.call(lambda:brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else copy.deepcopy(candidates)
   registry=deadline.call(lambda:load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'));allowed=select(registry,packet)
   client_sources=deadline.call(source_identity)
   cid=ai.config_id(cfg)+'-'+ai.digest([allowed,candidates,ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION,VERSION,client_sources])
-  ledger=Ledger(brain,hook=hook);ledger.recover_active()
+  ledger=Ledger(brain,check=deadline.check,hook=hook);ledger.recover_active()
   existing=ledger.inspect(ident,cid)
   if existing:
-   if existing['state']=='final_pending':return persist(existing)
+   if existing['state']=='final_pending':return deadline.call(lambda:persist(existing))
    if existing['state']=='completed':
     with brain.connect() as db:db.execute("INSERT INTO analysis_counters VALUES(?,'cached',1) ON CONFLICT(hour,kind) DO UPDATE SET count=count+1",(ai.now(),))
     return Status('cached')
@@ -56,6 +57,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   deadline.check();livecfg=live()
   try:pipe=deadline.call(lambda:Pipeline(cfg,packet,candidates,allowed,deadline.check))
   except (ValueError,OSError,KeyError):return Status('input_verification_required')
+  if pipe.identity['client_sources']!=client_sources:raise Refused('input_identity_changed')
   deadline.call(lambda:ai.local_endpoint(cfg['endpoint']))
   secret=pathlib.Path(brain.store.path).parent/'behavior-provider.json'
   def provider():
@@ -71,7 +73,9 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   ledger.check=deadline.check
   refs=[ident]+[c['candidate_id'] for c in candidates]
   parent=ledger.begin(ident,cid,pipe.input_key,livecfg,time.time()+deadline.left(),refs)
-  plan=ledger.plan(parent);frozen_receipt=None;ledger.packet_hash=hash_value(pipe.packet)
+  plan=ledger.plan(parent);ledger.packet_hash=hash_value(pipe.packet);ledger.bound_request=pipe.request
+  from behavior_request_evidence import RequestEvidence
+  evidence=deadline.call(lambda:RequestEvidence(brain,parent,pipe.request,pipe.input_key,deadline,cfg['model']))
   def verify_inputs():
    deadline.check();value=live()
    if source_identity()!=pipe.identity['client_sources']:raise Refused('input_identity_changed')
@@ -79,31 +83,29 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
     stored=db.execute('SELECT content FROM packets WHERE id=?',(ident,)).fetchone()
    if not stored or hash_value(json.loads(stored[0]))!=hash_value(pipe.packet):raise Refused('input_identity_changed')
    if select(load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'),packet)!=allowed:raise Refused('input_identity_changed')
-   if frozen_receipt is not None:
-    current=ledger.frozen(parent);pipe.validate_receipt(current)
-    if current!=frozen_receipt:raise Refused('pipeline_frozen_identity_changed')
    # Recheck the operator-pinned asset before every claim/entry, not only at
    # preassembly. A source/config update never edits a frozen task in place.
    from behavior_tokens import load as verified
-   if verified(value).value!=pipe.tokenizer.value:raise Refused('input_identity_changed')
+   if hash_value(verified(value).value)!=pipe.tokenizer_value_hash:raise Refused('input_identity_changed')
    return value
   def guard():return deadline.call(verify_inputs)
   ledger.verify=guard
   def execute(stage,request,decode,check):
    nonlocal last,charged_units
-   active=guard();request_hash=hash_value(request)
-   receipt_hash=hash_value(frozen_receipt) if stage==2 else None
+   active=guard();request_hash=request_digest(request)
+   if request_hash!=pipe.request_hash:raise Refused('pipeline_entry_identity')
+   receipt_hash=None
    request_id=ledger.claim(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
    charged_units+=1
    attempt=Attempt(brain.store,ident);attempt.id=request_id
    def entry():active=guard();ledger.entry(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
    def before_post():
     active=guard()
-    if hash_value(request)!=request_hash:raise Refused('pipeline_entry_identity')
+    if request_digest(request)!=request_hash:raise Refused('pipeline_entry_identity')
     ledger.dispatch(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
    preparation=copy.deepcopy(pipe.preparation)
-   preparation['input_preparation'].update(version=STAGE1 if stage==1 else STAGE2,user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
-   wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':pipe.input_key},'version':STAGE1 if stage==1 else STAGE2,'expected_input':check['input_tokens']}
+   preparation['input_preparation'].update(version=VERSION,user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
+   wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':pipe.input_key},'version':VERSION,'expected_input':check['input_tokens'],'capture':evidence.wrap,'metadata_report':evidence.publish}
    try:
     value,meta=deadline.call(lambda:ai.infer(cfg,packet,candidates,allowed,key,requester,attempt,_wire=wire,_deadline=deadline,_before_call=entry,_before_post=before_post))
    except Exception as exc:
@@ -111,19 +113,17 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
     if attempt.started is not None:last.setdefault('request_id',attempt.id);last.setdefault('request_started_at',attempt.started);last.setdefault('request_transport_state','failed')
     raise
    meta['stage']=stage;last=meta;stages.append(meta);deadline.check();return value,meta
-  check=pipe.tokenizer.check(pipe.stage1)
-  receipt,meta=execute(1,pipe.stage1,pipe.freeze,check)
-  guard();ledger.freeze(parent,cid,receipt,meta)
-  # Re-read the durable receipt. No in-memory/provider text becomes stage2 truth.
-  receipt=ledger.frozen(parent);pipe.validate_receipt(receipt);frozen_receipt=copy.deepcopy(receipt);request,check=pipe.second(receipt)
-  result,meta=execute(2,request,lambda wire:pipe.compose(wire,receipt),check)
+  result,meta=execute(1,pipe.request,pipe.decode,pipe.verification)
   guard();deadline.check()
+  evidence_receipt=deadline.call(lambda:evidence.finish('validated',True,meta))
+  meta['request_evidence']=evidence_receipt
+  for field in ('input_tokens','output_tokens','cached_input_tokens','uncached_input_tokens'):meta[field]=evidence_receipt['usage'][field]
   metadata=aggregate(stages,time.monotonic()-deadline.started)
-  metadata.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=VERSION,input_binding=pipe.input_key,account_binding=receipt['binding'],supplied_packet_ids=refs,wire_packet_ids=refs,identity=pipe.identity)
+  metadata.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=VERSION,input_binding=pipe.input_key,supplied_packet_ids=refs,wire_packet_ids=refs,identity=pipe.identity)
   result={**result,'metadata':metadata};created=ai.now();expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=cfg['assessment_hours'])).isoformat(timespec='seconds')
   outcome={'version':1,'row':[plan['assessment'],ident,cid,created,expires,'completed',json.dumps(result,allow_nan=False),'',round(time.monotonic()-deadline.started,3)],'owner':plan['owner'],'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
-  ledger.final(parent,cid,outcome,meta,True,hash_value(frozen_receipt))
-  try:return persist(Ledger(brain).plan(parent),charged_units)
+  ledger.final(parent,cid,outcome,meta,True)
+  try:return deadline.call(lambda:persist(Ledger(brain).plan(parent),charged_units))
   finally:deadline.finish()
  except Refused as exc:
   reason=str(exc)
@@ -147,21 +147,38 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
  # Failure path: save one failure receipt if ownership remains. Expired/lost
  # ownership becomes a durable uncertainty barrier, never a replacement request.
  if outcome is not None and outcome['row'][5]=='completed':
+  try:
+   known=Ledger(brain).plan(parent)
+   if known['state']=='final_pending' and known['outcome'] is not None:
+    deadline.finish();return Status('persistence_deferred' if error in ('Expired','Cancelled') else 'persistence_review_required',charged_units)
+  except (sqlite3.Error,Refused):pass
   # If SQLite cannot commit the validated final outcome, retain it privately
   # for review. This file never enters the automatic pending-result scan.
   # The unfinished plan remains an uncertainty barrier, not a retry token.
-  try:
-   review=pending.private_directory(pathlib.Path(brain.path).with_suffix('.pipeline-review'),True)
-   pending.publish(review/(parent+'.json'),json.dumps(outcome,allow_nan=False).encode())
-  except (OSError,ValueError):pass
+  reviewed_outcome=copy.deepcopy(outcome)
+  def retain_review(value=reviewed_outcome):
+   try:
+    review=pending.private_directory(pathlib.Path(brain.path).with_suffix('.pipeline-review'),True)
+    pending.publish(review/(parent+'.json'),json.dumps(value,allow_nan=False).encode())
+   except (OSError,ValueError):pass
+  threading=__import__('threading');threading.Thread(target=retain_review,daemon=True).start()
  try:
+  charged_units=max(charged_units,Ledger(brain).charges(parent))
+  if evidence is not None:
+   if evidence.capture is not None:
+    try:evidence.capture.close()
+    except Exception:pass
+   last=evidence.measurements.snapshot() or last
+   last['request_evidence']=evidence.failure_snapshot(bool(last.get('request_started_at')),last)
+   for field in ('input_tokens','output_tokens','cached_input_tokens','uncached_input_tokens'):last[field]=last['request_evidence']['usage'][field]
   saved=Ledger(brain).receipts(parent)
   if last and not any(v.get('request_id')==last.get('request_id') and v.get('stage')==last.get('stage') for v in saved):saved.append(last)
   meta=aggregate(saved,time.monotonic()-deadline.started);meta.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,supplied_packet_ids=refs,failure_diagnostic={'category':'pipeline','stage':'assessment','reason':error if error in ('budget','configuration_changed','deadline_expired','superseded_before_request','pipeline_ownership_lost') else 'assessment_failed'})
   for field in ('failure_diagnostic','validation_diagnostic'):
    if isinstance(last.get(field),dict):meta[field]=copy.deepcopy(last[field])
   created=ai.now();outcome={'version':1,'row':[plan['assessment'],ident,cid,created,(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(timespec='seconds'),'failed',json.dumps({'metadata':meta},allow_nan=False),error[:60],round(time.monotonic()-deadline.started,3)],'owner':plan['owner'],'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
-  ledger.final(parent,cid,outcome,last,False);result=persist(Ledger(brain).plan(parent),charged_units)
+  ledger.final(parent,cid,outcome,last,False)
+  result=Status('persistence_deferred',charged_units) if deadline.cancelled.is_set() else deadline.call(lambda:persist(Ledger(brain).plan(parent),charged_units))
  except Exception:
   try:Ledger(brain).uncertain(parent)
   except sqlite3.Error:pass

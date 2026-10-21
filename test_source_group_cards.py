@@ -54,7 +54,7 @@ def test_base_card_bytes_are_admitted_exactly_or_rejected_without_clipping(monke
  p=linked_packet();p['context']=[{'note':'é漢🙂"\\'}]
  monkeypatch.setattr(ai,'now',lambda:'2026-10-19T00:00:00+00:00')
  _,prompt=gen.prepare(p,[],{});p['context'][0]['padding']=''
- _,prompt=gen.prepare(p,[],{});p['context'][0]['padding']='x'*(18000-len(gen.prompt_json(prompt).encode()))
+ _,prompt=gen.prepare(p,[],{});p['context'][0]['padding']='x'*(18000-len(gen.prompt_json(__import__('behavior_representation').factor(prompt)).encode()))
  before=copy.deepcopy(p);_,exact,selected,meta=gen.prepare_bounded(p,[],{})
  assert len(gen.prompt_json(exact).encode())==18000 and p==before and not selected
  assert '\\ud83d\\ude42' in gen.prompt_json(exact)

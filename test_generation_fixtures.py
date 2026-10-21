@@ -40,10 +40,11 @@ def observation_roles(wire,findings=(),counterevidence=()):
  wire['observations']={k:decision('omit') for k in wire['observations']}
  for key in findings:wire['observations'][key]=decision('detail')
  for key in counterevidence:
-  if wire['observations'].get(key,{}).get('purpose')=='detail':raise ValueError('Fixture cannot assign both roles')
+  if wire['observations'].get(key)=='detail':raise ValueError('Fixture cannot assign both roles')
   wire['observations'][key]=decision('counterevidence')
  return wire
 
 
-def decision(purpose,reason='Synthetic compatibility fixture; utility untested.'):
- return {'reason':reason if purpose!='omit' else '', 'purpose':purpose}
+def decision(purpose,reason=None):
+ # Reasons are removed from the wire; a purpose selects only its fixed claim.
+ return purpose

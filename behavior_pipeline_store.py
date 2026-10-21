@@ -1,10 +1,10 @@
-"""Durable two-request ownership/charges. No network while holding a writer lock."""
+"""Durable single-request ownership/charges; versioned legacy read/recovery only. No network while holding a writer lock."""
 import contextlib,datetime as dt,json,os,pathlib,sqlite3,time,uuid
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS pipeline_schema(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL);
-INSERT OR IGNORE INTO pipeline_schema VALUES(1,1);
-CREATE TABLE IF NOT EXISTS pipeline_plans(id TEXT PRIMARY KEY,packet TEXT NOT NULL,config TEXT NOT NULL,input_key TEXT NOT NULL,owner TEXT NOT NULL,process TEXT NOT NULL,state TEXT NOT NULL,created TEXT NOT NULL,deadline REAL NOT NULL,assessment TEXT NOT NULL UNIQUE,outcome TEXT,provider TEXT NOT NULL);
+INSERT OR IGNORE INTO pipeline_schema VALUES(1,2);
+CREATE TABLE IF NOT EXISTS pipeline_plans(id TEXT PRIMARY KEY,packet TEXT NOT NULL,config TEXT NOT NULL,input_key TEXT NOT NULL,owner TEXT NOT NULL,process TEXT NOT NULL,state TEXT NOT NULL,created TEXT NOT NULL,deadline REAL NOT NULL,assessment TEXT NOT NULL UNIQUE,outcome TEXT,provider TEXT NOT NULL,topology TEXT NOT NULL DEFAULT 'joint-keyed-purpose-1');
 CREATE INDEX IF NOT EXISTS pipeline_packet ON pipeline_plans(packet,config,created);
 CREATE INDEX IF NOT EXISTS pipeline_compaction ON pipeline_plans(created,id) WHERE outcome IS NOT NULL AND state IN ('completed','failed');
 CREATE TABLE IF NOT EXISTS pipeline_stages(parent TEXT NOT NULL,ordinal INTEGER NOT NULL CHECK(ordinal IN(1,2)),request_id TEXT NOT NULL UNIQUE,request_hash TEXT,state TEXT NOT NULL,charged_day TEXT,entered TEXT,receipt TEXT,metadata TEXT,PRIMARY KEY(parent,ordinal));
@@ -43,13 +43,32 @@ def alive(token):
 
 class Ledger:
  def __init__(self,brain,check=lambda:None,hook=lambda phase:None):
-  self.brain=brain;self.path=brain.path;self.check=check;self.hook=hook;self.verify=None;self.packet_hash=None
+  self.brain=brain;self.path=brain.path;self.check=check;self.hook=hook;self.verify=None;self.packet_hash=None;self.bound_request=None
   with self.connection() as db:
    if db.execute("SELECT 1 FROM sqlite_master WHERE name='pipeline_schema'").fetchone():
-    if db.execute('SELECT version FROM pipeline_schema WHERE id=1').fetchone()[0]!=1:raise Refused('pipeline_schema_review_required')
-    return
-   db.executescript('BEGIN IMMEDIATE;'+SCHEMA+'COMMIT;')
-   if db.execute('SELECT version FROM pipeline_schema WHERE id=1').fetchone()[0]!=1:raise Refused('pipeline_schema_review_required')
+    version=db.execute('SELECT version FROM pipeline_schema WHERE id=1').fetchone()[0]
+    if version==2:return
+    if version!=1:raise Refused('pipeline_schema_review_required')
+  def initialize(db):
+   exists=db.execute("SELECT 1 FROM sqlite_master WHERE name='pipeline_schema'").fetchone()
+   if not exists:
+    # The caller owns one short transaction; no executescript implicit commit.
+    for statement in SCHEMA.split(';'):
+     if statement.strip():db.execute(statement)
+   version=db.execute('SELECT version FROM pipeline_schema WHERE id=1').fetchone()[0]
+   if version==1:
+    db.execute("ALTER TABLE pipeline_plans ADD COLUMN topology TEXT NOT NULL DEFAULT 'account-then-selection-1'")
+    # Never resume old generation. Preserve final-pending outcomes and all
+    # charged usage/child receipts; only ownership/reservations are fenced.
+    db.execute("UPDATE pipeline_plans SET state='uncertain' WHERE state NOT IN ('completed','failed','final_pending','uncertain','review')")
+    db.execute('UPDATE pipeline_reservations SET held=0')
+    db.execute('DELETE FROM pipeline_active')
+    db.execute('UPDATE pipeline_schema SET version=2 WHERE id=1')
+   elif version!=2:raise Refused('pipeline_schema_review_required')
+   db.execute("CREATE TRIGGER IF NOT EXISTS joint_one_child_insert BEFORE INSERT ON pipeline_stages WHEN NEW.ordinal!=1 AND (SELECT topology FROM pipeline_plans WHERE id=NEW.parent)='joint-keyed-purpose-1' BEGIN SELECT RAISE(ABORT,'Joint plan allows one child'); END")
+   db.execute("CREATE TRIGGER IF NOT EXISTS joint_one_child_update BEFORE UPDATE OF ordinal,parent ON pipeline_stages WHEN NEW.ordinal!=1 AND (SELECT topology FROM pipeline_plans WHERE id=NEW.parent)='joint-keyed-purpose-1' BEGIN SELECT RAISE(ABORT,'Joint plan allows one child'); END")
+   db.execute("CREATE TRIGGER IF NOT EXISTS topology_immutable BEFORE UPDATE OF topology ON pipeline_plans WHEN NEW.topology!=OLD.topology BEGIN SELECT RAISE(ABORT,'Plan topology immutable'); END")
+  self.tx(initialize)
  @contextlib.contextmanager
  def connection(self,live=True):
   if live:self.check()
@@ -76,7 +95,7 @@ class Ledger:
   with self.connection() as db:
    rows=db.execute('SELECT * FROM pipeline_plans WHERE packet=? ORDER BY rowid DESC',(packet,)).fetchall()
    for row in rows:
-    if row['state'] in ('failed','uncertain','review'):return dict(row)
+    if row['state'] in ('failed','uncertain','review','final_pending'):return dict(row)
     if row['config']==config:
      if row['state']!='completed':return dict(row)
      saved=db.execute('SELECT expires FROM assessments WHERE id=?',(row['assessment'],)).fetchone()
@@ -87,6 +106,7 @@ class Ledger:
   from behavior_ai import digest,now
   ident=uuid.uuid4().hex;owner=uuid.uuid4().hex;assessment=str(uuid.uuid4());day=now()[:10];created=now();process=process_token();provider=digest([cfg['endpoint'],cfg['model']])
   def insert(db):
+   if db.execute("SELECT 1 FROM pipeline_plans WHERE topology!='joint-keyed-purpose-1' AND state NOT IN ('completed','failed') LIMIT 1").fetchone():raise Refused('persistence_review_required')
    old=db.execute("SELECT state FROM pipeline_plans WHERE packet=? AND state NOT IN ('completed') LIMIT 1",(packet,)).fetchone()
    if old:raise Refused('persistence_review_required')
    active=db.execute('SELECT p.* FROM pipeline_active a JOIN pipeline_plans p ON p.id=a.parent').fetchone()
@@ -98,10 +118,10 @@ class Ledger:
    # Existing one-pass pending/running work is not reinterpreted as a new job.
    if db.execute("SELECT 1 FROM jobs WHERE packet_id=? AND state='running' LIMIT 1",(packet,)).fetchone():raise Refused('persistence_review_required')
    used=db.execute('SELECT coalesce(sum(requests),0) FROM usage WHERE day=?',(day,)).fetchone()[0];held=db.execute('SELECT coalesce(sum(held),0) FROM pipeline_reservations WHERE day=?',(day,)).fetchone()[0]
-   if cfg['daily_budget'] is not None and used+held+2>cfg['daily_budget']:raise Refused('budget')
-   db.execute('INSERT INTO pipeline_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(ident,packet,config,input_key,owner,process,'stage1_ready',created,deadline,assessment,None,provider))
-   for stage in (1,2):db.execute('INSERT INTO pipeline_stages VALUES(?,?,?,?,?,?,?,?,?)',(ident,stage,digest([ident,stage])[:32],None,'planned',None,None,None,None))
-   db.execute('INSERT INTO pipeline_reservations VALUES(?,?,2)',(ident,day));db.execute('INSERT INTO pipeline_active VALUES(1,?)',(ident,))
+   if cfg['daily_budget'] is not None and used+held+1>cfg['daily_budget']:raise Refused('budget')
+   db.execute('INSERT INTO pipeline_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(ident,packet,config,input_key,owner,process,'stage1_ready',created,deadline,assessment,None,provider,'joint-keyed-purpose-1'))
+   for stage in (1,):db.execute('INSERT INTO pipeline_stages VALUES(?,?,?,?,?,?,?,?,?)',(ident,stage,digest([ident,stage])[:32],None,'planned',None,None,None,None))
+   db.execute('INSERT INTO pipeline_reservations VALUES(?,?,1)',(ident,day));db.execute('INSERT INTO pipeline_active VALUES(1,?)',(ident,))
    db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?) ON CONFLICT(packet_id,config_id) DO UPDATE SET id=excluded.id,state=excluded.state,lease=excluded.lease,attempts=jobs.attempts+1,updated=excluded.updated',(owner,packet,config,'running',deadline+30,1,created))
    for ref in refs:db.execute("INSERT OR IGNORE INTO retention_refs SELECT 'pipeline',?,id FROM packets WHERE id=?",(ident,ref))
   self.hook('before_reservation');self.tx(insert);self.hook('after_reservation');return ident
@@ -117,7 +137,7 @@ class Ledger:
  def guard(self,db,ident,config,allow_expired=False):
   from behavior_ai import now
   plan=db.execute('SELECT * FROM pipeline_plans WHERE id=?',(ident,)).fetchone()
-  if not plan or plan['config']!=config or plan['process']!=process_token() or not plan['state'].endswith(('ready','claimed','entered','validated')):raise Refused('pipeline_ownership_lost')
+  if not plan or plan['topology']!='joint-keyed-purpose-1' or plan['config']!=config or plan['process']!=process_token() or not plan['state'].endswith(('ready','claimed','entered','validated')):raise Refused('pipeline_ownership_lost')
   if not allow_expired and plan['deadline']<=time.time():raise Refused('deadline_expired')
   job=db.execute("SELECT id,state,lease FROM jobs WHERE packet_id=? AND config_id=?",(plan['packet'],config)).fetchone()
   current=db.execute('SELECT c.packet_id FROM current_packets c JOIN packets p ON p.ip=c.ip WHERE p.id=?',(plan['packet'],)).fetchone()
@@ -128,18 +148,20 @@ class Ledger:
    source=db.execute('SELECT content FROM packets WHERE id=?',(plan['packet'],)).fetchone()
    if not source or hash_value(json.loads(source[0]))!=self.packet_hash:raise Refused('input_identity_changed')
   if not db.execute('SELECT 1 FROM pipeline_active WHERE parent=?',(ident,)).fetchone():raise Refused('pipeline_ownership_lost')
+  if self.bound_request is not None:
+   from behavior_pipeline import request_digest
+   row=db.execute('SELECT state,request_hash,receipt FROM pipeline_stages WHERE parent=? AND ordinal=1',(ident,)).fetchone()
+   if row and row['state']!='planned':
+    expected={'input_key':plan['input_key'],'request':self.bound_request}
+    if row['request_hash']!=request_digest(self.bound_request) or not row['receipt'] or json.loads(row['receipt'])!=expected:raise Refused('pipeline_entry_identity')
   return plan
- def frozen_identity(self,db,ident,expected):
-  from behavior_pipeline import hash_value
-  row=db.execute("SELECT receipt FROM pipeline_stages WHERE parent=? AND ordinal=1 AND state='accepted'",(ident,)).fetchone()
-  if expected is None or not row or hash_value(json.loads(row[0]))!=expected:raise Refused('pipeline_frozen_identity_changed')
  def claim(self,ident,stage,config,request_hash,budget,receipt_hash=None):
+  if stage!=1:raise Refused('joint_stage_not_allowed')
   def commit(db):
    from behavior_ai import now
    day=now()[:10]
    plan=self.guard(db,ident,config)
-   if plan['state']!=('stage1_ready' if stage==1 else 'stage1_validated'):raise Refused('pipeline_stage_order')
-   if stage==2:self.frozen_identity(db,ident,receipt_hash)
+   if plan['state']!='stage1_ready':raise Refused('pipeline_stage_order')
    row=db.execute('SELECT * FROM pipeline_stages WHERE parent=? AND ordinal=?',(ident,stage)).fetchone()
    if not row or row['state']!='planned':raise Refused('pipeline_duplicate_claim')
    held=db.execute('SELECT * FROM pipeline_reservations WHERE parent=?',(ident,)).fetchone();remaining=held['held']
@@ -148,16 +170,16 @@ class Ledger:
    if budget is not None and used+others+remaining>budget:raise Refused('budget')
    db.execute('UPDATE pipeline_reservations SET day=?,held=held-1 WHERE parent=? AND held>0',(day,ident))
    db.execute('INSERT INTO usage VALUES(?,1) ON CONFLICT(day) DO UPDATE SET requests=requests+1',(day,))
-   db.execute("UPDATE pipeline_stages SET request_hash=?,state='claimed',charged_day=? WHERE parent=? AND ordinal=?",(request_hash,day,ident,stage));db.execute('UPDATE pipeline_plans SET state=? WHERE id=?',('stage%d_claimed'%stage,ident));return row['request_id']
+   db.execute("UPDATE pipeline_stages SET request_hash=?,state='claimed',charged_day=?,receipt=? WHERE parent=? AND ordinal=?",(request_hash,day,json.dumps({'input_key':plan['input_key'],'request':self.bound_request},allow_nan=False) if self.bound_request is not None else None,ident,stage));db.execute('UPDATE pipeline_plans SET state=? WHERE id=?',('stage%d_claimed'%stage,ident));return row['request_id']
   self.hook('before_claim%d'%stage)
   if self.verify is not None:budget=self.verify()['daily_budget']
   result=self.tx(commit);self.hook('after_claim%d'%stage);return result
  def entry(self,ident,stage,config,request_hash,budget=None,receipt_hash=None):
+  if stage!=1:raise Refused('joint_stage_not_allowed')
   def commit(db):
    from behavior_ai import now
    self.guard(db,ident,config);row=db.execute('SELECT * FROM pipeline_stages WHERE parent=? AND ordinal=?',(ident,stage)).fetchone()
    if row['state']!='claimed' or row['request_hash']!=request_hash:raise Refused('pipeline_entry_identity')
-   if stage==2:self.frozen_identity(db,ident,receipt_hash)
    day=now()[:10]
    if row['charged_day']!=day:raise Refused('pipeline_dispatch_day_changed')
    used=db.execute('SELECT coalesce(sum(requests),0) FROM usage WHERE day=?',(day,)).fetchone()[0];held=db.execute('SELECT coalesce(sum(held),0) FROM pipeline_reservations WHERE day=?',(day,)).fetchone()[0]
@@ -168,36 +190,25 @@ class Ledger:
   self.tx(commit);self.hook('after_entry%d'%stage)
  def dispatch(self,ident,stage,config,request_hash,budget,receipt_hash=None):
   """Last read-only dispatch snapshot; no writer remains held during POST."""
+  if stage!=1:raise Refused('joint_stage_not_allowed')
+  self.hook('before_dispatch1')
+  if self.verify is not None:budget=self.verify()['daily_budget']
   from behavior_ai import now
   with self.connection() as db:
    db.execute('BEGIN')
    self.guard(db,ident,config)
    row=db.execute('SELECT * FROM pipeline_stages WHERE parent=? AND ordinal=?',(ident,stage)).fetchone()
    if row['state']!='entered' or row['request_hash']!=request_hash:raise Refused('pipeline_entry_identity')
-   if stage==2:self.frozen_identity(db,ident,receipt_hash)
    day=now()[:10]
    if row['charged_day']!=day:raise Refused('pipeline_dispatch_day_changed')
    used=db.execute('SELECT coalesce(sum(requests),0) FROM usage WHERE day=?',(day,)).fetchone()[0];held=db.execute('SELECT coalesce(sum(held),0) FROM pipeline_reservations WHERE day=?',(day,)).fetchone()[0]
    if budget is not None and used+held>budget:raise Refused('budget')
    self.check()
- def freeze(self,ident,config,receipt,metadata):
-  def commit(db):
-   plan=self.guard(db,ident,config)
-   if plan['state']!='stage1_entered' or plan['input_key']!=receipt['input_key']:raise Refused('pipeline_freeze_identity')
-   db.execute("UPDATE pipeline_stages SET state='accepted',receipt=?,metadata=? WHERE parent=? AND ordinal=1",(json.dumps(receipt,allow_nan=False),json.dumps(metadata,allow_nan=False),ident));db.execute("UPDATE pipeline_plans SET state='stage1_validated' WHERE id=?",(ident,))
-  self.hook('before_freeze')
-  if self.verify is not None:self.verify()
-  self.tx(commit);self.hook('after_freeze')
- def frozen(self,ident):
-  with self.connection() as db:
-   row=db.execute("SELECT receipt FROM pipeline_stages WHERE parent=? AND ordinal=1 AND state='accepted'",(ident,)).fetchone()
-   if not row:raise Refused('pipeline_receipt_missing')
-   return json.loads(row[0])
  def final(self,ident,config,outcome,metadata,success,receipt_hash=None):
   def commit(db):
    plan=self.guard(db,ident,config,allow_expired=not success)
-   if success and plan['state']!='stage2_entered':raise Refused('pipeline_final_order')
-   if success:self.frozen_identity(db,ident,receipt_hash)
+   if success and plan['state']!='stage1_entered':raise Refused('pipeline_final_order')
+   if success and [tuple(r) for r in db.execute('SELECT ordinal,state FROM pipeline_stages WHERE parent=?',(ident,))]!=[(1,'entered')]:raise Refused('joint_final_child_identity')
    row=db.execute("SELECT ordinal FROM pipeline_stages WHERE parent=? AND state IN ('claimed','entered') ORDER BY ordinal DESC LIMIT 1",(ident,)).fetchone()
    if row:db.execute('UPDATE pipeline_stages SET state=?,metadata=? WHERE parent=? AND ordinal=?',('accepted' if success else 'failed',json.dumps(metadata,allow_nan=False),ident,row[0]))
    db.execute('UPDATE pipeline_plans SET state=\'final_pending\',outcome=? WHERE id=?',(json.dumps(outcome,allow_nan=False),ident));db.execute('UPDATE pipeline_reservations SET held=0 WHERE parent=?',(ident,));db.execute('DELETE FROM pipeline_active WHERE parent=?',(ident,))
@@ -225,8 +236,8 @@ def summary(brain):
    if not db.execute("SELECT 1 FROM sqlite_master WHERE name='pipeline_reservations'").fetchone():return {'reserved':0,'uncertain':0,'plans':0}
    held=db.execute('SELECT coalesce(sum(held),0) FROM pipeline_reservations').fetchone()[0]
    uncertain=db.execute("SELECT count(*) FROM pipeline_stages s JOIN pipeline_plans p ON p.id=s.parent WHERE p.state IN ('uncertain','review') AND s.state IN ('claimed','entered') AND s.charged_day IS NOT NULL").fetchone()[0]
-   return {'reserved':held,'uncertain':uncertain,'plans':2}
- except sqlite3.Error:return {'reserved':None,'uncertain':None,'plans':2}
+   return {'reserved':held,'uncertain':uncertain,'plans':1}
+ except sqlite3.Error:return {'reserved':None,'uncertain':None,'plans':1}
 
 def compact(db,limit,cut):
  """Bounded retention cursor; keep consumed-claim tombstones and uncertainty.
