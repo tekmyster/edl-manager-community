@@ -22,7 +22,7 @@ def transport(packet,wire,candidates=None,registry=None):
 def test_conservative_choice_round_trip_has_exact_bound_facts_and_zero_unknowns():
  p=linked_packet();wire=example(p);(value,metadata),calls=transport(p,wire)
  assert value['findings'][0] in contract(p,{})['facts'] and value['automation']==value['intent']=={'classification':'unknown','confidence':0}
- assert metadata['generation_schema_version']==VERSION and metadata['prompt_version']=='behavior-3.30'
+ assert metadata['generation_schema_version']==VERSION and metadata['prompt_version']=='behavior-3.31'
  assert calls[0]['stream'] is True and calls[0]['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
  assert set(calls[0]['format']['properties'])==set(wire)
  assert not {'analysis_summary','limitations','evidence_ids','explanation'}&set(wire)
@@ -129,7 +129,7 @@ def test_benign_requires_actual_cited_positive_context_and_malicious_cannot_borr
  assert transport(p,wire)[0][0]['classification']=='benign'
  observation_roles(wire,[k for k,v in table['facts'].items() if 'ctx-positive' not in v['evidence_ids']][:1])
  with pytest.raises(ModelOutputError):transport(p,wire)
- wire['classification']='malicious';pair=c['malicious_support_pairs'][0];observation_roles(wire,pair[:1]);wire['observations'][pair[1]]=decision('counterevidence')
+ wire['classification']='malicious';pair=c['malicious_support_pairs'][0];observation_roles(wire,pair[:1]);wire['observations'][pair[1]]=decision('counterevidence', packet=p, key=pair[1])
  with pytest.raises(ModelOutputError):transport(p,wire)
 
 def test_repeated_current_record_cannot_be_its_own_historical_relationship():

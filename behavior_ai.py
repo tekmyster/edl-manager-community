@@ -2,8 +2,8 @@
 import contextlib,copy,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.30'
-GENERATION_SCHEMA_VERSION='joint-keyed-purpose-1'
+PROMPT_VERSION='behavior-3.31'
+GENERATION_SCHEMA_VERSION='joint-statement-comparison-1'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
 DEFAULTS={'enabled':False,'model_enabled':False,'correlation_enabled':True,'palo_context_enabled':False,'palo_daily_budget':100,'window_days':30,'batch_size':25,'daily_budget':24,'max_bump':None,'scoring_enabled':False,'endpoint':'','model':'','ca_file':'','tokenizer_file':'','tokenizer_sha256':'','timeout':120,'assessment_hours':24,**RETENTION_DEFAULTS}
@@ -435,7 +435,10 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire
   if hasattr(exc,'_edl_failure_metadata'):exc._edl_failure_metadata['failure_diagnostic']=failure_diagnostic(exc,'request_preparation')
   raise
  session=requests.Session();session.trust_env=False
- metadata=copy.deepcopy(preparation_metadata);transport_start=None;transport_state='failed';failure_phase='dispatch';http_status=None
+ metadata=copy.deepcopy(preparation_metadata)
+ # Generation identity must also accompany failures before terminal JSON arrives.
+ metadata.update(model=cfg['model'],prompt_version=PROMPT_VERSION,generation_schema_version=_wire['generation_schema_version'] if _wire else __import__('behavior_generation').VERSION)
+ transport_start=None;transport_state='failed';failure_phase='dispatch';http_status=None
  try:
   call=requester or session.post
   if _deadline and requester is None:
@@ -508,7 +511,7 @@ def infer(cfg,packet,candidates,registry,key,requester=None,attempt=None,*,_wire
   def count(name):
    value=envelope.get(name)
    return value if type(value) is int and 0<=value<=10000000 else None
-  metadata={**preparation_metadata,'input_tokens':count('prompt_eval_count'),'output_tokens':count('eval_count'),'model':cfg['model'],'prompt_version':PROMPT_VERSION,'generation_schema_version':_wire['version'] if _wire else __import__('behavior_generation').VERSION,'taxonomy_version':registry.get('version','unconfigured'),'taxonomy_registry_sha256':registry.get('registry_sha256'),'taxonomy_rule_version':registry.get('rule_version'),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy unavailable'),'taxonomy_coverage':registry.get('coverage',{}),'historical_windows_supplied':len(candidates),'coverage':packet['coverage']}
+  metadata={**preparation_metadata,'input_tokens':count('prompt_eval_count'),'output_tokens':count('eval_count'),'model':cfg['model'],'prompt_version':PROMPT_VERSION,'generation_schema_version':_wire['generation_schema_version'] if _wire else __import__('behavior_generation').VERSION,'taxonomy_version':registry.get('version','unconfigured'),'taxonomy_registry_sha256':registry.get('registry_sha256'),'taxonomy_rule_version':registry.get('rule_version'),'taxonomy_uncertainty':registry.get('uncertainty','Taxonomy unavailable'),'taxonomy_coverage':registry.get('coverage',{}),'historical_windows_supplied':len(candidates),'coverage':packet['coverage']}
   metadata.update(first_content_seconds=first_content if streamed else None,request_seconds=round(time.monotonic()-transport_start,6),first_content_definition='request dispatch to receipt of first nonempty nonfinal (done:false) streamed message.content; final-only content unmeasured; seconds')
   # Preserve actual backend measurements separately from complete request wall
   # time. Missing/invalid fields stay unknown; evaluation is not device/kernel or

@@ -19,13 +19,13 @@ def test_positive_observation_has_one_identity_and_exclusive_role_slot():
  p=positive();t,_=offers(p,[],{});schema,prompt=prepare(p,[],{})
  assert set(t['counterevidence'])<=set(t['facts']) and 'counterevidence' not in prompt['offered']
  key=next(iter(t['counterevidence']));spec=schema['properties']['observations']
- assert spec['properties'][key]['enum']==['omit','detail','support','counterevidence']
+ assert spec['properties'][key]['properties']['purpose']['enum']==['omit','detail','support','counterevidence']
  assert spec['required']==[] and list(spec['properties'])==list(t['facts'])
  for role in ('omit','detail','support','counterevidence'):
-  wire=example(p);observation_roles(wire);wire['observations'][key]=decision(role)
+  wire=example(p);observation_roles(wire);wire['observations'][key]=decision(role, packet=p, key=key)
   value=decode(wire,p,[],{});validate_result(value,p,[],{})
   assert sum(t['facts'][key] in value[f] for f in ('findings','contradictory_evidence'))==int(role!='omit')
- assert all('counterevidence' not in v['enum'] for k,v in spec['properties'].items() if k not in t['counterevidence'])
+ assert all('counterevidence' not in v['properties']['purpose']['enum'] for k,v in spec['properties'].items() if k not in t['counterevidence'])
 
 
 def test_single_mapping_has_one_optional_switch_not_two_repeatable_slots():
@@ -68,7 +68,7 @@ def test_all_omit_and_unknown_stay_empty_without_forced_fact_or_mapping():
  value=transport(p,wire)[0][0]
  assert all(value[f]==[] for f in ('findings','contradictory_evidence','attack_techniques','d3fend_context','actor_correlation'))
  assert value['automation']==value['intent']=={'classification':'unknown','confidence':0}
- assert wire['observations']=={k:decision('omit') for k in t['facts']}
+ assert wire['observations']=={k:decision('omit', packet=p, key=k) for k in t['facts']}
 
 
 @pytest.mark.parametrize('mutation',[
@@ -84,7 +84,7 @@ def test_foreign_cross_role_or_legacy_structures_reject(mutation):
 
 def test_all_offered_slots_fit_accepted_counts_without_filtering(catalog):
  p={'packet_id':'bounds','coverage':'saved_samples','events':[event('a','powershell execution'),event('b','network service discovery'),event('c','credential dump attempt')],'context':[]}
- w=example(p,registry=catalog);w['observations']={k:decision('detail') for k in w['observations']};before=copy.deepcopy(w)
+ w=example(p,registry=catalog);w['observations']={k:decision('detail', packet=p, key=k) for k in w['observations']};before=copy.deepcopy(w)
  value=decode(w,p,[],catalog);validate_result(value,p,[],catalog)
  assert len(value['findings'])==len(w['observations'])>2 and w==before
  w['attack_techniques']={k:'include' for k in w['attack_techniques']}
@@ -104,7 +104,7 @@ def test_maximum_source_offers_are_structurally_count_safe(catalog):
  assert {k:len(t[k]) for k in SELECTION_BOUNDS}==SELECTION_BOUNDS
  assert prompt['grounding']['selection_bounds']==SELECTION_BOUNDS
  w=example(p,registry=catalog)
- w['observations']={k:decision('detail') for k in t['facts']}
+ w['observations']={k:decision('detail', packet=p, key=k) for k in t['facts']}
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:w[field]={k:'include' for k in t[kind]}
  before=copy.deepcopy(w);shape(schema,w);v=decode(w,p,[],catalog);validate_result(v,p,[],catalog)
  assert (len(v['findings']),len(v['attack_techniques']),len(v['d3fend_context']))==(12,12,6)

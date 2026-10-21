@@ -1,6 +1,8 @@
 """One immutable joint request; no generated value becomes another prompt."""
 import copy,hashlib,json,pathlib
-VERSION='joint-keyed-purpose-1'
+TOPOLOGY_VERSION='joint-keyed-purpose-1'
+# Durable topology/ledger schema is unchanged; generation has a separate identity.
+VERSION=TOPOLOGY_VERSION
 
 def encoded(value):return json.dumps(value,sort_keys=False,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode()
 def hash_value(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode()).hexdigest()
@@ -18,7 +20,7 @@ class JointPlan:
   object.__setattr__(self,name,value)
  def __init__(self,cfg,packet,candidates,registry,check=lambda:None):
   import behavior_generation as gen
-  from behavior_ai import config_id
+  from behavior_ai import config_id,PROMPT_VERSION
   from behavior_tokens import load
   check();cfg=copy.deepcopy(cfg);packet=copy.deepcopy(packet);candidates=copy.deepcopy(candidates);registry=copy.deepcopy(registry)
   self._packet=encoded(packet);self._candidates=encoded(candidates);self._registry=encoded(registry)
@@ -30,9 +32,11 @@ class JointPlan:
   self._request=encoded(request);self._schema=encoded(schema);self._tables=encoded(gen.offers(packet,candidates,registry)[0]);self._preparation=encoded(preparation)
   self._verification=encoded(tokenizer.check(request));check()
   model={k:tokenizer.value[k] for k in ('model','model_digest','runtime_sha256','template_sha256')}
-  self._identity=encoded({'model':model,'tokenizer_sha256':cfg['tokenizer_sha256'],'topology':VERSION,'client_sources':source_identity()})
+  self._identity=encoded({'model':model,'tokenizer_sha256':cfg['tokenizer_sha256'],'topology':VERSION,'generation_schema_version':gen.VERSION,'input_contract_version':gen.VERSION,'prompt_version':PROMPT_VERSION,'client_sources':source_identity()})
   self.input_key=hash_value([VERSION,config_id(cfg),packet,candidates,registry,request,self.identity])
   self.request_hash=request_digest(request);self._sealed=True
+ @property
+ def generation_version(self):return self.identity['generation_schema_version']
  @property
  def packet(self):return json.loads(self._packet)
  @property

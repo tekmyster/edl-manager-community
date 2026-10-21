@@ -12,7 +12,7 @@ PRIOR_ORDER=['generation_schema_version','packet_id','classification','malicious
 
 def omitted(packet):
  wire=gen.example(packet);wire.update(maliciousness_confidence=0)
- wire['observations']={key:decision('omit') for key in wire['observations']}
+ wire['observations']={key:decision('omit', packet=packet, key=key) for key in wire['observations']}
  return wire
 
 def prepared(body):
@@ -29,7 +29,7 @@ def test_nonempty_groups_are_first_at_infer_requester_and_prepared_body_boundary
  assert body['messages'][0]['content']==gen.INSTRUCTION
  assert body['options']=={'temperature':0,'num_predict':1800,'num_ctx':8192}
  assert p==original and value['observable_synthesis']==value['findings']==[]
- assert metadata['prompt_version']=='behavior-3.30' and metadata['generation_schema_version']=='joint-keyed-purpose-1'
+ assert metadata['prompt_version']=='behavior-3.31' and metadata['generation_schema_version']=='joint-statement-comparison-1'
 
 def test_empty_groups_keep_old_schema_property_and_required_order():
  p={'packet_id':'empty','events':[],'context':[],'coverage':'saved_samples'}

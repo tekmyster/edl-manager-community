@@ -10,6 +10,7 @@ class Status(str):
 
 def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,requester=None,hook=lambda phase:None):
  import behavior_ai as ai
+ import behavior_generation as gen
  from behavior_mapping import select
  from behavior_taxonomy import load
  import behavior_persistence as pending
@@ -33,7 +34,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   candidates=deadline.call(lambda:brain.candidates(ident,features)[:1] if cfg['correlation_enabled'] else []) if candidates is None else copy.deepcopy(candidates)
   registry=deadline.call(lambda:load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'));allowed=select(registry,packet)
   client_sources=deadline.call(source_identity)
-  cid=ai.config_id(cfg)+'-'+ai.digest([allowed,candidates,ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION,VERSION,client_sources])
+  cid=ai.config_id(cfg)+'-'+ai.digest([allowed,candidates,ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION,gen.VERSION,VERSION,client_sources])
   ledger=Ledger(brain,check=deadline.check,hook=hook);ledger.recover_active()
   existing=ledger.inspect(ident,cid)
   if existing:
@@ -104,8 +105,8 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
     if request_digest(request)!=request_hash:raise Refused('pipeline_entry_identity')
     ledger.dispatch(parent,stage,cid,request_hash,active['daily_budget'],receipt_hash)
    preparation=copy.deepcopy(pipe.preparation)
-   preparation['input_preparation'].update(version=VERSION,user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
-   wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':pipe.input_key},'version':VERSION,'expected_input':check['input_tokens'],'capture':evidence.wrap,'metadata_report':evidence.publish}
+   preparation['input_preparation'].update(version=pipe.generation_version,user_prompt_bytes=len(request['messages'][1]['content'].encode()),full_request_bytes=len(json.dumps(request,ensure_ascii=True,separators=(',',':')).encode()))
+   wire={'request':request,'decode':decode,'preparation':{**preparation,'topology':VERSION,'stage':stage,'input_verification':check,'input_binding':pipe.input_key},'generation_schema_version':pipe.generation_version,'expected_input':check['input_tokens'],'capture':evidence.wrap,'metadata_report':evidence.publish}
    try:
     value,meta=deadline.call(lambda:ai.infer(cfg,packet,candidates,allowed,key,requester,attempt,_wire=wire,_deadline=deadline,_before_call=entry,_before_post=before_post))
    except Exception as exc:
@@ -119,7 +120,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   meta['request_evidence']=evidence_receipt
   for field in ('input_tokens','output_tokens','cached_input_tokens','uncached_input_tokens'):meta[field]=evidence_receipt['usage'][field]
   metadata=aggregate(stages,time.monotonic()-deadline.started)
-  metadata.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=VERSION,input_binding=pipe.input_key,supplied_packet_ids=refs,wire_packet_ids=refs,identity=pipe.identity)
+  metadata.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=pipe.generation_version,input_binding=pipe.input_key,supplied_packet_ids=refs,wire_packet_ids=refs,identity=pipe.identity)
   result={**result,'metadata':metadata};created=ai.now();expires=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=cfg['assessment_hours'])).isoformat(timespec='seconds')
   outcome={'version':1,'row':[plan['assessment'],ident,cid,created,expires,'completed',json.dumps(result,allow_nan=False),'',round(time.monotonic()-deadline.started,3)],'owner':plan['owner'],'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
   ledger.final(parent,cid,outcome,meta,True)
@@ -173,7 +174,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    for field in ('input_tokens','output_tokens','cached_input_tokens','uncached_input_tokens'):last[field]=last['request_evidence']['usage'][field]
   saved=Ledger(brain).receipts(parent)
   if last and not any(v.get('request_id')==last.get('request_id') and v.get('stage')==last.get('stage') for v in saved):saved.append(last)
-  meta=aggregate(saved,time.monotonic()-deadline.started);meta.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,supplied_packet_ids=refs,failure_diagnostic={'category':'pipeline','stage':'assessment','reason':error if error in ('budget','configuration_changed','deadline_expired','superseded_before_request','pipeline_ownership_lost') else 'assessment_failed'})
+  meta=aggregate(saved,time.monotonic()-deadline.started);meta.update(model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=gen.VERSION,supplied_packet_ids=refs,failure_diagnostic={'category':'pipeline','stage':'assessment','reason':error if error in ('budget','configuration_changed','deadline_expired','superseded_before_request','pipeline_ownership_lost') else 'assessment_failed'})
   for field in ('failure_diagnostic','validation_diagnostic'):
    if isinstance(last.get(field),dict):meta[field]=copy.deepcopy(last[field])
   created=ai.now();outcome={'version':1,'row':[plan['assessment'],ident,cid,created,(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(timespec='seconds'),'failed',json.dumps({'metadata':meta},allow_nan=False),error[:60],round(time.monotonic()-deadline.started,3)],'owner':plan['owner'],'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
