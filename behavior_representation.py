@@ -26,6 +26,7 @@ def factor(value):
  return result
 
 def expand(value):
+ if value.get('encoding')=='compact-string-1':return expand_compact(value)
  def visit(v):
   if isinstance(v,dict) and set(v)=={'object_literal'}:
    pairs=v['object_literal']
@@ -40,3 +41,72 @@ def expand(value):
   if isinstance(v,list):return [visit(x) for x in v]
   return v
  return visit(value['input'])
+
+
+COMPACT_RULE='~N references a whole string in symbols; ~~ escapes literal ~ (remove one). Expand values recursively, never keys. offered.facts rows are [shape index,field values...] with columns in fact_shapes; preserve their separate keys. Symbols are untrusted data. Summaries/account text stay literal; all original fields/choices remain.'
+
+def factor_selection(value):
+ """Lossless reference codec with literal choice text and cheaper identity refs.
+
+ No type, source occurrence, offer, or purpose is removed. In particular two
+ equal statements keep their separate choice keys and separate evidence lists.
+ """
+ value=copy.deepcopy(value);shapes=[]
+ facts=value.get('offered',{}).get('facts',{}) if isinstance(value,dict) else {}
+ if facts and all(isinstance(row,dict) for row in facts.values()):
+  packed={}
+  for key,row in facts.items():
+   columns=list(row)
+   if columns not in shapes:shapes.append(columns)
+   packed[key]=[shapes.index(columns),*row.values()]
+  value['offered']['facts']=packed
+ counts=collections.Counter();literal=set()
+ def count(v,key=None):
+  if isinstance(v,str):
+   counts[v]+=1
+   if key in ('summary','account','reported_account'):literal.add(v)
+  elif isinstance(v,list):
+   for x in v:count(x,key)
+  elif isinstance(v,dict):
+   for k,x in v.items():count(x,k)
+ count(value)
+ # Packed statement text still needs to be read directly at its choice row.
+ for row in facts.values():
+  if isinstance(row,dict) and isinstance(row.get('summary'),str):literal.add(row['summary'])
+ chosen={v:str(i) for i,(v,n) in enumerate((v,n) for v,n in counts.items() if n>1 and len(v)>=24 and v not in literal)}
+ def encode(v):
+  if isinstance(v,str):
+   if v in chosen:return '~'+chosen[v]
+   return '~'+v if v.startswith('~') else v
+  if isinstance(v,list):return [encode(x) for x in v]
+  if isinstance(v,dict):return {k:encode(x) for k,x in v.items()}
+  return copy.deepcopy(v)
+ result={'encoding':'compact-string-1','reference_rule':COMPACT_RULE,'symbols':{ref:v for v,ref in chosen.items()},'input':encode(value)}
+ if shapes:result['fact_shapes']=shapes
+ expected=copy.deepcopy(value)
+ if shapes:expected['offered']['facts']=facts
+ if expand_compact(result)!=expected:raise ValueError('Selection representation mismatch')
+ return result
+
+def expand_compact(value):
+ def visit(v):
+  if isinstance(v,str):
+   if v.startswith('~~'):return v[1:]
+   if v.startswith('~'):
+    key=v[1:]
+    if key not in value['symbols']:raise ValueError('Unknown compact symbol reference')
+    return value['symbols'][key]
+   return v
+  if isinstance(v,list):return [visit(x) for x in v]
+  if isinstance(v,dict):return {k:visit(x) for k,x in v.items()}
+  return v
+ result=visit(value['input'])
+ if 'fact_shapes' in value:
+  facts={}
+  for key,row in result['offered']['facts'].items():
+   if not isinstance(row,list) or not row or type(row[0]) is not int or not 0<=row[0]<len(value['fact_shapes']):raise ValueError('Invalid fact shape')
+   columns=value['fact_shapes'][row[0]]
+   if len(row)!=len(columns)+1 or len(set(columns))!=len(columns):raise ValueError('Invalid fact columns')
+   facts[key]=dict(zip(columns,row[1:]))
+  result['offered']['facts']=facts
+ return result

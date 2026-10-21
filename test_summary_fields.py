@@ -96,7 +96,7 @@ def test_positive_summary_content_has_no_unprinted_status_expiry_or_verification
  before=copy.deepcopy(packet);tables,_=gen.offers(packet,[],{});prompt=prepared(packet);key=next(k for k,v in tables['counterevidence'].items() if v['evidence_ids']==['ctx'])
  fields=['provider','verified','cache_fresh'] if provider=='crawler' else ['provider','classification','cache_fresh']
  assert prompt['offered']['facts'][key]['summary_fields']==[fields]
- assert prompt['offered']['facts'][key]['allowed_roles']==['omit','finding','counterevidence'] and packet==before
+ assert prompt['offered']['facts'][key]['allowed_roles']==['omit','detail','support','counterevidence'] and packet==before
  # Eligibility still depends on freshness fields which are not printed as dates/status.
  c['expires']='2000-01-01T00:00:00+00:00';assert gen.offers(packet,[],{})[0]['counterevidence']=={}
 

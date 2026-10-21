@@ -2,11 +2,11 @@
 import copy,json,hashlib
 from behavior_generation import VERSION as DRAFT
 from behavior_generation import SELECTION_OBJECTIVE,SELECTION_RULES
-POLICY=SELECTION_OBJECTIVE+'Reassess sources; freely replace draft choices/omissions. Displayed findings/counterevidence are exact. Only offered.facts draft_statement_ref=[display-list,index] copies that statements summary/evidence_ids. source_group_ref binds actual account tuples only. Retain original bounds; no actor/authorization/success/causal linkage. Copy draft_binding. '+SELECTION_RULES
+POLICY='Reassess behavior independently of intent; freely replace draft. Sparsity/agreement are not goals. Keep distinct occurrences, syntax, intervals, uncertainty. Compare literal statements to selected account/row content; raw fields/names/citations alone are not coverage. Labels may add no behavior. Every generic/all-omit choice stays legal. Findings/counterevidence are exact. draft_statement_ref=[display-list,index] copies only summary/evidence_ids; source_group_ref binds account tuples only. Copy draft_binding. '+SELECTION_RULES
 
 def compact(v):return json.dumps(v,ensure_ascii=True,separators=(',',':'),allow_nan=False)
 def digest(v):return hashlib.sha256(compact(v).encode()).hexdigest()
-INDEX_RULE=' Draft [index,value] pairs use original zero-based table order: observations/facts, attack_techniques/attack, d3fend_context/d3fend, observable_synthesis/synthesis_options; hypotheses use own tables/confidence. Packet/version are constants.'
+INDEX_RULE=' Draft [index,value] pairs use zero-based offer order: observations=facts, attack_techniques=attack, d3fend_context=d3fend, observable_synthesis=synthesis_options; hypotheses=own table/confidence. Packet/version are constants.'
 POLICY+=INDEX_RULE
 FIELDS={'observations':'facts','attack_techniques':'attack','d3fend_context':'d3fend','observable_synthesis':'synthesis_options','automation':'automation','intent':'intent','actor_correlation':'relations'}
 def draft_orders(tables,logical):return {field:list(logical['synthesis_options'] if kind=='synthesis_options' else tables[kind]) for field,kind in FIELDS.items()}
@@ -28,7 +28,7 @@ def unpack_choices(v,tables,logical,packet):
   out[field]=[{'choice_id':k,'confidence':x} for k,x in items] if field in ('automation','intent','actor_correlation') else dict(items)
  return out
 def request(schema,logical,system,gen,model):
- from behavior_representation import factor
+ from behavior_representation import factor_selection
  logical=copy.deepcopy(logical);binding=logical.get('provisional_answer',{}).pop('draft_binding',None)
  # Keep the complete selected statement readable in the draft display.
  # Reference its duplicate offered body only after an exact unique match.
@@ -37,7 +37,7 @@ def request(schema,logical,system,gen,model):
   facts=logical['offered']['facts'];projected=reference_facts(facts,shown)
   if restore_facts(projected,shown)!=facts:raise ValueError('Draft statement reference mismatch')
   logical['offered']['facts']=projected
- encoded=factor(logical)
+ encoded=factor_selection(logical)
  # Literal digest insertion prevents a hypothetical equality with a source
  # string from changing the source factor table. It loses no source/draft data.
  if binding is not None:encoded['input']['provisional_answer']['draft_binding']=binding

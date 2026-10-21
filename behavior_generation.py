@@ -106,7 +106,18 @@ def annotated_facts(packet,tables):
   if record.get('id'):records.setdefault(record['id'],[]).append(record)
  from source_observations import connections
  linked=connections(packet.get('events',[]));event_ids={event['id'] for event in packet.get('events',[]) if event.get('id')}
- return {key:{**fact,'allowed_roles':['omit','finding']+(['counterevidence'] if key in tables['counterevidence'] else []),**observation_summary_fields(fact,records,linked,event_ids)} for key,fact in tables['facts'].items()}
+ from behavior_synthesis import offers as groups
+ offered_groups=groups(packet)
+ def occurrences(fact):
+  result=[]
+  for ident in fact['evidence_ids']:
+   matches=records.get(ident,[])
+   # Unknown/ambiguous occurrence lookup is explicit, never a guessed match.
+   seen=matches[0].get('seen') if len(matches)==1 else None
+   rows=[[index,i] for index,group in enumerate(offered_groups.values()) for i,row in enumerate(group['source_tuples']) if row['event_id']==ident]
+   result.append([seen,rows])
+  return result
+ return {key:{**fact,'allowed_roles':['omit','detail','support']+(['counterevidence'] if key in tables['counterevidence'] else []),**observation_summary_fields(fact,records,linked,event_ids),'occurrences':occurrences(fact)} for key,fact in tables['facts'].items()}
 
 def choice_schema(packet,tables,coverage,*,facts=None):
  from behavior_ai import obj,text,array,now
@@ -156,6 +167,7 @@ def prepare(packet,candidates,registry):
   prompt['event_reference_definition']='packet_event_ref selects the complete identical event in packet.events by id; no fields are omitted from that observation.'
  prompt['synthesis_options']=options(packet)
  prompt['summary_fields_definition']=SUMMARY_FIELDS_DEFINITION
+ prompt['occurrence_definition']='occurrences follows evidence_ids: [source seen,[[group index,row index],...]], using zero-based synthesis_options/source-tuple order. Empty rows means no group membership. Times are lookup aids, not emitted text. Membership is not meaning coverage/usefulness; compare actual statement/account/row content. Distinct cited times remain distinct.'
  return schema,provenance_projection(prompt)
 
 def provenance_projection(prompt):
