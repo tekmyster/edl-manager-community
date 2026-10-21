@@ -54,6 +54,25 @@ def test_equal_reported_upstream_identity_is_not_deduplicated_or_counted_as_atta
  assert 'do not prove a shared session, independent events' in detail['uncertainty']
 
 
+@pytest.mark.parametrize('times',[
+ ['2026-10-18T12:00:00+00:00'],
+ ['2026-10-18T12:00:00+00:00','2026-10-18T12:00:00+00:00'],
+ ['2026-10-18T12:00:00+00:00','2026-10-18T12:00:00+00:00','2026-10-18T12:00:30+00:00']])
+def test_canonical_and_presentation_make_no_chronology_or_independence_claim(times):
+ p=packet(*(event('reported-'+str(i),'connection observed',port='21',seen=t) for i,t in enumerate(times)))
+ value=selected(p);before=copy.deepcopy(p);display=sy.presentation(value,p['events']);detail=display['details'][0]
+ neutral='Reported activity does not establish intent or successful access.'
+ assert value['analysis_summary'].startswith(neutral) and display['summary']==value['analysis_summary']
+ assert not any(word in value['analysis_summary'].casefold() for word in ['distinct','separate','ordered','repeated','sequence'])
+ assert [r['event_id'] for r in detail['rows']]==[e['id'] for e in p['events']]
+ assert [r['seen'] for r in detail['rows']]==[sy.project(e)['seen'] for e in p['events']]
+ assert all(row['seen'] in detail['account'] and row['action'] in detail['account'] for row in detail['rows'])
+ assert 'do not prove a shared session, independent events' in detail['uncertainty']
+ assert 'authorization and operator identity remain unverified' in detail['uncertainty'] and p==before
+ wire=gen.example(p);wire['observations']={};wire['observable_synthesis']={k:'omit' for k in sy.offers(p)}
+ empty=gen.decode(wire,p,[],{});assert not empty['findings'] and not empty['observable_synthesis']
+
+
 def test_all_new_occurrences_offered_in_bounded_chunks_without_raising_selection_limit():
  p=packet(*(event(str(i),'connection observed',port='21',seen=f'2026-10-18T12:00:{i:02d}+00:00') for i in range(25)))
  table=sy.offers(p);assert len(table)==4 and [len(g['source_tuples']) for g in table.values()]==[8,8,8,1]

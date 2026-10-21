@@ -275,7 +275,7 @@ def describe(group):
 
 def concise(group,meaning):
  rows=group['source_tuples'];kind=group['kind']
- if kind=='source_occurrences':return 'Separate source reports record actions at distinct cited times; intent and successful access are unknown.'
+ if kind=='source_occurrences':return 'Reported activity does not establish intent or successful access.'
  if kind=='session_sequence':return 'A linked session contains shell input and file capture'+('; compatible with staging, execution unverified.' if meaning=='staging_compatible' else '; execution is unverified.')
  if kind=='authentication_failure':
   count=len(clusters(rows,'auth'));return ('One sampled login failure is recorded' if count==1 else str(count)+' sampled login failures are recorded')+'; brute force is unestablished.'
