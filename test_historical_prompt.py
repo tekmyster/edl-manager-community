@@ -163,7 +163,12 @@ def test_oversized_candidate_never_reaches_transport_or_decoder():
 def test_complete_history_overflow_refuses_before_claim_without_withholding(tmp_path,monkeypatch):
  from test_behavior_drain import queue
  from test_behavior_retention import packet
- s,b,cfg=queue(tmp_path,1);p,c=legacy_overbudget_pair();p['packet_id']='packet0';c['padding']+='x'*100
+ s,b,cfg=queue(tmp_path,1);p,c=legacy_overbudget_pair();p['packet_id']='packet0'
+ # The active draft uses the lossless compact selection codec. Size this
+ # fixture against that actual body, independently of the legacy comparator.
+ _,logical=gen.prepare(p,[c],{})
+ size=len(gen.prompt_json(__import__('behavior_representation').factor_selection(logical)).encode())
+ c['padding']+='x'*max(1,18001-size)
  calls=[]
  stage_mock(monkeypatch,ai,lambda *a:(calls.append(1),{}))
  with b.connect() as db:
