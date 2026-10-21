@@ -229,7 +229,7 @@ def test_literal_binding_collision_preserves_source_and_binding():
  import behavior_revision as revision,behavior_generation as gen
  from behavior_representation import expand
  binding='0123456789abcdef'*4
- logical={'packet':{'one':binding,'two':binding,'three':binding},'provisional_answer':{'draft_binding':binding,'choices':{},'rendered':{}}}
+ logical={'packet':{'one':binding,'two':binding,'three':binding},'offered':{'facts':{}},'provisional_answer':{'draft_binding':binding,'choices':{},'rendered':{'findings':[],'counterevidence':[]}}}
  q=revision.request({},logical,'synthetic-only',gen,'synthetic')
  encoded=json.loads(q['messages'][1]['content'])
  assert encoded['input']['provisional_answer']['draft_binding']==binding
