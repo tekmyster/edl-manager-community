@@ -127,33 +127,82 @@ def test_blocked_outcome_publication_cannot_extend_deadline_or_accept_late(tmp_p
  finally:gate.set();close(s)
 
 
-def test_blocked_pending_journal_defers_already_durable_result_without_redispatch(tmp_path,monkeypatch):
+@pytest.mark.parametrize('boundary',['expiry','cancellation'])
+def test_blocked_pending_journal_defers_already_durable_result_without_redispatch(tmp_path,monkeypatch,boundary):
  import behavior_persistence as pending
- s,b,cfg,p=setup(tmp_path/'native');gate=threading.Event();released=threading.Event();old=pending.stage;calls=[]
- # Keep the unchanged200ms journal deadline/assertions. A minimal complete
- # source fixture isolates blocked persistence after the two required calls;
- # full-source preparation/decode deadlines have their own unchanged tests.
- p[0]={**p[0],'events':[],'context':[]}
- with b.connect() as db:db.execute('UPDATE packets SET content=? WHERE id=?',(json.dumps(p[0]),p[0]['packet_id']))
- monkeypatch.setattr('behavior_pipeline_job.Deadline',lambda value,stop:Deadline(.2,stop))
+ s,b,cfg,p=setup(tmp_path/'native');gate=threading.Event();released=threading.Event();old=pending.stage;calls=[];active=[];stop=threading.Event();entered=[]
+ # Use the configured production deadline unchanged. Inject an EARLIER expiry
+ # or cancellation only after SQL proves the completed final is durable. Real
+ # absolute-deadline/admission/capture tests remain separate and unchanged.
+ def deadline(value,should_stop):
+  d=Deadline(value,should_stop);active.append(d);return d
+ monkeypatch.setattr('behavior_pipeline_job.Deadline',deadline)
  def blocked(*a,**k):
+  with b.connect() as db:
+   plan=dict(db.execute('SELECT * FROM pipeline_plans').fetchone())
+   assert plan['state']=='final_pending' and json.loads(plan['outcome'])['row'][5]=='completed'
+   assert [tuple(r) for r in db.execute('SELECT ordinal,state FROM pipeline_stages ORDER BY ordinal')]==[(1,'accepted'),(2,'accepted')]
+   assert db.execute('SELECT count(*) FROM pipeline_finals').fetchone()[0]==1
+  entered.append(time.monotonic())
+  if boundary=='expiry':active[0].end=min(active[0].end,active[0].clock())
+  else:stop.set()
   gate.wait(3)
   try:return old(*a,**k)
   finally:released.set()
  monkeypatch.setattr(pending,'stage',blocked)
  def send(url,**kw):calls.append(1);return Reply(kw['json'],choices(kw['json']))
- start=time.monotonic()
  try:
-  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='persistence_deferred' and time.monotonic()-start<1 and calls==[1,1]
+  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send,should_stop=stop.is_set)=='persistence_deferred'
+  assert len(entered)==1 and time.monotonic()-entered[0]<1 and calls==[1,1]
   with b.connect() as db:
    plan=dict(db.execute('SELECT * FROM pipeline_plans').fetchone());assert plan['state']=='final_pending' and json.loads(plan['outcome'])['row'][5]=='completed'
-  gate.set();assert released.wait(2)
+  stop.clear();gate.set();assert released.wait(2)
   # Only persistence of that already committed result may finish later.
   end=time.monotonic()+2
   while time.monotonic()<end:
    with b.connect() as db:
     if db.execute('SELECT state FROM pipeline_plans').fetchone()[0]=='completed':break
    time.sleep(.01)
-  with b.connect() as db:assert db.execute('SELECT count(*) FROM pipeline_stages').fetchone()[0]==2 and db.execute('SELECT requests FROM usage').fetchone()[0]==2
+  with b.connect() as db:
+   assert db.execute('SELECT state FROM pipeline_plans').fetchone()[0]=='completed'
+   assert db.execute('SELECT count(*) FROM pipeline_stages').fetchone()[0]==2 and db.execute('SELECT requests FROM usage').fetchone()[0]==2
+   assert db.execute('SELECT count(*) FROM assessments').fetchone()[0]==1 and db.execute('SELECT status,error FROM assessments').fetchone()[:]==('completed','')
+  stop.clear()
+  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='cached'
   assert calls==[1,1]
  finally:gate.set();close(s)
+
+
+def test_expiry_before_second_capture_cannot_be_a_completed_final(tmp_path,monkeypatch):
+ s,b,cfg,p=setup(tmp_path/'native');calls=[];observed=[];original=evidence.RequestEvidence.finish
+ import behavior_persistence as pending
+ old=pending.stage
+ def expire(self,*a,**k):
+  if self.path.name=='stage2':self.deadline.end=min(self.deadline.end,self.deadline.clock())
+  return original(self,*a,**k)
+ def inspect(*a,**k):
+  with b.connect() as db:
+   plan=dict(db.execute('SELECT * FROM pipeline_plans').fetchone());row=json.loads(plan['outcome'])['row']
+   observed.append((plan['state'],row[5],row[7]));assert observed[-1]==('final_pending','failed','Expired')
+   assert db.execute('SELECT count(*) FROM pipeline_finals').fetchone()[0]==0
+  return old(*a,**k)
+ monkeypatch.setattr(evidence.RequestEvidence,'finish',expire);monkeypatch.setattr(pending,'stage',inspect)
+ def send(url,**kw):calls.append(1);return Reply(kw['json'],choices(kw['json']))
+ try:
+  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='persistence_deferred'
+  assert observed==[] and calls==[1,1]
+  with b.connect() as db:
+   plan=dict(db.execute('SELECT * FROM pipeline_plans').fetchone());row=json.loads(plan['outcome'])['row']
+   assert (plan['state'],row[5],row[7])==('final_pending','failed','Expired')
+   assert [tuple(r) for r in db.execute('SELECT ordinal,state FROM pipeline_stages ORDER BY ordinal')]==[(1,'accepted'),(2,'failed')]
+   assert db.execute('SELECT count(*) FROM pipeline_finals').fetchone()[0]==0 and db.execute('SELECT count(*) FROM assessments').fetchone()[0]==0
+   assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
+  # A fresh persistence-only pass may publish that same FAILED outcome; it
+  # cannot turn it into a completed assessment or acquire another request.
+  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='failed'
+  assert observed==[('final_pending','failed','Expired')] and calls==[1,1]
+  with b.connect() as db:
+   assert db.execute('SELECT status,error FROM assessments').fetchone()[:]==('failed','Expired')
+   assert db.execute('SELECT requests FROM usage').fetchone()[0]==2
+  assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=send)=='persistence_review_required' and calls==[1,1]
+ finally:close(s)
