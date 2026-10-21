@@ -2,7 +2,7 @@
 import copy,json,hashlib
 from behavior_generation import VERSION as DRAFT
 from behavior_generation import SELECTION_OBJECTIVE,SELECTION_RULES
-POLICY='Review reported occurrences before intent. For OWN draft deletions compare SAME action/source time in replacement text/rows: later connections or failure accounts cannot cover earlier connections/closures. Recover useful source details draft missed; opaque labels need not be restored. Freely replace/abstain; generic/all-omit stay legal. draft_statement_ref=[list,index]: exact summary/evidence_ids; draft_account_ref=index: exact account text; source_group_ref: account tuples. Copy draft_binding. '+SELECTION_RULES
+POLICY='Review OWN draft against source. Compare each deleted action/time with actual replacement rows; another occurrence is not coverage. Recover missing behavior, not opaque labels. Intent may remain unknown. Replace/abstain freely; generic/all-omit legal. draft_statement_ref=[list,index]: summary/evidence_ids; draft_account_ref=index: account text; source_group_ref: tuples. Copy draft_binding. '+SELECTION_RULES
 
 def compact(v):return json.dumps(v,ensure_ascii=True,separators=(',',':'),allow_nan=False)
 def digest(v):return hashlib.sha256(compact(v).encode()).hexdigest()
