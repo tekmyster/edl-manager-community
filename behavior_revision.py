@@ -2,7 +2,7 @@
 import copy,json,hashlib
 from behavior_generation import VERSION as DRAFT
 from behavior_generation import SELECTION_OBJECTIVE,SELECTION_RULES
-POLICY='Reassess behavior independently of intent; freely replace draft. Sparsity/agreement are not goals. Keep distinct occurrences, syntax, intervals, uncertainty. Compare literal statements to selected account/row content; raw fields/names/citations alone are not coverage. Labels may add no behavior. Every generic/all-omit choice stays legal. Findings/counterevidence are exact. draft_statement_ref=[display-list,index] copies only summary/evidence_ids; source_group_ref binds account tuples only. Copy draft_binding. '+SELECTION_RULES
+POLICY='Review reported occurrences before intent. For OWN draft deletions compare SAME action/source time in replacement text/rows: later connections or failure accounts cannot cover earlier connections/closures. Recover useful source details draft missed; opaque labels need not be restored. Freely replace/abstain; generic/all-omit stay legal. draft_statement_ref=[list,index]: exact summary/evidence_ids; draft_account_ref=index: exact account text; source_group_ref: account tuples. Copy draft_binding. '+SELECTION_RULES
 
 def compact(v):return json.dumps(v,ensure_ascii=True,separators=(',',':'),allow_nan=False)
 def digest(v):return hashlib.sha256(compact(v).encode()).hexdigest()
@@ -37,6 +37,11 @@ def request(schema,logical,system,gen,model):
   facts=logical['offered']['facts'];projected=reference_facts(facts,shown)
   if restore_facts(projected,shown)!=facts:raise ValueError('Draft statement reference mismatch')
   logical['offered']['facts']=projected
+  # Selected account text stays readable in the OWN draft. A duplicate offered
+  # account can point to it only on exact text AND group-identity equality.
+  options=logical.get('synthesis_options',{});projected=reference_accounts(options,shown)
+  if restore_accounts(projected,shown)!=options:raise ValueError('Draft account reference mismatch')
+  if 'synthesis_options' in logical:logical['synthesis_options']=projected
  encoded=factor_selection(logical)
  # Literal digest insertion prevents a hypothetical equality with a source
  # string from changing the source factor table. It loses no source/draft data.
@@ -74,4 +79,25 @@ def restore_facts(facts,shown):
   item=shown[field][index]
   if set(item)!={'summary','evidence_ids'} or any(k in fact for k in item):raise ValueError('Invalid referenced statement body')
   fact.update(copy.deepcopy(item))
+ return value
+
+
+def reference_accounts(options,shown):
+ value=copy.deepcopy(options)
+ for key,option in value.items():
+  matches=[i for i,item in enumerate(shown.get('accounts',[])) if item['source_group_ref']==key and item['account']==option.get('reported_account')]
+  if len(matches)==1:
+   del option['reported_account'];option['draft_account_ref']=matches[0]
+ return value
+
+
+def restore_accounts(options,shown):
+ value=copy.deepcopy(options)
+ for key,option in value.items():
+  if 'draft_account_ref' not in option:continue
+  i=option.pop('draft_account_ref')
+  if type(i) is not int or not 0<=i<len(shown['accounts']) or 'reported_account' in option:raise ValueError('Invalid draft account reference')
+  account=shown['accounts'][i]
+  if account['source_group_ref']!=key or not isinstance(account['account'],str):raise ValueError('Mismatched draft account reference')
+  option['reported_account']=account['account']
  return value

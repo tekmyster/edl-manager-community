@@ -18,6 +18,7 @@ LIMITS={
  'resource_discovery':'Targeting is not disclosure. Ordinary crawling and authorized testing remain alternatives; mirrored rows are not independent attacks.',
  'client_recurrence':'The client label is spoofable. Same-IP observations do not establish verified tooling or operator continuity.',
  'denied_recurrence':'Drops are firewall policy outcomes, not independent attacks or successful access; address reuse remains possible.',
+ 'source_occurrences':'Reports do not prove a shared session, independent events, attacks or current enforcement. Execution, transfer, authorization and operator identity remain unverified.',
  'insufficient_detail':'Opaque summaries do not establish a specific behavior, intent, tool, vulnerability or operator.'}
 MEANINGS={
  'staging_compatible':'The ordered shell-input and capture reports are compatible with a staging workflow; this is a hypothesis about the reported sequence.',
@@ -29,6 +30,7 @@ MEANINGS={
  'repeated_sensitive_path_probe':'The same sensitive configuration path recurs in separate source-time groups, supporting a repeated-probe hypothesis.',
  'same_ip_claimed_client_recurrence':'The packet records same-IP recurrence of a common unverified client-label claim across source dates.',
  'same_ip_denied_recurrence':'The packet records recurring same-IP denied-access observations across source dates.',
+ 'reported_source_occurrences':'Actions are individually reported; a shared session, intent or success is not established.',
  'insufficient_observable_detail':'The retained source detail is insufficient for a specific observable-behavior account.'}
 TUPLE_FIELDS=('event_id','seen','source','sensor','action','method','path','status','port','destination_role','destination','client_label','syntax','upstream_id','detail','connection_ref')
 
@@ -109,6 +111,25 @@ def observation_dates(rows,kind):
  return {min(row['seen'] for row in group)[:10] for group in clusters(rows,kind)}
 
 
+def project_occurrence(event):
+ """Keep a safe redacted path literal without changing historical group tuples."""
+ row=project(event);path=event.get('path')
+ if isinstance(path,str) and re.fullmatch(r'\[identifier\](?:\.[A-Za-z0-9]{1,8})?',path):row['path']=path
+ return row
+
+
+def occurrence_detail(row):
+ """Recognize literal action/request detail, not utility, truth or support.
+
+ Unknown detector/product/client labels remain available as original facts.
+ No brand, address, evidence ID or evaluation case controls this predicate.
+ """
+ return bool(row['method'] or row['path'] or row['action'].casefold() in {
+  'connection','connection observed','connect','disconnect','closed','deny','denied','drop','waf interrupted',
+  'cowrie.session.connect','cowrie.session.closed','cowrie.login.failed',
+  'cowrie.command.input','cowrie.session.file_download'})
+
+
 def offers(packet):
  from behavior_ai import timestamp,digest
  from source_observations import connections
@@ -117,10 +138,10 @@ def offers(packet):
  if len({e['id'] for e in events})!=len(events):return {}
  events=sorted((e for e in events if timestamp(e.get('seen'))),key=lambda e:(timestamp(e['seen']),e['id']))
  detailed=[e for e in events if (e.get('provenance') or {}).get('detail')=='sample'];result={}
- def add(kind,selected,interpretations):
+ def add(kind,selected,interpretations,projection=project):
   selected=sorted({e['id']:e for e in selected}.values(),key=lambda e:(timestamp(e['seen']),e['id']))
   if not selected or len(selected)>MAX_ROWS:return
-  rows=[project(e) for e in selected];ident='group_'+digest([VERSION,kind,selected,rows,interpretations])[:24]
+  rows=[projection(e) for e in selected];ident='group_'+digest([VERSION,kind,selected,rows,interpretations])[:24]
   result[ident]={'claim_id':ident,'kind':kind,'evidence_ids':[e['id'] for e in selected],'source_tuples':rows,'interpretations':interpretations}
  linked=connections(events)
  for shell in detailed:
@@ -162,6 +183,14 @@ def offers(packet):
   if len(observation_dates([project(e) for e in items],'recurrence'))>1:
    add('denied_recurrence',items if len(items)<=MAX_ROWS else items[:4]+items[-4:],['same_ip_denied_recurrence']);break
  if events and not detailed:add('insufficient_detail',events[:MAX_ROWS],['insufficient_observable_detail'])
+ # Add a neutral account for detailed occurrences outside the existing offered
+ # accounts, including singleton/partial requests. Keep every original offer
+ # and its identity. This is an optional alternative to isolated fact selection,
+ # never an automatic addition to an answer or an assertion of semantic coverage.
+ covered={ident for group in result.values() for ident in group['evidence_ids']}
+ remaining=[e for e in detailed if e['id'] not in covered and occurrence_detail(project_occurrence(e))]
+ for start in range(0,len(remaining),MAX_ROWS):
+  add('source_occurrences',remaining[start:start+MAX_ROWS],['reported_source_occurrences'],project_occurrence)
  return result
 
 
@@ -216,6 +245,17 @@ def elapsed(a,b):
 
 def describe(group):
  rows=group['source_tuples'];kind=group['kind'];start=rows[0]['seen'];end=rows[-1]['seen'];window=start if start==end else start+' to '+end
+ if kind=='source_occurrences':
+  sources={(row['source'],row['sensor']) for row in rows};common=len(sources)==1
+  def report(row):
+   fields=[row['seen']]+([] if common else [row['source']+' / '+row['sensor']])+['reports '+(row['action'] or 'action unavailable')]
+   if row['method'] or row['path']:fields+=['method '+(row['method'] or 'unavailable'),'path '+(row['path'] or 'unavailable'),'HTTP '+(row['status'] or 'unavailable')]
+   if row['port']:fields.append('port '+row['port'])
+   if row['destination']!='unavailable':fields.append('destination '+row['destination'])
+   if row['syntax']:fields.append('recorded syntax '+row['syntax'])
+   return '; '.join(fields)
+  prefix=(rows[0]['source']+' / '+rows[0]['sensor']+' ') if common else ''
+  return prefix+'source reports: '+ ' | '.join(report(row) for row in rows)+'.'
  if kind=='session_sequence':
   connection=next(r for r in rows if r['action']=='cowrie.session.connect')
   shell=next(r for r in rows if r['action']=='cowrie.command.input')
@@ -235,6 +275,7 @@ def describe(group):
 
 def concise(group,meaning):
  rows=group['source_tuples'];kind=group['kind']
+ if kind=='source_occurrences':return 'Separate source reports record actions at distinct cited times; intent and successful access are unknown.'
  if kind=='session_sequence':return 'A linked session contains shell input and file capture'+('; compatible with staging, execution unverified.' if meaning=='staging_compatible' else '; execution is unverified.')
  if kind=='authentication_failure':
   count=len(clusters(rows,'auth'));return ('One sampled login failure is recorded' if count==1 else str(count)+' sampled login failures are recorded')+'; brute force is unestablished.'
@@ -263,7 +304,7 @@ def presentation(assessment,events):
  offered=offers(packet);numbers={e['id']:i+1 for i,e in enumerate(events)};details=[]
  for item in items:
   group=offered[item['claim_id']]
-  details.append({'title':{'session_sequence':'Linked session','authentication_failure':'Authentication observations','http_navigation':'HTTP navigation','resource_discovery':'Resource discovery','client_recurrence':'Claimed client recurrence','denied_recurrence':'Denied-access recurrence','insufficient_detail':'Limited source detail'}[group['kind']], 'account':describe(group),'interpretation':MEANINGS[item['interpretation']],'uncertainty':LIMITS[group['kind']],'rows':[dict(row,number=numbers[row['event_id']]) for row in item['source_tuples']]})
+  details.append({'title':{'session_sequence':'Linked session','authentication_failure':'Authentication observations','http_navigation':'HTTP navigation','resource_discovery':'Resource discovery','client_recurrence':'Claimed client recurrence','denied_recurrence':'Denied-access recurrence','source_occurrences':'Recorded observations','insufficient_detail':'Limited source detail'}[group['kind']], 'account':describe(group),'interpretation':MEANINGS[item['interpretation']],'uncertainty':LIMITS[group['kind']],'rows':[dict(row,number=numbers[row['event_id']]) for row in item['source_tuples']]})
  return {'summary':(render(items,packet)+' '+SUMMARIES.get(assessment.get('classification'),'')).strip(),'details':details,'unavailable':False}
 
 

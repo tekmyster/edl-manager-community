@@ -49,3 +49,15 @@ def test_source_literal_marker_is_not_interpreted_outside_offered_facts():
  logical={'offered':{'facts':{}},'source':{'draft_statement_ref':['findings',0]},'provisional_answer':{'draft_binding':'a'*64,'rendered':{'findings':[],'counterevidence':[]},'choices':{}}}
  q=rev.request({},logical,'synthetic',gen,'synthetic')
  assert expand(json.loads(q['messages'][1]['content']))==logical
+
+
+def test_duplicate_account_body_reference_needs_exact_text_and_group_identity():
+ shown={'accounts':[{'account':'Complete actual account text.','source_group_ref':'group-a'}]}
+ options={'group-a':{'reported_account':'Complete actual account text.','evidence_ids':['a']},'group-b':{'reported_account':'Complete actual account text.','evidence_ids':['b']}}
+ packed=rev.reference_accounts(options,shown)
+ assert packed['group-a']['draft_account_ref']==0 and packed['group-b']==options['group-b']
+ assert rev.restore_accounts(packed,shown)==options
+ for bad in [True,-1,1]:
+  with pytest.raises(ValueError):rev.restore_accounts({'group-a':{'draft_account_ref':bad}},shown)
+ with pytest.raises(ValueError):rev.restore_accounts({'group-b':{'draft_account_ref':0}},shown)
+ with pytest.raises(ValueError):rev.restore_accounts({'group-a':{'draft_account_ref':0,'reported_account':'replacement'}},shown)

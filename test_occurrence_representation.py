@@ -35,7 +35,9 @@ def test_occurrence_join_does_not_extend_a_selected_account():
  packet=linked_packet();later=copy.deepcopy(packet['events'][0]);later.update(id='later-connection',seen='2026-10-17T10:05:00+00:00')
  packet['events'].append(later);tables,_=gen.offers(packet,[],{});facts=gen.annotated_facts(packet,tables)
  key=next(k for k,v in facts.items() if v['evidence_ids']==['later-connection'])
- assert facts[key]['occurrences']==[[later['seen'],[]]]
+ memberships=facts[key]['occurrences'][0][1]
+ assert facts[key]['occurrences'][0][0]==later['seen'] and memberships
+ assert all(list(sy.offers(packet).values())[g]['kind']=='source_occurrences' for g,r in memberships)
  for f in facts.values():
   assert f['allowed_roles']==['omit','detail','support']
   assert len(f['occurrences'])==len(f['evidence_ids'])
@@ -62,4 +64,5 @@ def test_revision_display_roundtrip_keeps_exact_statement_and_join_metadata():
  before=copy.deepcopy(logical);q=rev.request(schema,logical,'synthetic',gen,'synthetic')
  decoded=rep.expand(json.loads(q['messages'][1]['content']))
  decoded['offered']['facts']=rev.restore_facts(decoded['offered']['facts'],decoded['provisional_answer']['rendered'])
+ decoded['synthesis_options']=rev.restore_accounts(decoded['synthesis_options'],decoded['provisional_answer']['rendered'])
  assert decoded==logical==before
