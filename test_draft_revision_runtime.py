@@ -156,6 +156,18 @@ def test_correlated_capture_file_rewrite_cannot_replace_exact_owned_stream(sampl
  assert len(calls)==stage and not rows(b,'pipeline_finals')
  assert len(rows(b,'pipeline_drafts'))==stage-1
 
+@pytest.mark.parametrize('stage',[1,2])
+def test_request_capture_bytes_must_match_bound_hash_even_if_JSON_is_unchanged(sample,stage):
+ s,b,cfg,p=sample;calls=[]
+ def hook(point):
+  if point!=('before_accept1' if stage==1 else 'before_final'):return
+  path=next(pathlib.Path(b.path).with_suffix('.request-evidence').iterdir())/('stage%d'%stage)/'request.json'
+  before=path.read_bytes();value=json.loads(before);after=json.dumps(value,indent=2).encode()
+  assert before!=after and json.loads(before)==json.loads(after)
+  path.write_bytes(after)
+ assert run(b,p[0]['packet_id'],p[0],set(),cfg,requester=sender(calls),hook=hook)!='completed'
+ assert len(calls)==stage and not rows(b,'pipeline_finals')
+
 def test_aggregate_missing_or_conflicting_stage_counts_stay_unknown():
  meta=aggregate([{'input_tokens':10,'output_tokens':2,'first_content_seconds':.2},{'input_tokens':None,'output_tokens':3,'first_content_seconds':.4}],2)
  assert meta['input_tokens'] is None and meta['output_tokens']==5 and meta['first_content_seconds'] is None

@@ -48,13 +48,13 @@ def captured(brain,ident,stage,evidence,request,input_key):
  from behavior_generation import parse_wire
  expected=pathlib.Path(brain.path).with_suffix('.request-evidence')/ident/('stage%d'%stage)
  if evidence is None or evidence.path.resolve()!=expected.resolve():raise Refused('pipeline_owned_capture')
- saved=read(expected/'request.json');binding=read(expected/'binding.json');capture=read(expected/'capture.json');finalized=read(expected/'finalization.json');outcome=read(expected/'outcome.json')
+ request_bytes=(expected/'request.json').read_bytes();saved=json.loads(request_bytes);binding=read(expected/'binding.json');capture=read(expected/'capture.json');finalized=read(expected/'finalization.json');outcome=read(expected/'outcome.json')
  rawbody=(expected/'raw-response.bin').read_bytes();raw=(expected/'choice-content.utf8').read_bytes().decode('utf-8')
  owner=evidence.capture
  if owner is None or not owner.done.is_set() or not owner.closed or not owner.complete or owner.error or not owner.sealed:raise Refused('pipeline_owned_capture')
  with owner.lock:owned_raw=bytes(owner.data)
  if rawbody!=owned_raw:raise Refused('pipeline_owned_capture')
- if saved!=request or binding!={'input_key':input_key,'request_sha256':request_digest(request)} or capture.get('sha256')!=sha(rawbody) or not capture.get('complete_application_body') or not capture.get('snapshot_evidence_complete') or not finalized.get('complete') or outcome.get('status')!='validated':raise Refused('pipeline_owned_capture')
+ if sha(request_bytes)!=request_digest(request) or saved!=request or binding!={'input_key':input_key,'request_sha256':request_digest(request)} or capture.get('sha256')!=sha(rawbody) or not capture.get('complete_application_body') or not capture.get('snapshot_evidence_complete') or not finalized.get('complete') or outcome.get('status')!='validated':raise Refused('pipeline_owned_capture')
  frames=[parse_wire(line.decode()) for line in rawbody.splitlines() if line.strip()]
  if not frames or any(not isinstance(f,dict) for f in frames):raise Refused('pipeline_owned_capture')
  actual=''.join(f.get('message',{}).get('content','') for f in frames)
