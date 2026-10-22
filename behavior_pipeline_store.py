@@ -135,7 +135,9 @@ class Ledger:
     if row['config']==config:
      if row['state']!='completed':return dict(row)
      return dict(row)
-   if db.execute("SELECT 1 FROM pipeline_legacy_barriers WHERE packet=? AND (config=? OR state!='completed')",(packet,config)).fetchone():raise Refused('persistence_review_required')
+   # A consumed legacy packet never becomes a new request merely because the
+   # prompt/configuration changed. Historical barriers are packet scoped.
+   if db.execute('SELECT 1 FROM pipeline_legacy_barriers WHERE packet=?',(packet,)).fetchone():raise Refused('persistence_review_required')
    return None
  def begin(self,packet,config,input_key,cfg,deadline,refs,*,_committed=lambda ident:None):
   from behavior_ai import digest,now
@@ -143,7 +145,7 @@ class Ledger:
   def insert(db):
    if db.execute("SELECT 1 FROM pipeline_plans WHERE topology!='full-joint-draft-revision-1' AND state NOT IN ('completed','failed') LIMIT 1").fetchone():raise Refused('persistence_review_required')
    old=db.execute("SELECT state FROM pipeline_plans WHERE packet=? AND (config=? OR state!='completed') LIMIT 1",(packet,config)).fetchone()
-   if db.execute("SELECT 1 FROM pipeline_legacy_barriers WHERE packet=? AND (config=? OR state!='completed')",(packet,config)).fetchone():raise Refused('persistence_review_required')
+   if db.execute('SELECT 1 FROM pipeline_legacy_barriers WHERE packet=?',(packet,)).fetchone():raise Refused('persistence_review_required')
    if old:raise Refused('persistence_review_required')
    active=db.execute('SELECT p.* FROM pipeline_active a JOIN pipeline_plans p ON p.id=a.parent').fetchone()
    if active:
@@ -151,7 +153,11 @@ class Ledger:
     self._uncertain(db,active['id']);db.execute('DELETE FROM pipeline_active WHERE parent=?',(active['id'],))
    current=db.execute('SELECT c.packet_id FROM current_packets c JOIN packets p ON p.ip=c.ip WHERE p.id=?',(packet,)).fetchone()
    if not current or current[0]!=packet:raise Refused('superseded_before_request')
-   if db.execute("SELECT 1 FROM pipeline_legacy_barriers WHERE state NOT IN ('completed','failed') LIMIT 1").fetchone():raise Refused('persistence_review_required')
+   # Legacy jobs have UUID ownership, not a verifiable process token. Keep a
+   # live lease globally exclusive, including the pre-journal dispatch window.
+   # Expired historical rows alone are not outstanding dispatch evidence;
+   # unresolved private journals and old pipeline plans retain their guards.
+   if db.execute("SELECT 1 FROM jobs j JOIN pipeline_legacy_barriers b ON b.packet=j.packet_id AND b.config=j.config_id WHERE j.state='running' AND j.lease>? LIMIT 1",(time.time(),)).fetchone():raise Refused('leased_or_exhausted')
    # Existing one-pass pending/running work is not reinterpreted as a new job.
    if db.execute("SELECT 1 FROM jobs WHERE packet_id=? AND state='running' LIMIT 1",(packet,)).fetchone():raise Refused('persistence_review_required')
    used=db.execute('SELECT coalesce(sum(requests),0) FROM usage WHERE day=?',(day,)).fetchone()[0];held=db.execute('SELECT coalesce(sum(held),0) FROM pipeline_reservations WHERE day=?',(day,)).fetchone()[0]

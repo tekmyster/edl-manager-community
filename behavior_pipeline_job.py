@@ -16,7 +16,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
  import behavior_persistence as pending
  from analytics_store import Attempt
  if should_stop and should_stop():return Status('cancelled')
- deadline=Deadline(cfg['timeout'],should_stop);ledger=None;parent=None;stages=[];last={};cid=None;charged_units=0;outcome=None;evidence=None
+ deadline=Deadline(cfg['timeout'],should_stop);ledger=None;parent=None;stages=[];last={};cid=None;charged_units=0;outcome=None;evidence=None;boundary='input_preparation'
  def live():
   current=deadline.call(lambda:brain.store.state('behavior_settings'))
   value={**ai.DEFAULTS,**current} if current is not None else cfg
@@ -35,7 +35,9 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   registry=deadline.call(lambda:load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'));allowed=select(registry,packet)
   client_sources=deadline.call(source_identity)
   cid=ai.config_id(cfg)+'-'+ai.digest([allowed,candidates,ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION,gen.VERSION,VERSION,client_sources])
-  ledger=deadline.call(lambda:Ledger(brain,check=deadline.check,hook=hook));deadline.call(ledger.recover_active)
+  boundary='ledger_initialize';ledger=deadline.call(lambda:Ledger(brain,check=deadline.check,hook=hook))
+  boundary='owner_recovery';deadline.call(ledger.recover_active)
+  boundary='packet_admission'
   existing=deadline.call(lambda:ledger.inspect(ident,cid))
   if existing:
    if existing['state']=='final_pending':return deadline.call(lambda:persist(existing))
@@ -48,15 +50,15 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    ledger.uncertain(existing['id']);return Status('persistence_review_required')
   # Preserve legacy journal semantics. Never reinterpret a previous one-pass
   # dispatch under a new configuration/pipeline identity.
-  directory=pending.directory(brain)
+  boundary='legacy_journal';directory=pending.directory(brain)
   if directory.exists():
    pending.recover(brain,should_stop)
    if (directory/'review'/'attention').exists() or next(directory.glob('*.inflight'),None) or next(directory.glob('*.json'),None):return Status('persistence_review_required')
-  backoff_key='provider_backoff:'+ai.digest([cfg['endpoint'],cfg['model']])
+  boundary='provider_backoff';backoff_key='provider_backoff:'+ai.digest([cfg['endpoint'],cfg['model']])
   with brain.connect() as db:
    backoff=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
    if backoff and json.loads(backoff[0])['until']>time.time():return Status('backoff')
-  deadline.check();livecfg=live()
+  boundary='input_verification';deadline.check();livecfg=live()
   try:pipe=deadline.call(lambda:Pipeline(cfg,packet,candidates,allowed,deadline.check))
   except (ValueError,OSError,KeyError):return Status('input_verification_required')
   if pipe.identity['client_sources']!=client_sources:raise Refused('input_identity_changed')
@@ -77,7 +79,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   def reserved(value):
    nonlocal parent
    parent=value
-  deadline.call(lambda:ledger.begin(ident,cid,pipe.input_key,livecfg,time.time()+deadline.left(),refs,_committed=reserved))
+  boundary='parent_reservation';deadline.call(lambda:ledger.begin(ident,cid,pipe.input_key,livecfg,time.time()+deadline.left(),refs,_committed=reserved))
   plan=deadline.call(lambda:ledger.plan(parent));ledger.packet_hash=hash_value(pipe.packet);ledger.bound_request=pipe.request;ledger.bound_requests[1]=pipe.request
   from behavior_request_evidence import RequestEvidence
   def verify_inputs():
@@ -145,7 +147,13 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   error=reason
  except Exception as exc:
   if parent is None:
-   if isinstance(exc,sqlite3.Error):return Status('persistence_deferred')
+   if isinstance(exc,sqlite3.Error):
+    import logging
+    busy=pending.contention(exc)
+    # Fixed phase names/numeric SQLite codes only: no SQL, IP, packet, provider
+    # inputs or exception text. Distinguish contention from schema/corruption.
+    logging.warning('Behavior pipeline persistence phase=%s sqlite_code=%s contention=%s',boundary,getattr(exc,'sqlite_errorcode',None),busy)
+    return Status('persistence_deferred' if busy else 'persistence_review_required')
    return Status('cancelled' if should_stop and should_stop() else 'failed')
   error=exc.code if isinstance(exc,ai.ModelOutputError) else type(exc).__name__
   if not last:last=copy.deepcopy(getattr(exc,'_edl_failure_metadata',{}))

@@ -129,7 +129,7 @@ def test_palo_claim_busy_has_no_charge_or_fetch_and_next_pass_fetches_once(tmp_p
   assert s.state('behavior_palo_usage:'+dt.datetime.now(dt.timezone.utc).date().isoformat())==1
  finally:close(s)
 
-def test_actual_pass_palo_busy_defers_before_index_or_model_and_keeps_cursor(tmp_path,monkeypatch):
+def test_actual_pass_palo_busy_indexes_with_stored_context_and_keeps_unsaved_cursor(tmp_path,monkeypatch):
  import evidence_history,packet_indexing
  s=Store(tmp_path/'native');cfg=palo_fixture(s);s.evidence('8.8.8.8','nginx','sensitive-path-probe',now(),'http',50)
  s.state('behavior_settings',{**ai.DEFAULTS,'enabled':True,'model_enabled':False,'palo_context_enabled':True});previous={'completed':'previous'};s.state('behavior_worker',previous);cursor={'offset':0};s.state('behavior_cursor',cursor)
@@ -141,8 +141,9 @@ def test_actual_pass_palo_busy_defers_before_index_or_model_and_keeps_cursor(tmp
  monkeypatch.setattr(ctx,'refresh_palo',blocked)
  try:
   result=ai.run(s,index_only=True,source_cfg=cfg)
-  assert result['status']=='deferred' and result['phase']=='palo_claim' and result['status_persisted'] is False
-  assert result['indexed']==0 and not fetches and s.state('behavior_cursor')==cursor and s.state('behavior_worker')==previous
+  assert result['status']=='deferred' and result['phase']=='status_persistence' and result['status_persisted'] is False
+  assert result['indexed']==1 and result['palo_context']=={'busy_retry_next_pass':1} and result['cursor_persistence']['status']=='deferred'
+  assert not fetches and s.state('behavior_cursor')==cursor and s.state('behavior_worker')==previous
  finally:
   for db in holders:db.rollback();db.close()
  def fetcher(*a):fetches.append(1);return {'status':'ok','fetched':now(),'events':[]}

@@ -622,6 +622,16 @@ def drain_queue(brain,store,cfg,retrieved=None,should_stop=None,refresh_index=No
   # Unlimited immediately takes another page, including work beyond blocked rows.
   if cfg['daily_budget'] is not None:return results,examined,'finite_page_complete'
 
+def save_progress_cursor(store,key,value):
+ """Optional fair-index progress never blocks independent queued analysis."""
+ try:store.state(key,value,busy_timeout_ms=250)
+ except sqlite3.OperationalError as exc:
+  from behavior_persistence import contention
+  if not contention(exc):raise
+  return {'status':'deferred','sqlite_code':exc.sqlite_errorcode,'retry':'next_normal_pass'}
+ return {'status':'saved'}
+
+
 def run(store,index_only=False,source_cfg=None,should_stop=None):
  if should_stop and should_stop():return {'status':'cancelled'}
  cfg=settings(store)
@@ -649,7 +659,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  metadata_priority=[metadata_rows[a] for a in pending_metadata if a in metadata_rows]
  priority=(metadata_priority+[r for r in changed if r['ip'] not in pending_metadata])[:cfg['batch_size']//2];seen={r['ip'] for r in priority}
  fair=rows[offset:offset+cfg['batch_size']-len(priority)]
- chosen=(priority+[r for r in fair if r['ip'] not in seen])[:cfg['batch_size']];results={};palo_calls=0;palo_results={};history_results={};retrieved={};indexed_count=0
+ chosen=(priority+[r for r in fair if r['ip'] not in seen])[:cfg['batch_size']];results={};palo_calls=0;palo_results={};palo_busy=False;history_results={};history_cursor_persistence={'status':'unchanged'};retrieved={};indexed_count=0
  from behavior_retention import cleanup as retention_cleanup
  from behavior_intelligence import cleanup as intelligence_cleanup
  with brain.connect() as db:intelligence_cleanup(db)
@@ -661,13 +671,16 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
   history_offset=(store.state('behavior_history_cursor') or 0)%len(rows)
   for history_row in (rows+rows)[history_offset:history_offset+min(2,len(rows))]:
    status=refresh(brain,history_row['ip'],source_cfg,dt.datetime.now(dt.timezone.utc));history_results[status]=history_results.get(status,0)+1
-  store.state('behavior_history_cursor',(history_offset+min(2,len(rows)))%len(rows))
+  history_cursor_persistence=save_progress_cursor(store,'behavior_history_cursor',(history_offset+min(2,len(rows)))%len(rows))
  for row in chosen:
   if should_stop and should_stop():break
-  if source_cfg is not None and cfg['palo_context_enabled'] and palo_calls<2:
+  if source_cfg is not None and cfg['palo_context_enabled'] and palo_calls<2 and not palo_busy:
    from behavior_context import refresh_palo
    p=refresh_palo(store,source_cfg,row['ip'],cfg['palo_daily_budget']);palo_results[p]=palo_results.get(p,0)+1
-   if p=='busy_retry_next_pass':return {'status':'deferred','phase':'palo_claim','retry':'next_normal_pass','status_persisted':False,'palo_context':palo_results,'indexed':indexed_count,'analysis':results}
+   # A failed optional claim fetches/charges nothing. Defer further Palo
+   # attempts this pass, retaining the stored cache and original timestamps;
+   # packet indexing and independent queued analysis can still make progress.
+   if p=='busy_retry_next_pass':palo_busy=True
    if p in ('refreshed','failed'):palo_calls+=1
   from packet_indexing import index_packet,lock as index_lock,Cancelled as IndexCancelled
   try:
@@ -678,7 +691,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
  # An oldest-first fairness slot plus diverse evidence candidates within the oldest 100
  # decouples indexing from model execution; finite settings retain optional quotas.
  # Changed windows replace pending content without losing their original place.
- store.state('behavior_cursor',{'offset':offset+len(fair)})
+ cursor_persistence=save_progress_cursor(store,'behavior_cursor',{'offset':offset+len(fair)})
  scheduled_candidates=0;analysis_stop='index_only' if index_only else 'disabled'
  if assessment_persistence['deferred']:analysis_stop='persistence_review_required' if assessment_persistence['review_required'] else 'persistence_deferred'
  if cfg['model_enabled'] and not index_only and not assessment_persistence['deferred']:
@@ -686,6 +699,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
   results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
  status={'completed':now(),'indexed':indexed_count,'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'history_cleanup':history_cleanup,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'assessment_persistence':assessment_persistence,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  status['packet_readiness']=getattr(store,'_packet_index_status',{'status':'inline'})
+ status.update(cursor_persistence=cursor_persistence,history_cursor_persistence=history_cursor_persistence)
  try:store.state('behavior_worker',status,busy_timeout_ms=250)
  except sqlite3.OperationalError as exc:
   from behavior_persistence import contention
