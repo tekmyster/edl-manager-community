@@ -146,7 +146,7 @@ def additional_report(row):
  Existing accounts/rows and generic statement choices are left unchanged.
  """
  action=row['action'].casefold()
- return bool(action and action not in (row['source'].casefold(),row['sensor'].casefold()))
+ return bool(action and action!='[identifier]' and action not in (row['source'].casefold(),row['sensor'].casefold()))
 
 
 def offers(packet):

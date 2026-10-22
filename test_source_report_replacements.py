@@ -90,3 +90,9 @@ def test_new_report_accounts_traverse_durable_two_charge_publication(tmp_path,mo
   for e in p['events']:assert any(e['action'] in d['account'] and sy.project_report(e)['seen'] in d['account'] for d in details)
   assert run(brain,p['packet_id'],p,set(),cfg,requester=send)=='cached' and len(calls)==2
  finally:close(store)
+
+
+def test_redacted_placeholder_alone_is_not_an_action_account():
+ p=packet(event('placeholder','[identifier]',source='collector',sensor='[identifier]',provenance={'detail':'summary'}))
+ assert not any(g['kind']=='source_occurrences' for g in sy.offers(p).values())
+ assert any(g['kind']=='insufficient_detail' for g in sy.offers(p).values())
