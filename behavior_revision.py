@@ -2,11 +2,11 @@
 import copy,json,hashlib
 from behavior_generation import VERSION as DRAFT
 from behavior_generation import SELECTION_OBJECTIVE,SELECTION_RULES
-POLICY='Review OWN draft against source. Compare each deleted action/time with actual replacement rows; another occurrence is not coverage. Recover missing behavior, not opaque labels. Intent may remain unknown. Replace/abstain freely; generic/all-omit legal. draft_statement_ref=[list,index]: summary/evidence_ids; draft_account_ref=index: account text; source_group_ref: tuples. Copy draft_binding. '+SELECTION_RULES
+POLICY='Compare FIXED summary to accounts: adds_behavior/adds_uncertainty=additional content; source_label_only=label without behavior; already_in_account=same action/time; unresolved=unknown. Unmentioned labels need no finding. Preserve distinct occurrences, syntax, intervals, uncertainty. Comparisons unverified; all choices legal. Copy draft_binding. draft_statement_ref=[list,index]:summary/evidence_ids; draft_account_ref=index:account; source_group_ref:tuples. '+SELECTION_RULES
 
 def compact(v):return json.dumps(v,ensure_ascii=True,separators=(',',':'),allow_nan=False)
 def digest(v):return hashlib.sha256(compact(v).encode()).hexdigest()
-INDEX_RULE=' Draft [index,value] pairs use zero-based offer order: observations=facts, attack_techniques=attack, d3fend_context=d3fend, observable_synthesis=synthesis_options; hypotheses=own table/confidence. Packet/version are constants.'
+INDEX_RULE=' Draft [index,value] zero-based offer order: observations=facts, attack_techniques=attack, d3fend_context=d3fend, observable_synthesis=synthesis_options; hypotheses=own table/confidence.'
 POLICY+=INDEX_RULE
 FIELDS={'observations':'facts','attack_techniques':'attack','d3fend_context':'d3fend','observable_synthesis':'synthesis_options','automation':'automation','intent':'intent','actor_correlation':'relations'}
 def draft_orders(tables,logical):return {field:list(logical['synthesis_options'] if kind=='synthesis_options' else tables[kind]) for field,kind in FIELDS.items()}
@@ -101,3 +101,15 @@ def restore_accounts(options,shown):
   if account['source_group_ref']!=key or not isinstance(account['account'],str):raise ValueError('Mismatched draft account reference')
   option['reported_account']=account['account']
  return value
+
+
+# Self-reported comparison is preserved in raw stage evidence, never treated
+# as established usefulness, permission to drop source, or an enforcement input.
+COMPARISONS=('adds_behavior','adds_uncertainty','source_label_only','already_in_account','unresolved')
+
+def selection_schema(schema):
+ from behavior_ai import obj,text
+ result=copy.deepcopy(schema)
+ for key,spec in result['properties']['observations']['properties'].items():
+  result['properties']['observations']['properties'][key]=obj({'comparison':text(enum=list(COMPARISONS)),'purpose':spec})
+ return result

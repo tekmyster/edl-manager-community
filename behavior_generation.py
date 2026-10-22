@@ -7,7 +7,7 @@ import copy,itertools,json
 from behavior_grounding import contract,mapping_text,shared,SUMMARIES,LIMITS,RELATION,ALTERNATIVE
 
 VERSION='joint-answer-draft-2'
-FINAL_VERSION='joint-answer-revision-2'
+FINAL_VERSION='joint-answer-revision-3'
 # Wire revisions do not change any offered statement, role or hypothesis identity.
 OFFER_ID_NAMESPACE='grounded-groups-9'
 from behavior_grounding import MAX_FACTS
@@ -228,8 +228,9 @@ def materialize(value,packet,tables,synthesis):
   return result
  # Strict shape and parse_wire reject unknown/duplicate keys and cross-role values.
  # Purposes choose original complete statements, never authored facts.
- findings=[copy.deepcopy(tables['facts'][k]) for k,observation in value['observations'].items() if observation in ('detail','support')]
- opposing=[copy.deepcopy(tables['facts'][k]) for k,observation in value['observations'].items() if observation=='counterevidence']
+ observations={k:(v['purpose'] if isinstance(v,dict) else v) for k,v in value['observations'].items()}
+ findings=[copy.deepcopy(tables['facts'][k]) for k,observation in observations.items() if observation in ('detail','support')]
+ opposing=[copy.deepcopy(tables['facts'][k]) for k,observation in observations.items() if observation=='counterevidence']
  if any(claim in findings for claim in opposing):raise ChoiceError('duplicate_observation_sides','contradictory_evidence')
  result={'schema_version':STORAGE_VERSION,'packet_id':value['packet_id'],'classification':value['classification'],'maliciousness_confidence':value['maliciousness_confidence'],'analysis_summary':SUMMARIES[value['classification']],'limitations':list(LIMITS)}
  result['observable_synthesis']=synthesis

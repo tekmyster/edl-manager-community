@@ -43,7 +43,9 @@ def stage_mock(monkeypatch,target,value,*,before_persist=None):
    else:canonical,meta=copy.deepcopy(cached[packet['packet_id']])
    w=wire_from_storage(packet,canonical,candidates,allowed)
    w['generation_schema_version']=request['format']['properties']['generation_schema_version']['enum'][0]
-   if stage==2:w['draft_binding']=request['format']['properties']['draft_binding']['enum'][0]
+   if stage==2:
+    w['draft_binding']=request['format']['properties']['draft_binding']['enum'][0]
+    w['observations']={k:{'comparison':'unresolved','purpose':purpose} for k,purpose in w['observations'].items()}
    result=_wire['decode'](w)
    from test_pipeline_support import Reply
    counts={target:meta[source] for source,target in [('input_tokens','prompt_eval_count'),('output_tokens','eval_count'),('cached_input_tokens','prompt_eval_cached_count')] if source in meta}

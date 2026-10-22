@@ -126,7 +126,7 @@ def test_prompt_selection_and_generation_boundaries_separate_cache_from_failed_a
  stage_mock(monkeypatch,ai,fake);cfg={**ai.DEFAULTS,'enabled':True,'model_enabled':True,'daily_budget':None}
  monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.27');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','grounded-groups-11');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed'
  with b.connect() as db:old=tuple(db.execute('SELECT * FROM assessments').fetchone())
- monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.36');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','joint-answer-revision-2');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed';assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='cached'
+ monkeypatch.setattr(ai,'PROMPT_VERSION','behavior-3.37');monkeypatch.setattr(ai,'GENERATION_SCHEMA_VERSION','joint-answer-revision-3');assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='completed';assert ai.model_job(b,ident,p,f,cfg,candidates=[])=='cached'
  with b.connect() as db:rows=[tuple(r) for r in db.execute('SELECT * FROM assessments')]
  assert old in rows and len(rows)==2 and len(calls)==2
 @pytest.mark.parametrize('constant',['NaN','Infinity','-Infinity'])

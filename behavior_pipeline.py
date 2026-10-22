@@ -60,7 +60,7 @@ class JointPlan:
  def _revision(self,parent,raw,canonical,rendering,check=lambda:None):
   """Internal pure builder. Ledger.revision authenticates durable ownership first."""
   import behavior_generation as gen,behavior_synthesis as sy
-  from behavior_revision import request,pack_choices,unpack_choices,view,POLICY
+  from behavior_revision import request,pack_choices,unpack_choices,view,POLICY,selection_schema
   from behavior_tokens import load
   check()
   if self.decode(raw)!=canonical or sy.presentation(canonical,self.packet['events'])!=rendering:raise ValueError('Draft receipt mismatch')
@@ -70,7 +70,7 @@ class JointPlan:
   restored=unpack_choices(packed,tables,logical,self.packet);restored['generation_schema_version']=gen.VERSION
   if restored!=choices:raise ValueError('Nonreversible provisional choices')
   logical['provisional_answer']={'draft_binding':binding,'choices':packed,'rendered':view(canonical,self.packet,sy)}
-  schema=json.loads(self._schema);schema['properties']['generation_schema_version']['enum']=[gen.FINAL_VERSION]
+  schema=selection_schema(json.loads(self._schema));schema['properties']['generation_schema_version']['enum']=[gen.FINAL_VERSION]
   schema['properties']['draft_binding']={'type':'string','maxLength':64,'enum':[binding]};schema['required'].append('draft_binding')
   cfg=json.loads(self._cfg);q=request(schema,logical,POLICY,gen,cfg['model']);check();tokenizer=load(cfg)
   if hash_value(tokenizer.value)!=self.tokenizer_value_hash:raise ValueError('Tokenizer identity changed')
