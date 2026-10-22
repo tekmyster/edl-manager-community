@@ -5,6 +5,7 @@ UTC=dt.timezone.utc
 BLOCK_THRESHOLD=75
 HONEYPOT_FLOOR=50
 HONEYPOT_REPEAT_BONUS=25
+WORKER_WRITE_SECONDS=1.0
 HONEYPOT_SOURCES={'tpot','owapot'}
 
 def display_sources(row):
@@ -112,9 +113,11 @@ class Store:
   from permanent_policy import SCHEMA as permanent_schema
   with self.connect() as d:d.executescript(permanent_schema)
  @contextlib.contextmanager
- def connect(self,commit=True):
+ def connect(self,commit=True,*,busy_timeout_ms=30000):
+  if type(busy_timeout_ms) is not int or not 0<=busy_timeout_ms<=30000:raise ValueError('Invalid bounded SQLite wait')
   persistent=getattr(self,'_worker_connection',None)
-  d=persistent if persistent is not None else sqlite3.connect(self.path,timeout=30);d.row_factory=sqlite3.Row;d.execute('PRAGMA busy_timeout=30000')
+  d=persistent if persistent is not None else sqlite3.connect(self.path,timeout=busy_timeout_ms/1000);d.row_factory=sqlite3.Row;d.execute('PRAGMA busy_timeout='+str(busy_timeout_ms))
+  if persistent is not None and getattr(self,'_batch_evidence',False) and not d.in_transaction:self._worker_write_started=time.monotonic()
   try:
    yield d
    if commit:d.commit()
@@ -127,13 +130,24 @@ class Store:
    d.rollback();raise
   finally:
    if persistent is None:d.close()
+   elif busy_timeout_ms!=30000:d.execute('PRAGMA busy_timeout=30000')
+ def _worker_batch_checkpoint(self):
+  # Yield only between complete native units. A source row and its handoff
+  # stay together, as do all mutations of one evidence call.
+  d=getattr(self,'_worker_connection',None)
+  if not getattr(self,'_batch_evidence',False) or d is None or not d.in_transaction:return
+  started=getattr(self,'_worker_write_started',None)
+  if started is None:self._worker_write_started=time.monotonic();return
+  if time.monotonic()-started>=WORKER_WRITE_SECONDS:
+   self._worker_last_direct_commit='elapsed_write_budget'
+   d.commit();self._evidence_pending=0;self._worker_write_started=None
  def audit(self,actor,action,details):
   from event_history import audit_event
   with self.connect() as d:
    at=now();record=d.execute('INSERT INTO audit(at,actor,action,details) VALUES(?,?,?,?)',(at,actor,action,json.dumps(details)))
    audit_event(d,record.lastrowid,at,actor,action,details)
- def state(self,key,value=None):
-  with self.connect() as d:
+ def state(self,key,value=None,*,busy_timeout_ms=None):
+  with self.connect(**({'busy_timeout_ms':busy_timeout_ms} if busy_timeout_ms is not None else {})) as d:
    if value is not None:d.execute('INSERT OR REPLACE INTO state VALUES(?,?)',(key,json.dumps(value)));return value
    r=d.execute('SELECT value FROM state WHERE key=?',(key,)).fetchone();return json.loads(r[0]) if r else None
  def cache(self,address,provider,payload,status='ok',hours=168):
@@ -209,6 +223,7 @@ class Store:
     returned(d,address,'palo','block hit',seen)
    return bool(updated.rowcount)
  def evidence(self,address,source,sensor,seen,family,strength,url='',details=None):
+  self._worker_batch_checkpoint()
   tracking=getattr(self,'_pipeline_receipts',None)
   receipt=(dt.datetime.now(UTC).isoformat(timespec='microseconds'),time.monotonic()) if tracking is not None and not tracking.get('invalidated') and source!='palo' else None
   address=str(ip(address));t=dt.datetime.fromisoformat(seen.replace('Z','+00:00'))
@@ -235,6 +250,7 @@ class Store:
    if self._evidence_pending>=100:
     self._worker_last_direct_commit='evidence_100'
     self._worker_connection.commit();self._evidence_pending=0
+  self._worker_batch_checkpoint()
  def active_rules(self):
   with self.connect() as d:return [dict(r) for r in d.execute('SELECT * FROM rules WHERE enabled=1 AND (expires IS NULL OR expires>?) ORDER BY created DESC',(now(),))]
  def describe(self,address):
@@ -249,6 +265,7 @@ class Store:
    activity=[dict(x) for x in d.execute('SELECT * FROM source_activity WHERE ip=? AND seen>=? ORDER BY seen DESC',(address,cut))]
   return {**self.score(address,json.loads(meta[0]) if meta else {},evidence,caches,dict(retention) if retention else None,dict(prior_return) if prior_return else None),'activity':activity}
  def source_activity(self,address,source,sensor,seen,details,source_cfg=None):
+  self._worker_batch_checkpoint()
   address=str(ip(address));t=dt.datetime.fromisoformat(seen.replace('Z','+00:00'))
   if t.tzinfo is None:raise ValueError('Native activity time must include timezone')
   t=t.astimezone(UTC);cut=dt.datetime.now(UTC)-dt.timedelta(days=30)
@@ -261,6 +278,7 @@ class Store:
    d.execute('INSERT INTO source_activity VALUES(?,?,?,?,?) ON CONFLICT(ip,source,sensor) DO UPDATE SET seen=excluded.seen,details=excluded.details WHERE excluded.seen>=source_activity.seen',(address,source,sensor,t.isoformat(timespec='seconds'),json.dumps(details)))
    from source_handoff import capture
    capture(d,address,source,sensor,details,now(),source_cfg)
+  self._worker_batch_checkpoint()
  def score(self,address,meta,evidence,caches,retention=None,prior_return=None):
   configuration=getattr(self,'_source_configuration',None)
   if configuration is not None:

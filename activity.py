@@ -67,9 +67,9 @@ def fetch(cfg,target):
   k=b['key'];destinations.append({**k,'destination':address(k.get('destination')),'nat':address(k.get('nat')),'count':b['doc_count']})
  return {'events':events,'destinations':destinations,'total':v['hits']['total']['value'],'destinations_limited':bool(agg.get('after_key')) and len(destinations)>=500,'fetched':now(),'cutoff':cut.isoformat(),'status':'ok'}
 
-def claim_activity(store,key,quota_key=None,budget=None,*,owner=None):
+def claim_activity(store,key,quota_key=None,budget=None,*,owner=None,busy_timeout_ms=None):
  """Coordinate UI and background readers using one durable per-IP lease."""
- with store.connect() as db:
+ with store.connect(**({'busy_timeout_ms':busy_timeout_ms} if busy_timeout_ms is not None else {})) as db:
   db.execute('BEGIN IMMEDIATE')
   # Waiters must compare and persist one clock sample taken after the writer lock.
   current=dt.datetime.now(UTC)

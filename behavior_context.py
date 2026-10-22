@@ -1,5 +1,5 @@
 """Read-only, allowlisted context for behavioral inspection; never scoring input."""
-import datetime as dt,hashlib,ipaddress,json,time
+import datetime as dt,hashlib,ipaddress,json,time,sqlite3
 from behavior_ai import safe_text,timestamp,digest
 from core import now
 
@@ -122,7 +122,11 @@ def refresh_palo(store,source_cfg,address,budget,fetcher=None):
  if fetched and 0<=(at-fetched).total_seconds()<(3600 if saved.get('status')=='error' else 300):return 'cached'
  if started and 0<=(at-started).total_seconds()<90:return 'pending'
  from activity import claim_activity
- claimed=claim_activity(store,key,'behavior_palo_usage:'+at.date().isoformat(),budget)
+ try:claimed=claim_activity(store,key,'behavior_palo_usage:'+at.date().isoformat(),budget,busy_timeout_ms=250)
+ except sqlite3.OperationalError as exc:
+  from behavior_persistence import contention
+  if not contention(exc):raise
+  return 'busy_retry_next_pass'
  if claimed!='claimed':return claimed
  try:
   if fetcher is None:

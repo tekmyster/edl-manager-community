@@ -667,6 +667,7 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
   if source_cfg is not None and cfg['palo_context_enabled'] and palo_calls<2:
    from behavior_context import refresh_palo
    p=refresh_palo(store,source_cfg,row['ip'],cfg['palo_daily_budget']);palo_results[p]=palo_results.get(p,0)+1
+   if p=='busy_retry_next_pass':return {'status':'deferred','phase':'palo_claim','retry':'next_normal_pass','status_persisted':False,'palo_context':palo_results,'indexed':indexed_count,'analysis':results}
    if p in ('refreshed','failed'):palo_calls+=1
   from packet_indexing import index_packet,lock as index_lock,Cancelled as IndexCancelled
   try:
@@ -685,7 +686,13 @@ def run(store,index_only=False,source_cfg=None,should_stop=None):
   results,scheduled_candidates,analysis_stop=drain_queue(brain,store,cfg,retrieved,should_stop,refresh)
  status={'completed':now(),'indexed':indexed_count,'changed_priority':len(priority),'source_sample_handoff':handoff,'retention':retention,'history_cleanup':history_cleanup,'fingerprints_backfilled':backfilled,'scheduling_index':schedule_backfill,'telemetry_recovery':telemetry_recovery,'assessment_persistence':assessment_persistence,'reference_history_index':reference_backfill,'scheduled_candidates':scheduled_candidates,'analysis_stop':analysis_stop,'candidate_pool_bounds':{'age':100,'rich':64,'recent':64,'union':228},'analysis':results,'palo_context':palo_results,'history_queries':history_results,'mode':'pilot' if cfg.get('scoring_enabled') else 'shadow','scoring_enabled':bool(cfg.get('scoring_enabled'))}
  status['packet_readiness']=getattr(store,'_packet_index_status',{'status':'inline'})
- store.state('behavior_worker',status);return status
+ try:store.state('behavior_worker',status,busy_timeout_ms=250)
+ except sqlite3.OperationalError as exc:
+  from behavior_persistence import contention
+  if not contention(exc):raise
+  status['work_finished']=status.pop('completed')
+  return {**status,'status':'deferred','phase':'status_persistence','retry':'next_normal_pass','status_persisted':False}
+ return status
 
 
 def brain(store):

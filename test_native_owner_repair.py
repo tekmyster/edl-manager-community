@@ -33,7 +33,7 @@ def isolated_network_and_wait(monkeypatch):
  monkeypatch.setattr(sqlite3,'connect',connect)
 
 def owner(w,s,tmp_path,monkeypatch,fast=True,build=False):
- cfg={'database':str(s.path),'output':str(tmp_path/'out'),'index_url':'https://fixture.invalid','index_user':'fixture','index_password':'fixture','index_ca':'fixture','incremental_ingest':True,'palo_location':'','asn_database':'fixture','providers_file':str(tmp_path/'keys'),'greynoise_transport':'ops'}
+ cfg={'database':str(s.path),'output':str(tmp_path/'out'),'index_url':'https://fixture.invalid','index_user':'fixture','index_password':'fixture','index_ca':'fixture','incremental_ingest':True,'palo_location':'','asn_database':'fixture','providers_file':str(tmp_path/'keys'),'crawler_feed_file':str(tmp_path/'crawler-feeds.json'),'greynoise_transport':'ops'}
  p=tmp_path/'config.json';p.write_text(json.dumps(cfg));monkeypatch.setenv('EDL_CONFIG',str(p));monkeypatch.setattr(sys,'argv',['worker']+(['--ingest-only'] if fast else ['--enrich-only']))
  monkeypatch.setattr(w,'Store',lambda path:s)
  import source_types
