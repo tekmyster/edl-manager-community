@@ -2,7 +2,7 @@
 import contextlib,copy,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.38'
+PROMPT_VERSION='behavior-3.39'
 GENERATION_SCHEMA_VERSION='joint-answer-revision-3'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
