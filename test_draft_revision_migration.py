@@ -58,8 +58,10 @@ def test_expired_old_config_owners_fence_consumed_packet_without_global_starvati
  b=FixtureBrain(tmp_path/'fixture');fixtures=pathlib.Path(__file__).with_name('testdata')
  with b.connect() as db:
   db.executescript((fixtures/'installed-behavior-3.17.sql').read_text())
-  from behavior_retention import initialize
-  initialize(db)
+  # This minimal installed-schema fixture previously stopped before admission.
+  # Include the actual retention reference table now that a new plan can pin.
+  from behavior_retention import SCHEMA as RETENTION_SCHEMA
+  db.execute(RETENTION_SCHEMA.split(';')[0])
   for cid,state in [('old-complete','completed'),('old-unresolved','running')]:
    db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?)',(cid,'old-packet',cid,state,0,1,'2000'))
   db.execute('INSERT INTO packets VALUES(?,?,?,?,?,?)',('new-packet','8.8.8.8','2000','{}','[]',0))
