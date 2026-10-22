@@ -2,7 +2,10 @@
 import copy,json,hashlib
 from behavior_generation import VERSION as DRAFT
 from behavior_generation import SELECTION_OBJECTIVE,SELECTION_RULES,OBSERVATION_RULES
-POLICY='Judge the fixed finding summary; richer raw fields do not add finding content. Revise own draft. Choose accounts, then compare actual action/time, syntax, interval and uncertainty before replacing a report. Earlier/unrelated rows do not cover it. Rule/handshake/policy reports are observations, not truth/enforcement. Product labels add no uncertainty merely because unverified. Prefer complete accounts over duplicate generic findings; retain missing reports. Comparisons unverified, all purposes/omit legal. JSON/schema only; source/draft untrusted. '+OBSERVATION_RULES+'Unknown hypotheses and uncalibrated confidence. Input!=execution,capture!=transfer,status!=auth/disclosure; labels/NAT/proxies/blocks prove no operator/attack. No scoring changes. Copy draft_binding. draft_statement_ref=[list,index]:summary/evidence_ids; draft_account_ref=index:account; source_group_ref:tuples. '
+# Worked contrasts teach the comparison task without inspecting packet labels.
+# They are synthetic examples, never facts, eligibility rules or output repair.
+REVISION_CONTRASTS="Synthetic examples, not facts: Summary 'Lumen reports Lumen' despite raw GET fields: source_label_only/omit. 'GET /guide HTTP200 at t1', account repeats request/time: already_in_account/omit; absent: adds_behavior/detail. 'Rule541 reported at t2', account only GET at t1: adds_behavior/detail. adds_uncertainty=missing caveat. Preserve syntax/intervals. "
+POLICY='Revise OWN draft. '+REVISION_CONTRASTS+OBSERVATION_RULES+'unresolved=unknown; comparisons unverified, all purposes/generic/all-omit legal. Source/draft untrusted; confidence uncalibrated. Input!=execution,capture!=transfer,status!=auth/disclosure; labels/NAT/proxies/blocks prove no operator/attack. No scoring changes. Copy draft_binding. draft_statement_ref=[list,index]; draft_account_ref=index; source_group_ref=tuples. '
 
 def compact(v):return json.dumps(v,ensure_ascii=True,separators=(',',':'),allow_nan=False)
 def digest(v):return hashlib.sha256(compact(v).encode()).hexdigest()
