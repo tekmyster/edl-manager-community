@@ -128,11 +128,26 @@ def refresh_palo(store,source_cfg,address,budget,fetcher=None):
   if not contention(exc):raise
   return 'busy_retry_next_pass'
  if claimed!='claimed':return claimed
+ # A successful claim may be followed by a different native writer while the
+ # lookup runs. Each optional write has the same short wait as the claim;
+ # keep the prior cache and an uncleared pending lease on contention. The
+ # already consumed lookup charge is never refunded or charged again here.
+ deferred=False
+ def save(name,value,phase):
+  nonlocal deferred
+  try:store.state(name,value,busy_timeout_ms=250)
+  except sqlite3.OperationalError as exc:
+   from behavior_persistence import contention
+   if not contention(exc):raise
+   import logging
+   logging.warning('Behavior Palo context deferred phase=%s sqlite_code=%s',phase,exc.sqlite_errorcode)
+   deferred=True
  try:
   if fetcher is None:
    from activity import fetch
    fetcher=fetch
-  store.state(key,fetcher(cfg,address));return 'refreshed'
- except Exception:
-  store.state(key,{**saved,'status':'error','fetched':now()});return 'failed'
- finally:store.state('ip_activity_pending:'+key,{})
+  try:value=fetcher(cfg,address);status='refreshed'
+  except Exception:value={**saved,'status':'error','fetched':now()};status='failed'
+  save(key,value,'cache_save' if status=='refreshed' else 'error_save')
+ finally:save('ip_activity_pending:'+key,{},'lease_clear')
+ return 'busy_retry_next_pass' if deferred else status

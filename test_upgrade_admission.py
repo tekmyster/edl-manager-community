@@ -181,3 +181,35 @@ def test_optional_palo_busy_repeated_passes_still_finish_analysis_and_recover(tm
    assert db.execute('SELECT count(*) FROM pipeline_finals').fetchone()[0]==1
    assert db.execute('SELECT sum(held) FROM pipeline_reservations').fetchone()[0]==0
  finally:release();close(s)
+
+@pytest.mark.parametrize('phase',['cache_save','error_save','lease_clear'])
+def test_optional_post_claim_writer_preserves_cache_charge_and_conservative_lease(tmp_path,monkeypatch,phase,caplog):
+ from test_delivery_contention import palo_fixture
+ s,b,cfg,p=setup(tmp_path/'native',budget=None);source=palo_fixture(s);clock=dt.datetime.now(dt.timezone.utc)
+ import hashlib
+ scope=hashlib.sha256(b'https://fixture.invalid|fixture').hexdigest()[:16];key='ip_activity:'+scope+':8.8.8.8';old={'status':'ok','fetched':(clock-dt.timedelta(hours=1)).isoformat(),'events':[{'seen':(clock-dt.timedelta(hours=2)).isoformat(),'action':'deny'}]};s.state(key,old)
+ holders=[];calls=[];state=s.state
+ def hold():
+  db=sqlite3.connect(s.path);db.execute('BEGIN IMMEDIATE');holders.append(db)
+ def fetch(*a):
+  calls.append(1)
+  if phase!='lease_clear':hold()
+  if phase=='error_save':raise OSError('Synthetic provider failure')
+  return {'status':'ok','fetched':ai.now(),'events':[]}
+ def save(name,value=None,**kw):
+  if phase=='lease_clear' and name=='ip_activity_pending:'+key and value=={}:hold()
+  return state(name,value,**kw)
+ monkeypatch.setattr(s,'state',save)
+ try:
+  started=time.monotonic();assert ctx.refresh_palo(s,source,'8.8.8.8',100,fetch)=='busy_retry_next_pass';assert time.monotonic()-started<2
+  assert calls==[1] and state('behavior_palo_usage:'+clock.date().isoformat())==1 and state('ip_activity_pending:'+key)
+  assert 'phase='+phase in caplog.text and 'sqlite_code=5' in caplog.text
+  if phase!='lease_clear':assert state(key)==old
+  else:assert state(key)['fetched']!=old['fetched']
+ finally:
+  for db in holders:db.rollback();db.close()
+  monkeypatch.setattr(s,'state',state)
+ try:
+  assert ctx.refresh_palo(s,source,'8.8.8.8',100,fetch)==('cached' if phase=='lease_clear' else 'pending') and calls==[1]
+  assert state('behavior_palo_usage:'+clock.date().isoformat())==1
+ finally:close(s)
