@@ -130,6 +130,25 @@ def occurrence_detail(row):
   'cowrie.command.input','cowrie.session.file_download'})
 
 
+
+def project_report(event):
+ """Literal redaction markers in action reports, without changing old tuples."""
+ row=project_occurrence(event);action=event.get('action')
+ if isinstance(action,str) and len(action)<=160 and '[identifier]' in action and clean(action.replace('[identifier]','identifier')):
+  row['action']=action
+ return row
+
+
+def additional_report(row):
+ """Representation eligibility only: a report beyond its source/product name.
+
+ This does not classify the action as true, useful, malicious or independent.
+ Existing accounts/rows and generic statement choices are left unchanged.
+ """
+ action=row['action'].casefold()
+ return bool(action and action not in (row['source'].casefold(),row['sensor'].casefold()))
+
+
 def offers(packet):
  from behavior_ai import timestamp,digest
  from source_observations import connections
@@ -191,6 +210,14 @@ def offers(packet):
  remaining=[e for e in detailed if e['id'] not in covered and occurrence_detail(project_occurrence(e))]
  for start in range(0,len(remaining),MAX_ROWS):
   add('source_occurrences',remaining[start:start+MAX_ROWS],['reported_source_occurrences'],project_occurrence)
+ # Append, never extend/rekey the original groups. An action report such as a
+ # detector rule, handshake or policy outcome is not necessarily a product
+ # label. Expose its literal source/time as an optional neutral replacement;
+ # the model still judges relevance and may omit every offered account/fact.
+ represented={i for g in result.values() if g['kind']!='insufficient_detail' for i in g['evidence_ids']}|{e['id'] for e in remaining}
+ extra=[e for e in events if e['id'] not in represented and additional_report(project_report(e))]
+ for start in range(0,len(extra),MAX_ROWS):
+  add('source_occurrences',extra[start:start+MAX_ROWS],['reported_source_occurrences'],project_report)
  return result
 
 

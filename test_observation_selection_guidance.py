@@ -27,7 +27,7 @@ def test_selected_group_preserves_individual_input_capture_intervals_and_caveats
  by_event={fact['evidence_ids'][0]:fact for fact in value['findings']}
  assert 'execution is unverified' in by_event[packet['events'][1]['id']]['summary']
  assert 'network transfer is unverified' in by_event[packet['events'][2]['id']]['summary']
- assert packet==before and metadata['prompt_version']=='behavior-3.37'
+ assert packet==before and metadata['prompt_version']=='behavior-3.38'
  assert list(calls[0]['format']['properties'])[0]=='observable_synthesis'
  ai.validate_result(value,packet,[],{})
 
