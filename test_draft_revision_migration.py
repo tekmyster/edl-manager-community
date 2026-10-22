@@ -48,15 +48,13 @@ def test_installed_schema_migration_preserves_consumed_authority_and_private_jou
  if legacy:assert ledger.inspect('packet','old-config')['state']=='uncertain'
  else:
   with pytest.raises(Refused):ledger.inspect('packet','old-config')
- if legacy or state!='completed':
-  if legacy:assert ledger.inspect('packet','new-topology-config')['state']=='uncertain'
-  else:
-   with pytest.raises(Refused):ledger.inspect('packet','new-topology-config')
+ if legacy:assert ledger.inspect('packet','new-topology-config')['state']=='uncertain'
  else:
-  # A different complete-generation identity is not an old cache hit.
-  assert ledger.inspect('packet','new-topology-config') is None
+  # A changed prompt must not reopen any consumed legacy packet, including
+  # a completed result. It is review-only, never a new cache/model request.
+  with pytest.raises(Refused):ledger.inspect('packet','new-topology-config')
 
-def test_multiple_old_config_owners_cannot_hide_an_unresolved_legacy_job(tmp_path):
+def test_expired_old_config_owners_fence_consumed_packet_without_global_starvation(tmp_path):
  b=FixtureBrain(tmp_path/'fixture');fixtures=pathlib.Path(__file__).with_name('testdata')
  with b.connect() as db:
   db.executescript((fixtures/'installed-behavior-3.17.sql').read_text())
@@ -66,8 +64,16 @@ def test_multiple_old_config_owners_cannot_hide_an_unresolved_legacy_job(tmp_pat
   db.execute('INSERT INTO current_packets VALUES(?,?)',('8.8.8.8','new-packet'))
  ledger=Ledger(b)
  with b.connect() as db:assert db.execute('SELECT count(*) FROM pipeline_legacy_barriers').fetchone()[0]==2
- with pytest.raises(Refused,match='persistence_review_required'):
-  ledger.begin('new-packet','new-config','new-input',{'endpoint':'synthetic','model':'synthetic','daily_budget':24},time.time()+120,['new-packet'])
+ with pytest.raises(Refused,match='persistence_review_required'):ledger.inspect('old-packet','new-config')
+ # No live lease or private journal exists here. Historical running state
+ # still fences its packet, but is not proof of an outstanding global request.
+ parent=ledger.begin('new-packet','new-config','new-input',{'endpoint':'synthetic','model':'synthetic','daily_budget':24},time.time()+120,['new-packet'])
+ with b.connect() as db:
+  assert dict(db.execute('SELECT config,state FROM pipeline_legacy_barriers'))=={'old-complete':'completed','old-unresolved':'running'}
+  assert [tuple(r) for r in db.execute("SELECT id,state,lease FROM jobs WHERE packet_id='old-packet' ORDER BY id")]==[('old-complete','completed',0),('old-unresolved','running',0)]
+  assert db.execute('SELECT state FROM pipeline_plans WHERE id=?',(parent,)).fetchone()[0]=='stage1_ready'
+  assert db.execute('SELECT count(*) FROM pipeline_stages WHERE parent=?',(parent,)).fetchone()[0]==2
+  assert db.execute('SELECT coalesce(sum(requests),0) FROM usage').fetchone()[0]==0
 
 @pytest.mark.parametrize('finished',[False,True])
 def test_actual_installed_journal_writer_is_preserved_and_never_reissued(tmp_path,monkeypatch,finished):
