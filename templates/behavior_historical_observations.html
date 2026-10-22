@@ -1,0 +1,1 @@
+{% if history_assessment.get('historical_observations') %}<h3>Historical observations</h3>{% for observation in history_assessment.historical_observations %}<p>{{observation.summary}}<small>Cited observations: {{observation.evidence_ids|join(', ')}}</small></p>{% endfor %}{% endif %}

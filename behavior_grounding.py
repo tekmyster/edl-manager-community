@@ -150,6 +150,30 @@ def positive_statement(c):
   return {'summary':'Fresh cached GreyNoise benign classification is positive context, not independent proof of request authorization.','evidence_ids':[c['id']]},[['provider','classification','cache_fresh']]
  return None
 
+MAX_HISTORY=8
+
+def historical_offers(packet,candidates):
+ """Independent neutral source observations; no overlap or actor eligibility test."""
+ from behavior_ai import safe_text,digest
+ result={}
+ from source_observations import connections
+ for candidate in candidates[:1]:
+  events=candidate.get('historical_events',[]);linked=connections(events)
+  for event in events[:MAX_HISTORY]:
+   if not event.get('id'):continue
+   fact,_=observation_statement(event,linked.get(event['id']))
+   names=event.get('parameter_names') or []
+   if names:fact['summary']+=' Parameter names: '+', '.join(safe_text(name,40) for name in names)+'.'
+   provenance=event.get('provenance') or {}
+   origin='; '.join(name+' '+safe_text(provenance.get(key),limit) for name,key,limit in (('collector','collector',60),('agent','collector_agent',60),('record','record_id',80),('upstream','upstream_id',120),('index','index',60),('indexed at','indexed_at',40),('time basis','time_basis',40),('detail','detail',20)) if provenance.get(key))
+   # The source sensor is on the event, not inside provenance.
+   if event.get('sensor'):origin='sensor '+safe_text(event.get('sensor'),30)+('; '+origin if origin else '')
+   summary='Historical sample at '+(safe_text(event.get('seen'),40) or 'time unavailable')+': '+fact['summary']+(' Provenance: '+origin+'.' if origin else '')+' Retrieval or common features do not establish operator continuity; shared tooling, NAT, proxies or address reassignment remain possible.'
+   key='history_'+digest([candidate.get('candidate_id'),event])[:20]
+   result[key]={'summary':summary,'evidence_ids':list(fact['evidence_ids'])}
+ return result
+
+
 def contract(packet,registry):
  from behavior_ai import safe_text,timestamp,now
  from behavior_mapping import select,FAILURE
@@ -190,6 +214,12 @@ def contract(packet,registry):
 
 def validate(value,packet,candidates,registry):
  c=contract(packet,registry)
+ history=list(historical_offers(packet,candidates).values());seen_history=set()
+ for index,claim in enumerate(value.get('historical_observations',[])):
+  if claim not in history:raise GroundingError('Unsupported historical observation','historical_source_binding','historical_observations',index)
+  refs=tuple(claim['evidence_ids'])
+  if refs in seen_history:raise GroundingError('Duplicate historical observation','duplicate_observation','historical_observations',index)
+  seen_history.add(refs)
  def reject(message,reason,field,index=None):raise GroundingError(message,reason,field,index)
  for field in ('findings','contradictory_evidence'):
   seen=set()

@@ -55,5 +55,5 @@ def test_examples_are_system_data_only_and_draft_and_wire_contract_unchanged(mon
  assert rev.REVISION_CONTRASTS not in plan.request['messages'][0]['content']
  assert final.request['messages'][0]['content'].count(gen.OBSERVATION_RULES)==1
  assert plan.generation_version=='joint-answer-revision-3'
- assert plan.identity['prompt_version']=='behavior-3.40'
+ assert plan.identity['prompt_version']=='behavior-3.41'
  assert not any(x in final.request['messages'][1]['content'] for x in ('Rule541','Lumen','/guide'))

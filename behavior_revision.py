@@ -11,17 +11,19 @@ def compact(v):return json.dumps(v,ensure_ascii=True,separators=(',',':'),allow_
 def digest(v):return hashlib.sha256(compact(v).encode()).hexdigest()
 INDEX_RULE=' Draft [index,value] zero-based offer order: observations=facts, attack_techniques=attack, d3fend_context=d3fend, observable_synthesis=synthesis_options; hypotheses=own table/confidence.'
 POLICY+=INDEX_RULE
-FIELDS={'observations':'facts','attack_techniques':'attack','d3fend_context':'d3fend','observable_synthesis':'synthesis_options','automation':'automation','intent':'intent','actor_correlation':'relations'}
+FIELDS={'historical_observations':'history','observations':'facts','attack_techniques':'attack','d3fend_context':'d3fend','observable_synthesis':'synthesis_options','automation':'automation','intent':'intent','actor_correlation':'relations'}
 def draft_orders(tables,logical):return {field:list(logical['synthesis_options'] if kind=='synthesis_options' else tables[kind]) for field,kind in FIELDS.items()}
 def pack_choices(v,tables,logical):
  orders=draft_orders(tables,logical);out={k:copy.deepcopy(x) for k,x in v.items() if k not in FIELDS and k not in ('generation_schema_version','packet_id')}
  for field,keys in orders.items():
+  if field not in v:continue
   if field in ('automation','intent','actor_correlation'):out[field]=[[keys.index(x['choice_id']),x['confidence']] for x in v[field]]
   else:out[field]=[[keys.index(k),copy.deepcopy(x)] for k,x in v[field].items()]
  return out
 def unpack_choices(v,tables,logical,packet):
  orders=draft_orders(tables,logical);out={k:copy.deepcopy(x) for k,x in v.items() if k not in FIELDS};out.update(generation_schema_version=DRAFT,packet_id=packet['packet_id'])
  for field,keys in orders.items():
+  if field not in v:continue
   used=set();items=[]
   for pair in v[field]:
    if not isinstance(pair,list) or len(pair)!=2:raise ValueError('Malformed draft pair')
@@ -37,9 +39,11 @@ def request(schema,logical,system,gen,model):
  # Reference its duplicate offered body only after an exact unique match.
  shown=logical.get('provisional_answer',{}).get('rendered')
  if shown is not None:
-  facts=logical['offered']['facts'];projected=reference_facts(facts,shown)
-  if restore_facts(projected,shown)!=facts:raise ValueError('Draft statement reference mismatch')
-  logical['offered']['facts']=projected
+  for kind in ('facts','history'):
+   if kind not in logical['offered']:continue
+   facts=logical['offered'][kind];projected=reference_facts(facts,shown)
+   if restore_facts(projected,shown)!=facts:raise ValueError('Draft statement reference mismatch')
+   logical['offered'][kind]=projected
   # Selected account text stays readable in the OWN draft. A duplicate offered
   # account can point to it only on exact text AND group-identity equality.
   options=logical.get('synthesis_options',{});projected=reference_accounts(options,shown)
@@ -49,6 +53,8 @@ def request(schema,logical,system,gen,model):
  # Literal digest insertion prevents a hypothetical equality with a source
  # string from changing the source factor table. It loses no source/draft data.
  if binding is not None:encoded['input']['provisional_answer']['draft_binding']=binding
+ if logical['offered'].get('history'):
+  system+=' historical_observations=history; omit/absent emits nothing, detail copies that neutral source report/time/provenance into historical_observations, separate from findings/scoring. Review factual history separately from actor_correlation. Unknown operator can retain useful history; shared tooling/NAT/proxies/address reuse remain alternatives. All history and hypotheses may be omitted. Existing observations/account contrasts still apply.'
  q={'model':model,'messages':[{'role':'system','content':system},{'role':'user','content':gen.prompt_json(encoded)}],'stream':True,'format':schema,'options':{'temperature':0,'num_predict':1800,'num_ctx':8192}}
  if len(q['messages'][1]['content'].encode())>18000 or len(compact(q).encode())>65536:raise ValueError('Complete request exceeds original byte limits')
  return q
@@ -56,6 +62,7 @@ def view(canonical,packet,sy):
  """Exact provisional answer, including both observation roles; no utility labels."""
  presentation=sy.presentation(canonical,packet['events'])
  result={'summary':canonical['analysis_summary'],'findings':copy.deepcopy(canonical['findings']),'counterevidence':copy.deepcopy(canonical['contradictory_evidence']),'accounts':[],'rendered_presentation_is_null':presentation is None}
+ if canonical.get('historical_observations'):result['historical_observations']=copy.deepcopy(canonical['historical_observations'])
  if presentation is None:return result
  groups=canonical['observable_synthesis'];details=presentation['details'];assert len(groups)==len(details)
  result['summary']=presentation['summary']
@@ -67,7 +74,7 @@ def reference_facts(facts,shown):
  value=copy.deepcopy(facts)
  for key,fact in value.items():
   original={k:fact[k] for k in ('summary','evidence_ids')}
-  matches=[(field,i) for field in ('findings','counterevidence') for i,item in enumerate(shown[field]) if item==original]
+  matches=[(field,i) for field in ('findings','counterevidence','historical_observations') for i,item in enumerate(shown.get(field,[])) if item==original]
   if len(matches)==1:
    for k in ('summary','evidence_ids'):del fact[k]
    fact['draft_statement_ref']=list(matches[0])
@@ -78,7 +85,7 @@ def restore_facts(facts,shown):
  for fact in value.values():
   if 'draft_statement_ref' not in fact:continue
   field,index=fact.pop('draft_statement_ref')
-  if field not in ('findings','counterevidence') or type(index) is not int or not 0<=index<len(shown[field]):raise ValueError('Invalid draft statement reference')
+  if field not in ('findings','counterevidence','historical_observations') or type(index) is not int or not 0<=index<len(shown[field]):raise ValueError('Invalid draft statement reference')
   item=shown[field][index]
   if set(item)!={'summary','evidence_ids'} or any(k in fact for k in item):raise ValueError('Invalid referenced statement body')
   fact.update(copy.deepcopy(item))

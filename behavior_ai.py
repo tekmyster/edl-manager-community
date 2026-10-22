@@ -2,7 +2,7 @@
 import contextlib,copy,datetime as dt,hashlib,ipaddress,json,math,pathlib,re,socket,sqlite3,time,urllib.parse,uuid
 from core import now,ip
 VERSION='behavior-3'
-PROMPT_VERSION='behavior-3.40'
+PROMPT_VERSION='behavior-3.41'
 GENERATION_SCHEMA_VERSION='joint-answer-revision-3'
 AUTOMATION=('likely_human','legitimate_automation','suspicious_bot','vulnerability_scanner','credential_attack_automation','unknown')
 from behavior_retention import DEFAULTS as RETENTION_DEFAULTS
@@ -329,6 +329,9 @@ def validate_result(value,packet,candidates,registry):
   from behavior_synthesis import schema as synthesis_schema
   schema={**RESPONSE_SCHEMA,'properties':{**RESPONSE_SCHEMA['properties'],'observable_synthesis':synthesis_schema(packet)},'required':RESPONSE_SCHEMA['required']+['observable_synthesis']}
   schema['properties']['analysis_summary']={**schema['properties']['analysis_summary'],'maxLength':2400}
+ if 'historical_observations' in value:
+  from behavior_grounding import MAX_HISTORY
+  schema=copy.deepcopy(schema);schema['properties']['historical_observations']=array(obj({'summary':text(1600),'evidence_ids':REFS}),MAX_HISTORY)
  shape(schema,value)
  if value['packet_id']!=packet['packet_id']:raise ValueError('Incorrect evidence packet')
  native={e['id'] for e in packet['events']};references=native|{e['id'] for e in packet.get('context',[])};candidate_ids={c['candidate_id'] for c in candidates}

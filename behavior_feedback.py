@@ -15,7 +15,7 @@ def snapshot_hash(raw):return hashlib.sha256(raw.encode()).hexdigest()
 def observations(snapshot):
  """Only original frozen records actually cited by this frozen assessment."""
  assessment=snapshot.get('assessment');assessment=assessment if isinstance(assessment,dict) else {};cited=set()
- for field in ('findings','contradictory_evidence','attack_techniques','d3fend_context','actor_correlation'):
+ for field in ('findings','contradictory_evidence','attack_techniques','d3fend_context','actor_correlation','historical_observations'):
   for claim in assessment.get(field,[]):cited.update(claim.get('evidence_ids',[]))
  packet=snapshot.get('packet') or {};rows=list(packet.get('events',[]))+list(packet.get('context',[]))
  for comparison in snapshot.get('comparisons',[])[:10]:

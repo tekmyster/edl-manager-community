@@ -48,6 +48,8 @@ def offers(packet,candidates,registry):
    result[ident]=value
   tables[kind]=result
  table('facts',c['facts'])
+ from behavior_grounding import historical_offers
+ tables['history']=historical_offers(packet,candidates)
  # One observation identity has one role slot; positive context has no alias.
  tables['counterevidence']={k:v for k,v in tables['facts'].items() if v in c['counterevidence']}
  choices=taxonomy_choices(packet,registry)
@@ -135,6 +137,9 @@ def choice_schema(packet,tables,coverage,*,facts=None):
  # Display comparison inputs before purpose; ordering is not a native behavior proof.
  observations=obj({key:text(15,enum=allowed) for key,allowed in contributions.items()});observations['required']=[]
  schema=obj({'generation_schema_version':text(enum=[VERSION]),'packet_id':text(100,enum=[packet['packet_id']]),'classification':text(enum=coverage['classifications']),'maliciousness_confidence':copy.deepcopy(confidence),'automation':hypothesis('automation'),'intent':hypothesis('intent'),'observations':observations,'attack_techniques':switches('attack'),'d3fend_context':switches('d3fend'),'actor_correlation':hypothesis('relations')})
+ if tables.get('history'):
+  schema['properties']['historical_observations']=obj({key:text(10,enum=['omit','detail']) for key in tables['history']})
+  schema['properties']['historical_observations']['required']=[]
  from behavior_synthesis import wire_schema as synthesis_schema,options
  schema['properties']['observable_synthesis']=synthesis_schema(packet);schema['required'].append('observable_synthesis')
  if schema['properties']['observable_synthesis']['properties']:
@@ -153,6 +158,7 @@ def prepare(packet,candidates,registry):
  roles={key:['omit','finding']+(['counterevidence'] if key in tables['counterevidence'] else []) for key in tables['facts']}
  offered={k:v for k,v in tables.items() if k!='counterevidence'}
  offered['facts']=facts
+ if not tables['history']:offered.pop('history')
  # Wire-only references replace exact duplicate bodies, never partial matches.
  # Canonical offers, decoding and validation continue to use the original inputs.
  own={event['id']:event for event in packet.get('events',[]) if event.get('id')}
@@ -236,6 +242,9 @@ def materialize(value,packet,tables,synthesis):
  result={'schema_version':STORAGE_VERSION,'packet_id':value['packet_id'],'classification':value['classification'],'maliciousness_confidence':value['maliciousness_confidence'],'analysis_summary':SUMMARIES[value['classification']],'limitations':list(LIMITS)}
  result['observable_synthesis']=synthesis
  result['analysis_summary']=(render(synthesis,packet)+' '+SUMMARIES[value['classification']]).strip()
+ history=value.get('historical_observations',{})
+ selected_history=[copy.deepcopy(tables['history'][key]) for key,role in history.items() if role=='detail']
+ if selected_history:result['historical_observations']=selected_history
  result['findings']=findings;result['contradictory_evidence']=opposing
  for field,kind in [('attack_techniques','attack'),('d3fend_context','d3fend')]:
   claims=[copy.deepcopy(tables[kind][k]) for k,role in value[field].items() if role=='include']
