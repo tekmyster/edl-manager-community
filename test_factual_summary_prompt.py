@@ -41,7 +41,7 @@ def test_neutral_session_account_needs_no_intent_verdict_or_support_pair():
 
 
 @pytest.mark.parametrize('old_version',['behavior-3.21','behavior-3.22','behavior-3.23','behavior-3.24','behavior-3.32'])
-def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monkeypatch,old_version):
+def test_contract_version_fences_consumed_packet_admits_new_observations(tmp_path,monkeypatch,old_version):
  from core import Store,now
  from test_behavior_ai import result
  store=Store(tmp_path/'native')
@@ -50,19 +50,35 @@ def test_contract_version_gets_fresh_job_preserves_old_assessment(tmp_path,monke
  native_before=store.describe('8.8.8.8');calls=[]
  def fake(*args):
   calls.append(ai.PROMPT_VERSION)
-  return result(packet),{'prompt_version':ai.PROMPT_VERSION,'generation_schema_version':ai.GENERATION_SCHEMA_VERSION}
+  return result(args[1]),{'prompt_version':ai.PROMPT_VERSION,'generation_schema_version':ai.GENERATION_SCHEMA_VERSION}
  stage_mock(monkeypatch,ai,fake)
  cfg={**ai.DEFAULTS,'enabled':True,'model_enabled':True,'daily_budget':None}
  with brain.connect() as db:
   historical=result(packet);historical['metadata']={'prompt_version':old_version,'generation_schema_version':'grounded-groups-12'}
   db.execute('INSERT INTO assessments VALUES(?,?,?,?,?,?,?,?,?)',('old-assessment',ident,'old-'+old_version,now(),'2099','completed',json.dumps(historical),'',.1))
+  db.execute('INSERT INTO usage VALUES(?,7)',(now()[:10],))
   old=tuple(db.execute('SELECT * FROM assessments').fetchone())
  assert ai.PROMPT_VERSION=='behavior-3.41' and ai.GENERATION_SCHEMA_VERSION=='joint-answer-revision-3'
- assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='completed'
- assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='cached'
+ for _ in range(2):assert ai.model_job(brain,ident,packet,features,cfg,candidates=[])=='persistence_review_required'
+ with brain.connect() as db:
+  assert [tuple(row) for row in db.execute('SELECT * FROM assessments')]==[old]
+  assert db.execute('SELECT sum(requests) FROM usage').fetchone()[0]==7
+  assert db.execute('SELECT count(*) FROM pipeline_plans').fetchone()[0]==0
+ assert not calls
+ native_after=store.describe('8.8.8.8')
+ assert native_before['score']==native_after['score'] and native_before['retention']==native_after['retention']
+ # A new observed native bucket produces a truly new logical packet. Version
+ # changes alone never grant another request on the old accepted packet.
+ store.evidence('8.8.8.8','tpot','fresh-observation',now(),'http',50)
+ fresh,packet,features=brain.packet(store.describe('8.8.8.8'));assert fresh!=ident
+ fresh_before=store.describe('8.8.8.8')
+ assert ai.model_job(brain,fresh,packet,features,cfg,candidates=[])=='completed'
+ assert ai.model_job(brain,fresh,packet,features,cfg,candidates=[])=='cached'
  with brain.connect() as db:
   rows=[tuple(row) for row in db.execute('SELECT * FROM assessments')]
+  assert db.execute('SELECT sum(requests) FROM usage').fetchone()[0]==9
+  assert db.execute("SELECT count(*) FROM pipeline_stages WHERE state='accepted' AND charged_day IS NOT NULL").fetchone()[0]==2
  assert old in rows and len(rows)==2 and calls==['behavior-3.41']
  assert len({row[2] for row in rows})==2
  native_after=store.describe('8.8.8.8')
- assert native_before['score']==native_after['score'] and native_before['retention']==native_after['retention']
+ assert fresh_before['score']==native_after['score'] and fresh_before['retention']==native_after['retention']

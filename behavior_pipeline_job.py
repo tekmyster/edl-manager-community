@@ -2,7 +2,7 @@
 import copy,datetime as dt,json,pathlib,sqlite3,time
 from behavior_deadline import Deadline
 from behavior_pipeline import Pipeline,VERSION,aggregate,hash_value,source_identity,request_digest
-from behavior_pipeline_store import Ledger,Refused,alive
+from behavior_pipeline_store import Ledger,Refused,alive,local_retry
 
 class Status(str):
  def __new__(cls,value,units=0):
@@ -17,8 +17,10 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
  from analytics_store import Attempt
  if should_stop and should_stop():return Status('cancelled')
  deadline=Deadline(cfg['timeout'],should_stop);ledger=None;parent=None;stages=[];last={};cid=None;charged_units=0;outcome=None;evidence=None;boundary='input_preparation'
+ def local_read(phase,operation):
+  return deadline.call(lambda:local_retry(operation,deadline.check,phase=phase,until=deadline.end if parent is not None else min(deadline.end,time.monotonic()+1)))
  def live():
-  current=deadline.call(lambda:brain.store.state('behavior_settings'))
+  current=local_read('configuration_read',lambda:brain.store.state('behavior_settings',busy_timeout_ms=25))
   value={**ai.DEFAULTS,**current} if current is not None else cfg
   if not value.get('enabled') or not value.get('model_enabled'):raise Refused('analysis_disabled')
   if ai.config_id(value)!=ai.config_id(cfg):raise Refused('configuration_changed')
@@ -35,7 +37,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   registry=deadline.call(lambda:load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'));allowed=select(registry,packet)
   client_sources=deadline.call(source_identity)
   cid=ai.config_id(cfg)+'-'+ai.digest([allowed,candidates,ai.VERSION,ai.PROMPT_VERSION,ai.GENERATION_SCHEMA_VERSION,gen.VERSION,VERSION,client_sources])
-  boundary='ledger_initialize';ledger=deadline.call(lambda:Ledger(brain,check=deadline.check,hook=hook))
+  boundary='ledger_initialize';ledger=deadline.call(lambda:Ledger(brain,check=deadline.check,hook=hook,retry_seconds=1))
   boundary='owner_recovery';deadline.call(ledger.recover_active)
   boundary='packet_admission'
   existing=deadline.call(lambda:ledger.inspect(ident,cid))
@@ -43,7 +45,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    if existing['state']=='final_pending':return deadline.call(lambda:persist(existing))
    if existing['state']=='completed':
     if existing['topology']!=VERSION or existing['outcome'] is None:return Status('persistence_review_required')
-    with brain.connect() as db:db.execute("INSERT INTO analysis_counters VALUES(?,'cached',1) ON CONFLICT(hour,kind) DO UPDATE SET count=count+1",(ai.now(),))
+    deadline.call(lambda:ledger.tx(lambda db:db.execute("INSERT INTO analysis_counters VALUES(?,'cached',1) ON CONFLICT(hour,kind) DO UPDATE SET count=count+1",(ai.now(),)),phase='cache_counter'))
     return Status('cached')
    if existing['state'] in ('failed','uncertain','review'):return Status('persistence_review_required')
    if existing['state'] not in ('failed','uncertain','review') and alive(existing['process']):return Status('leased_or_exhausted')
@@ -55,9 +57,8 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    pending.recover(brain,should_stop)
    if (directory/'review'/'attention').exists() or next(directory.glob('*.inflight'),None) or next(directory.glob('*.json'),None):return Status('persistence_review_required')
   boundary='provider_backoff';backoff_key='provider_backoff:'+ai.digest([cfg['endpoint'],cfg['model']])
-  with brain.connect() as db:
-   backoff=db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone()
-   if backoff and json.loads(backoff[0])['until']>time.time():return Status('backoff')
+  backoff=deadline.call(lambda:ledger.read(lambda db:db.execute('SELECT value FROM retention_state WHERE name=?',(backoff_key,)).fetchone(),phase='backoff_read'))
+  if backoff and json.loads(backoff[0])['until']>time.time():return Status('backoff')
   boundary='input_verification';deadline.check();livecfg=live()
   try:pipe=deadline.call(lambda:Pipeline(cfg,packet,candidates,allowed,deadline.check))
   except (ValueError,OSError,KeyError):return Status('input_verification_required')
@@ -79,14 +80,14 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   def reserved(value):
    nonlocal parent
    parent=value
+   ledger.retry_until=deadline.end
   boundary='parent_reservation';deadline.call(lambda:ledger.begin(ident,cid,pipe.input_key,livecfg,time.time()+deadline.left(),refs,_committed=reserved))
   plan=deadline.call(lambda:ledger.plan(parent));ledger.packet_hash=hash_value(pipe.packet);ledger.bound_request=pipe.request;ledger.bound_requests[1]=pipe.request
   from behavior_request_evidence import RequestEvidence
   def verify_inputs():
    deadline.check();value=live()
    if source_identity()!=pipe.identity['client_sources']:raise Refused('input_identity_changed')
-   with brain.connect() as db:
-    stored=db.execute('SELECT content FROM packets WHERE id=?',(ident,)).fetchone()
+   stored=ledger.read(lambda db:db.execute('SELECT content FROM packets WHERE id=?',(ident,)).fetchone(),phase='packet_read')
    if not stored or hash_value(json.loads(stored[0]))!=hash_value(pipe.packet):raise Refused('input_identity_changed')
    if select(load(pathlib.Path(brain.store.path).parent/'behavior-taxonomy.json'),packet)!=allowed:raise Refused('input_identity_changed')
    # Recheck the operator-pinned asset before every claim/entry, not only at
@@ -157,6 +158,9 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
    return Status('cancelled' if should_stop and should_stop() else 'failed')
   error=exc.code if isinstance(exc,ai.ModelOutputError) else type(exc).__name__
   if not last:last=copy.deepcopy(getattr(exc,'_edl_failure_metadata',{}))
+  diagnostic=getattr(exc,'_edl_persistence_diagnostic',None)
+  if diagnostic is None and type(exc).__name__ in ('Expired','Cancelled'):diagnostic=ledger.persistence_diagnostic
+  if isinstance(diagnostic,dict):last['persistence_diagnostic']=copy.deepcopy(diagnostic)
  except BaseException:
   if parent is not None:
    try:Ledger(brain).uncertain(parent)
@@ -196,7 +200,7 @@ def run(brain,ident,packet,features,cfg,candidates=None,should_stop=None,*,reque
   saved=Ledger(brain).receipts(parent)
   if last and not any(v.get('request_id')==last.get('request_id') and v.get('stage')==last.get('stage') for v in saved):saved.append(last)
   meta=aggregate(saved,time.monotonic()-deadline.started);meta.update(charged_request_units=charged_units,model=cfg['model'],prompt_version=ai.PROMPT_VERSION,generation_schema_version=gen.FINAL_VERSION,supplied_packet_ids=refs,failure_diagnostic={'category':'pipeline','stage':'assessment','reason':error if error in ('budget','configuration_changed','deadline_expired','superseded_before_request','pipeline_ownership_lost') else 'assessment_failed'})
-  for field in ('failure_diagnostic','validation_diagnostic'):
+  for field in ('failure_diagnostic','validation_diagnostic','persistence_diagnostic'):
    if isinstance(last.get(field),dict):meta[field]=copy.deepcopy(last[field])
   created=ai.now();outcome={'version':1,'row':[plan['assessment'],ident,cid,created,(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(timespec='seconds'),'failed',json.dumps({'metadata':meta},allow_nan=False),error[:60],round(time.monotonic()-deadline.started,3)],'owner':plan['owner'],'backoff_key':backoff_key,'backoff_previous':backoff[0] if backoff else None,'backoff_at':time.time()}
   ledger.final(parent,cid,outcome,last,False)

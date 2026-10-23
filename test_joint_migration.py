@@ -60,9 +60,9 @@ def test_old_final_pending_recovery_saves_original_bytes_without_new_inference(t
 
 def test_migration_transaction_rolls_back_schema_and_fences_on_interruption(tmp_path,monkeypatch):
  s,b,cfg,p,raw,row=old_fixture(tmp_path,'stage2_entered');original=Ledger.tx
- def fail(self,fn,live=True):
+ def fail(self,fn,live=True,**kwargs):
   def wrapped(db):fn(db);raise OSError('Synthetic interruption before migration commit')
-  return original(self,wrapped,live)
+  return original(self,wrapped,live,**kwargs)
  try:
   with monkeypatch.context() as patch:
    patch.setattr(Ledger,'tx',fail)
