@@ -1,0 +1,53 @@
+Optional authenticated gateway admission
+
+An authenticated caller with a 180-second evaluation budget may explicitly send:
+  X-EDL-Admission-Wait: 15
+
+The sole accepted value is exactly 15, appearing once. Other or duplicate values
+receive 400 after authentication and before permit acquisition. Missing header
+uses the existing immediate-admission path, including immediate 429 when busy.
+The ordinary client's defaults and error/stream handling are unchanged.
+
+Opt-in allows up to 15 seconds waiting for the existing one-request semaphore.
+It does not increase inference concurrency, retry a POST, reserve a whole run,
+or grant access. A request that exhausts its admission cap receives the existing
+429 Model is busy response. Authentication, allowed sources and payload validation
+still apply. The header is not forwarded to the model.
+
+For opted requests, a single server monotonic deadline of 180 seconds starts at
+do_POST entry. It includes authentication/validation elapsed time, reading the
+body, admission, upstream connect/request/headers/read, and downstream writes.
+The wait is part of 180 seconds, never 180 plus 15. HTTP header parsing/TLS setup
+before do_POST remain under the existing connection behavior. The client retains
+its independent connect/read/elapsed limits; network and scheduling offsets mean
+these are not one globally synchronized client/server clock.
+
+Remaining time is passed into socket operations. An absolute-deadline watchdog
+also shuts down registered downstream/upstream sockets, so buffered trickled
+reads and blocked writes cannot reset the budget indefinitely. Total expiry or
+socket timeout closes the opted connection; it does not promise an HTTP error
+body after the deadline. The existing stream validation remains unchanged.
+
+While queued, nonblocking TLS reads detect EOF/close_notify/disconnect. Extra
+application bytes/pipelining are not accepted in this opt-in contract. Checks
+repeat after acquiring the permit and just before sending the one upstream POST.
+The fixed upstream is the existing loopback Ollama endpoint. There are no proxies,
+redirects, arbitrary upstream targets or forwarded authentication headers.
+
+Cancellation cannot be atomic with network dispatch: disconnect can occur just
+after the last check. Once a POST starts, the gateway cannot undo model work or
+guarantee when the backend stops after its socket closes. The single permit limits
+concurrent gateway forwarding; it is not proof of backend cancellation completion.
+There is no FIFO fairness or guaranteed admission under sustained competing work.
+Timeout precision is subject to operating-system scheduling, not a hard real-time
+guarantee. Any persistent contention still fails closed; no retry is implied.
+
+Request/first-content latency includes admission waiting. Backend duration/token
+measurements remain separate. Health ready neither checks nor reserves vacancy.
+Both future comparison arms must use the identical opted transport. Model JSON,
+source messages, schema, generation options, eligible meanings and output decoding
+are unchanged. An existing consumed authorization cannot be reused.
+
+Tests use fake clocks and isolated ephemeral-loopback TLS/mock upstream servers;
+they are not model, production TLS, capacity, deployment or utility validation.
+Separate code QA and explicit gateway-only deployment authorization are required.
