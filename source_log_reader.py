@@ -15,6 +15,7 @@ import dataclasses
 import hashlib
 import time
 import copy
+from receipt_pages import ReceiptPageError, refuse_paged_debt, lanes as receipt_lanes
 
 _CHUNK = 1024 * 1024
 
@@ -82,14 +83,15 @@ def _prepared(path, before, old, admission=None):
                 yield stream, opened
 
 
-def collect_log_inputs(paths, files, consume, *, cutoff, limits=None, start_after=None):
+def collect_log_inputs(paths, files, consume, *, cutoff, limits=None, start_after=None, receipt_store=None):
     """Update cursors only for consumed complete files; return explicit coverage.
 
 `consume(path, line)` retains the caller's parsing/qualification semantics.
 Malformed records remain the caller's decision. Consumer failures propagate.
 Failed compressed inputs contribute no partial records and keep prior state.
 """
-    if limits is not None:return collect_bounded(paths,files,consume,cutoff=cutoff,limits=limits,start_after=start_after)
+    if limits is not None:return collect_bounded(paths,files,consume,cutoff=cutoff,limits=limits,start_after=start_after,receipt_store=receipt_store)
+    refuse_paged_debt(files)
     coverage = {'status': 'complete', 'completed': 0, 'unchanged': 0, 'outside_retention': 0, 'deferred': []}
     for value in paths:
         path = pathlib.Path(value)
@@ -158,7 +160,7 @@ class SliceChanged(DeferredInput):
         self.receipt=receipt
 
 
-def _slice(path,binary,observed,lane,consume,coverage,admission,through=None):
+def _slice(path,binary,observed,lane,consume,coverage,admission,through=None,receipt_store=None):
     """Capture bounded bytes before callbacks; acknowledge only that capture.
 
     An opaque record has its own delivery frontier. The ordinary offset stops
@@ -177,6 +179,9 @@ def _slice(path,binary,observed,lane,consume,coverage,admission,through=None):
     at_eof=start+len(data)==observed.st_size if path.suffix!='.gz' else len(data)<admitted
     coverage['input_bytes']+=len(data)
     capture={'device':observed.st_dev,'inode':observed.st_ino,'size':observed.st_size,'mtime_ns':observed.st_mtime_ns,'ctime_ns':observed.st_ctime_ns,'start':start,'end':start+len(data),'sha256':hashlib.sha256(data).hexdigest(),'offset_space':'expanded_bytes' if path.suffix=='.gz' else 'source_bytes'}
+    if 'record_debt_pages' in lane:
+        if receipt_store is None:raise ReceiptPageError('Compatible receipt store required before consuming input')
+        receipt_store.check_source(lane['record_debt_pages'], observed, 'expanded_bytes' if path.suffix=='.gz' else 'source_bytes')
     pending=lane.get('opaque_pending');debts=lane.setdefault('record_debt',[]);position=0
     while position<len(data) and coverage['records']<limits.records and time.monotonic()<admission.deadline:
         absolute=start+position
@@ -193,7 +198,12 @@ def _slice(path,binary,observed,lane,consume,coverage,admission,through=None):
             # A small incomplete tail may still become a normal record. A
             # slice-end fragment gets a fresh full admission next invocation.
             if newline<0 and length<=limits.record_bytes and (at_eof or position>0):break
-            if len(debts)>=64:break
+            if len(debts)>=64:
+                if receipt_store is None:break
+                reference=receipt_store.append(lane.get('record_debt_pages'),debts[:16],observed,
+                                               'expanded_bytes' if path.suffix=='.gz' else 'source_bytes')
+                lane['record_debt_pages']=reference
+                del debts[:16]
             pending={'start':absolute,'through':absolute,'source':{k:capture[k] for k in ('device','inode','size','mtime_ns','ctime_ns','offset_space')},'segments':[],'chain_sha256':hashlib.sha256(b'').hexdigest(),'status':'unresolved_record','boundary_verified':False}
             lane.setdefault('offset',absolute)
         if len(pending['segments'])>=4096:break
@@ -205,6 +215,7 @@ def _slice(path,binary,observed,lane,consume,coverage,admission,through=None):
             pending['boundary_verified']=True;pending['end']=start+end;debts.append(pending);pending=None
     if pending is not None:lane['opaque_pending']=pending
     else:lane.pop('opaque_pending',None)
+    lane['unresolved_record_count']=len(debts)+(lane.get('record_debt_pages') or {}).get('count',0)+(1 if pending is not None else 0)
     final=lane.get('delivery_offset',lane.get('offset',start))
     def captured_anchor(offset):
         if not start<=offset<=start+len(data):return None
@@ -233,8 +244,21 @@ def _slice(path,binary,observed,lane,consume,coverage,admission,through=None):
     eof=(final==observed.st_size if path.suffix!='.gz' else final==start+len(data) and len(data)<admitted)
     return lane,eof and not pending
 
-def collect_bounded(paths,files,consume,*,cutoff,limits,start_after=None):
-    admission=_Admission(limits);paths=sorted({pathlib.Path(p) for p in paths},key=str)
+def collect_bounded(paths,files,consume,*,cutoff,limits,start_after=None,receipt_store=None):
+    admission=_Admission(limits)
+    if receipt_store is None:
+        refuse_paged_debt(files)
+        return _collect_bounded(paths,files,consume,cutoff=cutoff,limits=limits,start_after=start_after,admission=admission)
+    with receipt_store.invocation(admission.check):
+        receipt_store.verify_files(files)
+        result=_collect_bounded(paths,files,consume,cutoff=cutoff,limits=limits,start_after=start_after,
+                                admission=admission,receipt_store=receipt_store)
+        result['receipt_page_io_bytes']=receipt_store.io_bytes
+        return result
+
+
+def _collect_bounded(paths,files,consume,*,cutoff,limits,start_after,admission,receipt_store=None):
+    paths=sorted({pathlib.Path(p) for p in paths},key=str)
     if len(paths)>limits.files:raise ValueError('Input inventory exceeds bounded admission')
     # Fair cyclic work across existing inputs, including old plain rotations.
     # Large/unverified archives remain explicit debt, never a fabricated EOF.
@@ -248,7 +272,7 @@ def collect_bounded(paths,files,consume,*,cutoff,limits,start_after=None):
         old=files.get(str(p),{});old_prior=list(old.get('prior_generations',[]))
         if old_prior:coverage['historical_debt'].append(dict(path=str(p),reason='Prior generation receipts retained; mapping/completeness is not certified.'))
         if old.get('legacy_prefix_unverified'):coverage['historical_debt'].append(dict(path=str(p),reason='Existing legacy prefix lacks a capture anchor; not retroactively certified.'))
-        if old.get('continuity_debt') or old.get('record_debt') or old.get('opaque_pending') or (old.get('prefix_reconcile') or {}).get('record_debt') or (old.get('prefix_reconcile') or {}).get('opaque_pending'):
+        if old.get('record_debt_pages') or old.get('continuity_debt') or old.get('record_debt') or old.get('opaque_pending') or (old.get('prefix_reconcile') or {}).get('record_debt_pages') or (old.get('prefix_reconcile') or {}).get('record_debt') or (old.get('prefix_reconcile') or {}).get('opaque_pending'):
             coverage['historical_debt'].append(dict(path=str(p),reason='Unresolved byte ranges or in-slice continuity receipts retained; source completeness is not certified.'))
         try:
             admission.check();before=p.stat()
@@ -285,9 +309,9 @@ def collect_bounded(paths,files,consume,*,cutoff,limits,start_after=None):
                 if p.suffix!='.gz':
                     with p.open('rb',buffering=0) as binary:
                         if _identity(os.fstat(binary.fileno()))!=_identity(observed):raise DeferredInput(p,'Input changed before capture; checkpoint retained.')
-                        updated,complete=_slice(p,binary,observed,lane,consume,coverage,admission,prefix['through'] if use_prefix else None)
+                        updated,complete=_slice(p,binary,observed,lane,consume,coverage,admission,prefix['through'] if use_prefix else None,receipt_store=receipt_store)
                 else:
-                    updated,complete=_slice(p,stream.buffer,observed,lane,consume,coverage,admission)
+                    updated,complete=_slice(p,stream.buffer,observed,lane,consume,coverage,admission,receipt_store=receipt_store)
             final=updated.get('delivery_offset',updated.get('offset',0))
             logical_offset=old.get('offset',0) if use_prefix else updated.get('offset',0)
             # The updated forward lane already includes preserved unknown
@@ -295,7 +319,7 @@ def collect_bounded(paths,files,consume,*,cutoff,limits,start_after=None):
             # opaque_pending record and swallow a later appended valid line.
             base=dict(old) if use_prefix or generation_changed else {}
             if generation_changed:
-                for name in ('anchor','delivery_anchor','delivery_offset','opaque_pending','record_debt','continuity_debt'):base.pop(name,None)
+                for name in ('anchor','delivery_anchor','delivery_offset','opaque_pending','record_debt','record_debt_pages','unresolved_record_count','continuity_debt'):base.pop(name,None)
             row={**base,**({} if use_prefix else updated),**dict(inode=observed.st_ino,offset=logical_offset,mtime=observed.st_mtime,size=observed.st_size,partial=not complete,prior_generations=prior)}
             if generation_changed:
                 # Continuity debt belongs to the retained prior generation.
@@ -308,7 +332,7 @@ def collect_bounded(paths,files,consume,*,cutoff,limits,start_after=None):
                 if use_prefix:prefix=updated
                 row['prefix_reconcile']=prefix;row['next_lane']='forward' if use_prefix else 'prefix'
                 if prefix and prefix.get('delivery_offset',prefix['offset'])<prefix['through']:complete=False;row['partial']=True
-            if row.get('record_debt') or row.get('opaque_pending') or row.get('continuity_debt') or (row.get('prefix_reconcile') or {}).get('record_debt') or (row.get('prefix_reconcile') or {}).get('opaque_pending'):
+            if row.get('record_debt_pages') or row.get('record_debt') or row.get('opaque_pending') or row.get('continuity_debt') or (row.get('prefix_reconcile') or {}).get('record_debt_pages') or (row.get('prefix_reconcile') or {}).get('record_debt') or (row.get('prefix_reconcile') or {}).get('opaque_pending'):
                 coverage['historical_debt'].append(dict(path=str(p),reason='Unresolved record/continuity receipt retained; delivery progress does not acknowledge its evidence.'))
                 complete=False;row['partial']=True
             files[str(p)]=row
@@ -322,5 +346,8 @@ def collect_bounded(paths,files,consume,*,cutoff,limits,start_after=None):
             defer(p,exc.reason)
         except (OSError,DeferredInput) as exc:defer(p,exc.reason if isinstance(exc,DeferredInput) else 'Input unavailable; prior cursor retained.')
     if coverage['historical_debt']:coverage['status']='partial'
+    coverage['unresolved_record_references']=sum(len(v.get('record_debt',[]))+(v.get('record_debt_pages') or {}).get('count',0)+(1 if v.get('opaque_pending') else 0) for v in receipt_lanes(files))
+    coverage['unresolved_count_scope']='Retained lane references, including prior/legacy copies; not unique event or attack counts.'
+    if coverage['unresolved_record_references']:coverage['status']='partial'
     coverage['validation_bytes']=admission.validation_bytes
     return coverage
