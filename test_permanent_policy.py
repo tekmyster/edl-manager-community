@@ -442,7 +442,8 @@ def test_selected_native_wazuh_alert_provenance_through_collect(timeline,tmp_pat
     cfg={'index_url':'https://index.example.test','index_ca':ssl.get_default_verify_paths().cafile,'index_user':'test','index_password':'test'}
     original=worker.requests.Session
     class NativeAlerts(original):
-        def post(self,url,json,timeout):
+        def post(self,url,json,timeout,**kwargs):
+            assert timeout==(3,8) and kwargs=={'stream':True}
             sources=json['aggs']['items']['composite']['sources']
             buckets=[]
             if any('rule' in item for item in sources):

@@ -90,7 +90,7 @@ def test_actual_ingest_elapsed_commits_keep_failed_unit_atomic_and_cursor_unadva
  assert s.state('ingest_status')['status']=='error' and 'evidence_buckets' not in s.state('ingest_status')
  monkeypatch.setattr(source_handoff,'capture',capture);w.main()
  assert count(s.path,'source_activity')==count(s.path,'source_sample_handoff')==8
- assert s.state('native_ingest_cursor') and s.state('ingest_status')['status']=='ok'
+ assert s.state('native_ingest_cursor') and s.state('ingest_status')['status']=='partial'
  close(s)
 
 def test_elapsed_direct_commit_failure_is_owned_rolled_back_and_replayable(w,tmp_path,monkeypatch):

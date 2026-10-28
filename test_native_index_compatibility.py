@@ -22,6 +22,7 @@ def setup_worker(tmp_path, monkeypatch):
 def test_unmapped_index_keeps_native_order_scope_counters_and_reconciliation(tmp_path,monkeypatch):
  worker,s,cfg=setup_worker(tmp_path,monkeypatch)
  at=dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+ s.state('native_ingest_cursor',{'through':(at-dt.timedelta(minutes=2)).isoformat(),'reconciled':'2000-01-01T00:00:00+00:00'})
  seen=(at-dt.timedelta(hours=3)).isoformat()
  indexed=(at-dt.timedelta(minutes=1)).isoformat()
  calls=[];late=[False]
@@ -30,9 +31,9 @@ def test_unmapped_index_keeps_native_order_scope_counters_and_reconciliation(tmp
   return {'key':{'ip':address,'source':'tpot','detector':'Cowrie'},'doc_count':12,'last':{'hits':{'hits':[{'_source':{'data':data,'timestamp':indexed,'agent':{'name':agent}}}]}}}
  original=worker.requests.Session
  class MixedIndex(original):
-  def post(self,url,json,timeout):
+  def post(self,url,json,timeout,**kwargs):
    calls.append(json)
-   assert url==cfg['index_url']+'/wazuh-alerts-*/_search' # retain all old indexes
+   assert '/wazuh-alerts-*' in url and '/_search?' in url
    top=json['aggs']['items']['aggs']['last']['top_hits']
    # July index lacks edl_seen_utc; its unmapped shard must not fail the query.
    assert top['sort']==[{'data.edl_seen_utc':{'order':'desc','unmapped_type':'keyword'}},{'timestamp':'desc'}]
@@ -40,14 +41,14 @@ def test_unmapped_index_keeps_native_order_scope_counters_and_reconciliation(tmp
    assert filters[0]['bool']['should']==[{'bool':{'filter':[{'term':{'data.edl_source':'tpot'}},{'term':{'agent.name':'Collector'}}]}}]
    assert filters[1]=={'terms':{'rule.id':['119900','119902']}}
    assert filters[2]=={'terms':{'data.edl_source':['tpot']}}
-   assert 'data.edl_seen_utc' in filters[3]['range']
-   rows=[bucket('8.8.4.4',seen,indexed),bucket('9.9.9.9',seen,indexed,'Other')]
-   if late[0] and 'gte' not in filters[-1]['range']['timestamp']:
+   assert any('data.edl_seen_utc' in f.get('range',{}) for f in filters)
+   rows=[bucket('8.8.4.4',seen,indexed),bucket('9.9.9.9',seen,indexed,'Other')] if at.strftime('%Y.%m.%d') in url else []
+   if late[0] and (at-dt.timedelta(days=1)).strftime('%Y.%m.%d') in url:
     rows.append(bucket('1.1.1.1',(at-dt.timedelta(days=2)).isoformat(),(at-dt.timedelta(days=1)).isoformat()))
    return SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'_shards':{'failed':0},'aggregations':{'items':{'buckets':rows}}})
  monkeypatch.setattr(worker.requests,'Session',MixedIndex)
  worker.collect(s,cfg,include_palo=False)
- first=s.state('native_ingest_cursor');assert first['mode']=='full'
+ first=s.state('native_ingest_cursor');assert first['mode']=='bounded_daily_partitions'
  row=s.describe('8.8.4.4');assert row['honeypot_native_events']==3
  assert {r['seen'] for r in row['evidence']}=={seen}
  assert {json.loads(r['details'])['native_event_count'] for r in row['evidence']}=={7}
@@ -56,15 +57,13 @@ def test_unmapped_index_keeps_native_order_scope_counters_and_reconciliation(tmp
  # Overlap replay cannot duplicate events, grow counters, or renew retention.
  s.state('native_ingest_cursor',first);late[0]=True
  worker.collect(s,cfg,include_palo=False)
- assert s.state('native_ingest_cursor')['mode']=='incremental'
+ assert s.state('native_ingest_cursor')['mode']=='bounded_daily_partitions'
  assert s.describe('8.8.4.4')['evidence']==row['evidence']
  assert s.describe('8.8.4.4')['honeypot_native_events']==3
  assert not s.describe('1.1.1.1')['evidence']
  with s.connect() as db:assert db.execute('SELECT count(*) FROM block_retention').fetchone()[0]==0
- cursor=s.state('native_ingest_cursor')
- s.state('native_ingest_cursor',{**cursor,'reconciled':(at-dt.timedelta(days=2)).isoformat()})
- worker.collect(s,cfg,include_palo=False)
- assert s.state('native_ingest_cursor')['mode']=='full'
+ for _ in range(31):worker.collect(s,cfg,include_palo=False)
+ assert s.state('native_ingest_cursor')['reconciled']!='2000-01-01T00:00:00+00:00'
  recovered=s.describe('1.1.1.1')
  assert {r['seen'] for r in recovered['evidence']}=={(at-dt.timedelta(days=2)).isoformat()}
  assert recovered['honeypot_native_events']==3
@@ -84,6 +83,7 @@ def test_cross_index_failure_preserves_cursor_and_existing_evidence(tmp_path,mon
     if failure=='http':raise requests.HTTPError('unmapped index query failed')
    return SimpleNamespace(raise_for_status=check,json=lambda:{'timed_out':failure=='timeout','_shards':{'failed':int(failure=='shard')},'aggregations':{'items':{'buckets':[]}}})
  monkeypatch.setattr(worker.requests,'Session',BrokenIndex)
- with pytest.raises((requests.HTTPError,RuntimeError)):worker.collect(s,cfg,include_palo=False)
+ worker.collect(s,cfg,include_palo=False)
+ assert s.state('native_ingest_coverage')['status']=='partial' and s.state('native_ingest_coverage')['errors']
  assert s.state('native_ingest_cursor')==cursor
  assert s.describe('8.8.4.4')['evidence']==before

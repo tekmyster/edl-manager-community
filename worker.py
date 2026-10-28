@@ -78,19 +78,6 @@ def collect(s,cfg,include_palo=True,palo_only=False):
  enabled={k:v for k,v in cfg['source_agents'].items() if v}
  cutoff=(dt.datetime.now(UTC)-dt.timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ');after=None;processed=0
  started=dt.datetime.now(UTC);cursor=s.state('native_ingest_cursor') or {}
- incremental=cfg.get('incremental_ingest',False) and not palo_only
- full=not incremental or cursor.get('reconciled','')<(started-dt.timedelta(hours=24)).isoformat(timespec='seconds')
- source_scope=[{'bool':{'filter':[{'term':{'data.edl_source':source}}]+([] if agent=='*' else [{'term':{'agent.name':agent}}])}} for source,agent in enabled.items()]
- native_filters=[{'bool':{'should':source_scope or [{'match_none':{}}],'minimum_should_match':1}},{'terms':{'rule.id':['119900','119902']}},{'terms':{'data.edl_source':list(enabled)}},{'range':{'data.edl_seen_utc':{'gte':cutoff,'lte':started.strftime('%Y-%m-%dT%H:%M:%SZ')}}}]
- if incremental:
-  fence={'lte':started.isoformat(timespec='seconds')}
-  if not full:
-   try:
-    previous=dt.datetime.fromisoformat(cursor['through'])
-    if previous.tzinfo is None or previous>started:raise ValueError('Invalid ingestion cursor')
-    fence['gte']=(previous-dt.timedelta(minutes=10)).isoformat(timespec='seconds')
-   except (ValueError,KeyError,TypeError):full=True
-  native_filters.append({'range':{'timestamp':fence}})
  sess=requests.Session();sess.auth=(cfg['index_user'],cfg['index_password']);sess.verify=cfg['index_ca']
  from requests.adapters import HTTPAdapter
  context=ssl.create_default_context(cafile=cfg['index_ca'] if isinstance(cfg['index_ca'],str) else None);context.verify_flags &= ~ssl.VERIFY_X509_STRICT
@@ -99,50 +86,9 @@ def collect(s,cfg,include_palo=True,palo_only=False):
   def build_connection_pool_key_attributes(self,request,verify,cert=None):
    host,kw=super().build_connection_pool_key_attributes(request,verify,cert);kw['ssl_context']=context;return host,kw
  sess.mount(cfg['index_url'],IndexTLS())
- while not palo_only:
-  comp={'size':500,'sources':[{'ip':{'terms':{'field':'data.srcip'}}},{'source':{'terms':{'field':'data.edl_source'}}},{'detector':{'terms':{'field':'data.edl_detector'}}}]}
-  if after:comp['after']=after
-  # Older indexes may lack this keyword mapping; retain native UTC string order
-  # and the same cross-index scope rather than skipping indexes or event times.
-  q={'size':0,'query':{'bool':{'filter':native_filters}},'aggs':{'items':{'composite':comp,'aggs':{'last':{'top_hits':{'size':1,'sort':[{'data.edl_seen_utc':{'order':'desc','unmapped_type':'keyword'}},{'timestamp':'desc'}],'_source':['data','timestamp','agent']}}}}}}
-  if getattr(s,'_worker_connection',None) is not None:s._worker_last_direct_commit='native_page_before_fetch';s._worker_connection.commit()
-  r=sess.post(cfg['index_url']+'/wazuh-alerts-*/_search',json=q,timeout=90);r.raise_for_status();v=r.json()
-  if v.get('timed_out') or v.get('_shards',{}).get('failed'):raise RuntimeError('Incomplete index query; prior evidence retained')
-  a=v['aggregations']['items']
-  for b in a['buckets']:
-   k=b['key'];d=b['last']['hits']['hits'][0]['_source']['data'];family,points=strength(k['source'],k['detector'])
-   agent=b['last']['hits']['hits'][0]['_source'].get('agent',{}).get('name','')
-   if enabled.get(k['source']) not in ('*',agent):continue
-   ingest_source(s,k,d,b['last']['hits']['hits'][0]['_source']['timestamp'],b['doc_count'],cfg)
-   processed+=1
-  after=a.get('after_key')
-  if not after or not a['buckets']:break
-  if processed>50000:raise RuntimeError('Ingest volume guard')
- # Palo observations retain native timestamps and never renew non-Palo attack evidence.
- after=None
- while not palo_only and enabled.get('wazuh'):
-  comp={'size':500,'sources':[{'ip':{'terms':{'field':'data.srcip'}}},{'rule':{'terms':{'field':'rule.id'}}}]}
-  if after:comp['after']=after
-  q={'size':0,'query':{'bool':{'filter':([] if enabled.get('wazuh')=='*' else [{'term':{'agent.name':enabled['wazuh']}}])+[{'range':{'timestamp':{'gte':'now-30d'}}},{'range':{'rule.level':{'gte':8}}},{'exists':{'field':'data.srcip'}}],'must_not':[{'terms':{'rule.id':['119900','119902']}},{'terms':{'location':[cfg['palo_location']] if cfg.get('palo_location') else []}}]}},'aggs':{'items':{'composite':comp,'aggs':{'last':{'top_hits':{'size':1,'sort':[{'timestamp':'desc'}],'_source':['timestamp','rule']}}}}}}
-  if getattr(s,'_worker_connection',None) is not None:s._worker_last_direct_commit='wazuh_page_before_fetch';s._worker_connection.commit()
-  r=sess.post(cfg['index_url']+'/wazuh-alerts-*/_search',json=q,timeout=60);r.raise_for_status();v=r.json()
-  if v.get('timed_out') or v.get('_shards',{}).get('failed'):raise RuntimeError('Incomplete general Wazuh query')
-  a=v['aggregations']['items']
-  for b in a['buckets']:
-   d=b['last']['hits']['hits'][0]['_source'];rule=d['rule'];desc=rule.get('description','').lower();groups=rule.get('groups',[])
-   auth=any(t in desc for t in ['brute force','authentication failed','login failed','invalid user']) or any('authentication_fail' in g for g in groups)
-   attack=any(t in desc for t in ['exploit','malware','sql injection','command injection','web attack','attack detected'])
-   ids=any(g in ['ids','suricata'] for g in groups) and int(rule.get('level',0))>=12
-   if any(t in desc for t in ['success','404','not found','400 error','edl','flow event']):continue
-   if not (attack or ids or (auth and b['doc_count']>=5)):continue
-   try:s.evidence(b['key']['ip'],'wazuh','rule:'+str(rule['id']),d['timestamp'],'authentication' if auth else 'exploit',55 if auth else 75,details={'description':rule.get('description'),'records':b['doc_count'],'native_pipeline':'wazuh-qualified-alert-v1','native_qualifying':True,'native_record_id':b['last']['hits']['hits'][0].get('_id',''),'native_rule':{'id':rule['id'],'level':int(rule.get('level',0)),'groups':groups}})
-   except ValueError:continue
-  after=a.get('after_key')
-  if not after or not a['buckets']:break
- # Advance only after all native and general Wazuh pages succeed. An overlap
- # handles index visibility delays; daily full reconciliation recovers older arrivals.
- # Native timestamps still control evidence expiry, never this ingestion cursor.
- if incremental:s.state('native_ingest_cursor',{'through':started.isoformat(timespec='seconds'),'reconciled':started.isoformat(timespec='seconds') if full else cursor['reconciled'],'mode':'full' if full else 'incremental','overlap_seconds':600})
+ if not palo_only:
+  from native_ingestion import collect_partitioned
+  processed=collect_partitioned(s,cfg,sess,enabled,ingest_source,started,cursor)
  if not include_palo or not cfg['palo_location']:return processed
  if (s.state('palo_status') or {}).get('expires','')>now():return processed
  try:
@@ -356,7 +302,8 @@ def main():
     phase='source_types';refresh(s);phase='build';build_started=time.monotonic();m=s.build(cfg['output'],defer_if_busy=True);build_finished=time.monotonic()
     if m is None:logging.warning('Publication deferred: ingestion committed; another publisher is active. Retrying next cycle.')
     phase='success_status'
-    s.state('ingest_status',{'status':'ok' if m else 'publication_pending','started':started,'completed':now(),'evidence_buckets':count,'ingestion_committed':True,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'maintenance':maintenance,'pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
+    coverage=s.state('native_ingest_coverage') or {'status':'complete'}
+    s.state('ingest_status',{'status':('partial' if coverage['status']=='partial' else 'ok') if m else 'publication_pending','coverage':coverage,'started':started,'completed':now(),'evidence_buckets':count,'ingestion_committed':True,'publication':'published' if m else 'pending','generation':m['created'] if m else None,'maintenance':maintenance,'pipeline_timing':pipeline_timing(s,build_started,build_finished,m)})
     return
    s.state('worker_status',{'status':'running','phase':'collecting evidence','started':started,'mode':'production','maintenance':maintenance})
    phase='collect'

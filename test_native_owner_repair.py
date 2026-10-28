@@ -74,7 +74,7 @@ def test_actual_main_collect_100_boundary_rollback_and_ordinary_replay(w,tmp_pat
  saved=state(s,'ingest_status');assert saved['status']=='error' and 'evidence_buckets' not in saved and 'private fixture' not in json.dumps(saved)
  assert state(s,'native_ingest_cursor') is None
  monkeypatch.setattr(w,'ingest_source',original);w.main()
- assert count(s,'evidence')==105 and state(s,'native_ingest_cursor')['mode']=='full' and state(s,'ingest_status')['status']=='ok'
+ assert count(s,'evidence')==105 and state(s,'native_ingest_cursor')['mode']=='bounded_daily_partitions' and state(s,'ingest_status')['status']=='partial'
 
 @pytest.mark.parametrize('after',[False,True])
 @pytest.mark.parametrize('activity',[False,True])
@@ -90,7 +90,9 @@ def test_actual_collect_cursor_commit_and_source_activity_only(w,tmp_path,monkey
  monkeypatch.setattr(s,'state',save)
  with pytest.raises(TypeError) as caught:w.main()
  assert caught.value is primary
- assert count(s,'source_activity' if activity else 'evidence')==(12 if after else 0)
+ # Lane data/checkpoint already committed before the compatibility cursor mirror.
+ assert count(s,'source_activity' if activity else 'evidence')==12
+ assert state(s,'ingest_partition_native_live')['through']
  assert bool(state(s,'native_ingest_cursor'))==after
  assert 'evidence_buckets' not in state(s,'ingest_status')
  monkeypatch.setattr(s,'state',original);w.main()
@@ -108,6 +110,8 @@ def test_actual_two_page_source_only_commit_before_next_fetch_and_replay(w,tmp_p
    if not second:items['after_key']={'page':'second'}
    return types.SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'aggregations':{'items':items}})
  monkeypatch.setattr(w.requests,'Session',Session)
+ w.main() # one bounded page, checkpointed before the next timer pass
+ assert state(s,'ingest_partition_native_live')['pending']['after']=={'page':'second'}
  with pytest.raises(TimeoutError):w.main()
  assert count(s,'source_activity')==4 and count(s,'evidence')==0 and state(s,'native_ingest_cursor') is None
  assert state(s,'ingest_status')['last_direct_commit_boundary']=='native_page_before_fetch' and 'ingestion_committed' not in state(s,'ingest_status')
@@ -179,7 +183,7 @@ def test_actual_collect_evidence_100_direct_commit_BUSY_and_replay(w,tmp_path,mo
  assert 'status=deferred' in caplog.text and 'last_direct_commit=evidence_100' in caplog.text and 'pending_transaction=rolled_back' in caplog.text
  assert count(s,'evidence')==0 and state(s,'native_ingest_cursor') is None
  monkeypatch.setattr(sqlite3,'connect',original);w.main()
- assert count(s,'evidence')==105 and state(s,'ingest_status')['status']=='ok'
+ assert count(s,'evidence')==105 and state(s,'ingest_status')['status']=='partial'
 
 @pytest.mark.parametrize('code',[5,517,262,8,None,True])
 def test_owner_only_real_numeric_contention_defers_and_secondary_preserves_primary(w,tmp_path,monkeypatch,code):

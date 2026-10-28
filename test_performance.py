@@ -33,32 +33,31 @@ def test_dashboard_snapshot_changes_with_generation_and_never_drives_build(tmp_p
 
 @pytest.mark.skipif(os.name=='nt',reason='Production worker uses Linux dependencies')
 def test_incremental_native_ingest_overlap_reconcile_and_failure_retry(tmp_path,monkeypatch):
- import ssl,worker,requests
+ import ssl,worker,requests,re
  from types import SimpleNamespace
  from core import Store
  s=Store(tmp_path/'db');calls=[];fail=[False];original=worker.requests.Session
+ at=dt.datetime.now(dt.timezone.utc);seed={'through':(at-dt.timedelta(days=4)).isoformat(),'reconciled':'2000-01-01T00:00:00+00:00'};s.state('native_ingest_cursor',seed)
+ s.state('source_configuration',{'index_url':'https://index.example.test:9200','sources':{'waf':'*'},'palo_location':''})
  class FakeSession(original):
-  def post(self,url,json,timeout):
-   calls.append(json)
+  def post(self,url,json,timeout,**kwargs):
+   calls.append((url,json));assert re.search(r'wazuh-alerts-\*\d{4}\.\d{2}\.\d{2}/',url)
+   assert json['timeout']=='8s' and timeout==(3,8) and kwargs['stream']
+   fence=next(f['range']['timestamp'] for f in json['query']['bool']['filter'] if 'timestamp' in f.get('range',{}))
+   assert dt.datetime.fromisoformat(fence['lte'])-dt.datetime.fromisoformat(fence['gte'])<=dt.timedelta(days=1)
    if fail[0]:raise requests.ConnectionError('index unavailable')
    return SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'aggregations':{'items':{'buckets':[]}}})
  monkeypatch.setattr(worker.requests,'Session',FakeSession)
  cfg={'incremental_ingest':True,'index_url':'https://index.example.test:9200','index_user':'reader','index_password':'test','index_ca':ssl.get_default_verify_paths().cafile}
  worker.collect(s,cfg,include_palo=False)
- first=s.state('native_ingest_cursor');assert first['mode']=='full'
- assert 'gte' not in calls[0]['query']['bool']['filter'][-1]['range']['timestamp']
- calls.clear();worker.collect(s,cfg,include_palo=False)
- assert s.state('native_ingest_cursor')['mode']=='incremental'
- fence=calls[0]['query']['bool']['filter'][-1]['range']['timestamp']
- assert dt.datetime.fromisoformat(fence['gte'])==dt.datetime.fromisoformat(first['through'])-dt.timedelta(minutes=10)
- prior=s.state('native_ingest_cursor');fail[0]=True
- with pytest.raises(requests.ConnectionError):worker.collect(s,cfg,include_palo=False)
- assert s.state('native_ingest_cursor')==prior
- fail[0]=False;calls.clear()
- s.state('native_ingest_cursor',{**prior,'reconciled':(dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=2)).isoformat()})
- worker.collect(s,cfg,include_palo=False)
- assert s.state('native_ingest_cursor')['mode']=='full'
- assert 'gte' not in calls[0]['query']['bool']['filter'][-1]['range']['timestamp']
+ first=s.state('native_ingest_cursor');assert first['mode']=='bounded_daily_partitions' and first['reconciled']==seed['reconciled']
+ assert dt.datetime.fromisoformat(first['through'])<at
+ prior=first;fail[0]=True;worker.collect(s,cfg,include_palo=False)
+ assert s.state('native_ingest_cursor')==prior and s.state('native_ingest_coverage')['status']=='partial'
+ fail[0]=False
+ for _ in range(32):worker.collect(s,cfg,include_palo=False)
+ assert s.state('native_ingest_cursor')['reconciled']!=seed['reconciled']
+ assert len({url.split('/_search')[0] for url,_ in calls})>=30
 
 def test_transport_rejects_partial_corrupt_private_and_stale_generations():
  import copy
