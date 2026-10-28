@@ -13,7 +13,7 @@ def parse(value):
     if value.tzinfo is None:raise PartitionUnavailable('Ingestion checkpoint requires timezone')
     return value.astimezone(UTC)
 
-def page(store,session,cfg,name,filters,aggregation,apply,started,seed,*,history=False):
+def page(store,session,cfg,name,filters,aggregation,apply,started,seed,*,history=False,rolling_window=None):
     key='ingest_partition_'+name;state=store.state(key) or {};cutoff=started-dt.timedelta(days=30)
     scope=hashlib.sha256(json.dumps([cfg['index_url'],filters,name],sort_keys=True).encode()).hexdigest()
     if state.get('scope') not in (None,scope):
@@ -26,13 +26,20 @@ def page(store,session,cfg,name,filters,aggregation,apply,started,seed,*,history
     if history and not state.get('pending') and state.get('completed') and parse(state['completed'])>=started-dt.timedelta(hours=24):return 0
     pending=state.get('pending')
     if not pending:
-        if history or name.startswith('general'):lower=cutoff;ceiling=started
+        if rolling_window is not None:
+            # This independent reconciliation lane deliberately revisits a
+            # completed root-alert day. Index visibility can lag the alert's
+            # timestamp by hours or days; that timestamp is not arrival time.
+            lower=parse(rolling_window[0]);ceiling=started
+            if not cutoff.replace(hour=0,minute=0,second=0,microsecond=0)<=lower<=started:raise PartitionUnavailable('Rolling source window outside retention')
+        elif history or name.startswith('general'):lower=cutoff;ceiling=started
         else:
             through=parse(state.get('through') or seed or cutoff.isoformat())
             if through>started:raise PartitionUnavailable('Future ingestion checkpoint retained')
             lower=max(cutoff,through-(dt.timedelta(minutes=10) if through.time()!=dt.time() else dt.timedelta()))
             ceiling=started
         upper=ceiling if name.startswith('general') else min(ceiling,lower.replace(hour=0,minute=0,second=0,microsecond=0)+dt.timedelta(days=1))
+        if rolling_window is not None:upper=min(upper,parse(rolling_window[1]))
         pending={'lower':lower.isoformat(),'upper':upper.isoformat(),'ceiling':ceiling.isoformat(),'cutoff':cutoff.isoformat(),'after':None,'page_size':state.get('page_size',500)}
     lower=parse(pending['lower']);upper=parse(pending['upper']);ceiling=parse(pending['ceiling'])
     if not lower<=upper<=ceiling<=started:raise PartitionUnavailable('Invalid bounded ingestion window retained')
@@ -110,6 +117,7 @@ def page(store,session,cfg,name,filters,aggregation,apply,started,seed,*,history
             if not result.get('source_debt'):result['completed']=ceiling.isoformat()
     elif pending is None:result['through']=upper.isoformat()
     if result.get('source_debt'):result['status']='partial'
+    if rolling_window is not None and pending is None:result['rolling_cycle_completed_at']=started.isoformat()
     # Evidence calls can already have committed a bounded unit. A crash before
     # this state write repeats that page; Store's native evidence keys dedupe it.
     store.state(key,result)
@@ -139,6 +147,29 @@ def collect_partitioned(store,cfg,session,enabled,ingest,started,seed):
             try:store.evidence(bucket['key']['ip'],'wazuh','rule:'+str(rule['id']),row['timestamp'],'authentication' if auth else 'exploit',55 if auth else 75,details={'description':rule.get('description'),'records':bucket['doc_count'],'native_pipeline':'wazuh-qualified-alert-v1','native_qualifying':True,'native_record_id':hit.get('_id',''),'native_rule':{'id':rule['id'],'level':int(rule.get('level',0)),'groups':groups}})
             except ValueError:return
         tasks.append(('general_live',general_filters,general_agg,general,False))
+    # At most one extra source-fair reconciliation page per invocation.
+    # Three recent days receive three of every four turns; the fourth walks
+    # all 31 retention-day partitions. Original live/history fences stay intact.
+    # A finished page is rescanned on a later turn, so delayed index visibility
+    # does not require an operator cursor reset or fabricated arrival field.
+    schedule=copy.deepcopy(store.state('native_rolling_schedule') or {})
+    turn=int(schedule.get('turn',0));retained=turn%4==3
+    days=31 if retained else 3;slots=[];floor=started.replace(hour=0,minute=0,second=0,microsecond=0)
+    attempts=schedule.get('retained_attempts' if retained else 'recent_attempts',{})
+    for delta in range(days):
+        day=floor-dt.timedelta(days=delta)
+        for source in sorted(enabled):
+            slot=source+'_'+day.strftime('%Y%m%d');slots.append((attempts.get(slot,''),slot,source,day))
+    _,slot,source,day=min(slots)
+    own_filters=copy.deepcopy(filters)+[{'term':{'data.edl_source':source}}]
+    rolling_name='native_rolling_'+slot
+    tasks.append((rolling_name,own_filters,aggregation,native,False))
+    window=(day.isoformat(),(day+dt.timedelta(days=1)).isoformat())
+    # This scheduling cache may expire old names; their actual cursor/debt
+    # objects remain addressable in Store and are never deleted here.
+    attempts={key:value for key,value in attempts.items() if key in {s[1] for s in slots}}
+    attempts[slot]=started.isoformat();schedule['retained_attempts' if retained else 'recent_attempts']=attempts;schedule['turn']=turn+1
+    store.state('native_rolling_schedule',schedule)
     # Seed every lane from the original shared cursor BEFORE any lane advances.
     # Otherwise an unavailable general source could inherit newer native state
     # on the next pass and silently skip its own older interval.
@@ -146,11 +177,25 @@ def collect_partitioned(store,cfg,session,enabled,ingest,started,seed):
         if store.state('ingest_partition_'+name) is None:store.state('ingest_partition_'+name,{'through':seed.get('through'),'status':'partial'})
     processed=0;errors={}
     for name,terms,agg,apply,history in tasks:
-        try:processed+=page(store,session,cfg,name,terms,agg,apply,started,seed.get('through'),history=history)
+        checkpoint=store.state('ingest_partition_'+name) or {}
+        retry=checkpoint.get('retry_after')
+        if retry and parse(retry)>started:
+            errors[name]=checkpoint.get('last_error','PartitionUnavailable');continue
+        if name==rolling_name and not checkpoint.get('pending') and checkpoint.get('rolling_cycle_completed_at'):
+            completed=parse(checkpoint['rolling_cycle_completed_at'])
+            if completed>started-dt.timedelta(minutes=15 if not retained else 360):continue
+        try:
+            processed+=page(store,session,cfg,name,terms,agg,apply,started,seed.get('through'),history=history,rolling_window=window if name==rolling_name else None)
+            checkpoint=store.state('ingest_partition_'+name) or {}
+            if checkpoint.get('consecutive_failures') or checkpoint.get('retry_after'):
+                store.state('ingest_partition_'+name,{**checkpoint,'consecutive_failures':0,'retry_after':None})
         except (requests.RequestException,PartitionUnavailable) as exc:
             # Preserve the lane checkpoint; publish other already committed
             # sources. Errors remain visible and never masquerade as coverage.
             errors[name]=type(exc).__name__
+            checkpoint=store.state('ingest_partition_'+name) or {};failures=int(checkpoint.get('consecutive_failures',0))+1
+            delay=min(3600,60*(2**min(failures-1,6))) if name.startswith('general') or name==rolling_name or failures>=3 else 0
+            store.state('ingest_partition_'+name,{**checkpoint,'consecutive_failures':failures,'last_error':type(exc).__name__,'retry_after':(started+dt.timedelta(seconds=delay)).isoformat() if delay else None})
             if isinstance(exc,requests.Timeout) or getattr(exc,'shrink',False):
                 checkpoint=store.state('ingest_partition_'+name) or {};pending=checkpoint.get('pending')
                 if pending:
@@ -158,5 +203,5 @@ def collect_partitioned(store,cfg,session,enabled,ingest,started,seed):
     live=store.state('ingest_partition_native_live') or {};history=store.state('ingest_partition_native_history') or {}
     if live.get('through') and live.get('last_page_at'):
         store.state('native_ingest_cursor',{**seed,'through':live['through'],'reconciled':history.get('completed',seed.get('reconciled','')),'mode':'bounded_daily_partitions','scope':live['scope'],'overlap_seconds':600})
-    store.state('native_ingest_coverage',{'status':'partial' if errors or any((store.state('ingest_partition_'+name) or {}).get('status')!='complete' for name,*_ in tasks) else 'complete','errors':errors,'lanes':[name for name,*_ in tasks],'index_scope':'Native: one UTC daily partition/page; general: fixed <=31 daily partitions/page preserving aggregate qualification; other index layouts not certified','historical_source_completeness':'not_established_by_index_cursor'})
+    store.state('native_ingest_coverage',{'status':'partial','errors':errors,'lanes':[name for name,*_ in tasks],'index_scope':'Native: one UTC daily partition/page; general: fixed <=31 daily partitions/page preserving aggregate qualification; other index layouts not certified','historical_source_completeness':'not_established_by_index_cursor','rolling_reconciliation':'One source/day per turn; recent3days plus recurring31day retention sweep. Completed query windows do not certify future index visibility or source completeness.','maximum_pages_per_invocation':4})
     return processed

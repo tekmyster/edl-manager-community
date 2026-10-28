@@ -21,7 +21,12 @@ def setup_worker(tmp_path, monkeypatch):
 
 def test_unmapped_index_keeps_native_order_scope_counters_and_reconciliation(tmp_path,monkeypatch):
  worker,s,cfg=setup_worker(tmp_path,monkeypatch)
- at=dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+ real_datetime=dt.datetime
+ at=(real_datetime.now(dt.timezone.utc)-dt.timedelta(days=1)).replace(hour=12,minute=0,second=0,microsecond=0)
+ class FrozenClock(real_datetime):
+  @classmethod
+  def now(cls,tz=None):return at if tz else at.replace(tzinfo=None)
+ monkeypatch.setattr(worker.dt,'datetime',FrozenClock)
  s.state('native_ingest_cursor',{'through':(at-dt.timedelta(minutes=2)).isoformat(),'reconciled':'2000-01-01T00:00:00+00:00'})
  seen=(at-dt.timedelta(hours=3)).isoformat()
  indexed=(at-dt.timedelta(minutes=1)).isoformat()
@@ -60,7 +65,12 @@ def test_unmapped_index_keeps_native_order_scope_counters_and_reconciliation(tmp
  assert s.state('native_ingest_cursor')['mode']=='bounded_daily_partitions'
  assert s.describe('8.8.4.4')['evidence']==row['evidence']
  assert s.describe('8.8.4.4')['honeypot_native_events']==3
- assert not s.describe('1.1.1.1')['evidence']
+ # The new independent recent-day scan should recover the late alert now,
+ # while the original historical completion receipt remains untouched.
+ early=s.describe('1.1.1.1')
+ assert {r['seen'] for r in early['evidence']}=={(at-dt.timedelta(days=2)).isoformat()}
+ assert early['honeypot_native_events']==3
+ assert s.state('native_ingest_cursor')['reconciled']=='2000-01-01T00:00:00+00:00'
  with s.connect() as db:assert db.execute('SELECT count(*) FROM block_retention').fetchone()[0]==0
  for _ in range(31):worker.collect(s,cfg,include_palo=False)
  assert s.state('native_ingest_cursor')['reconciled']!='2000-01-01T00:00:00+00:00'

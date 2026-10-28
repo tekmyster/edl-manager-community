@@ -78,7 +78,8 @@ def test_pagination_checkpoint_is_fixed_and_scope_change_preserves_prior_domain(
     s=Store(tmp_path/'native');started=(dt.datetime.now(UTC)-dt.timedelta(days=1)).replace(hour=12,minute=0,second=0,microsecond=0);seed={'through':(started-dt.timedelta(hours=1)).isoformat()};cfg=config();session=Session(started,[bucket(started.isoformat())]);session.after=True
     collect_partitioned(s,cfg,session,cfg['source_agents'],ingest_source,started,seed);before=s.state('ingest_partition_native_live');assert before['pending']['after']=={'ip':'next'}
     session.after=False;collect_partitioned(s,cfg,session,cfg['source_agents'],ingest_source,started,seed)
-    assert session.calls[2][1]['aggs']['items']['composite']['after']=={'ip':'next'}
+    queries=[query for _,query,_ in session.calls if next(f['range']['timestamp'] for f in query['query']['bool']['filter'] if 'timestamp' in f.get('range',{}))=={'gte':before['pending']['lower'],'lte':before['pending']['upper']}]
+    assert queries[-1]['aggs']['items']['composite']['after']=={'ip':'next'}
     done=s.state('ingest_partition_native_live');changed={**cfg,'source_agents':{'waf':'other-agent'}}
     collect_partitioned(s,changed,session,changed['source_agents'],ingest_source,started,seed)
     assert s.state('ingest_partition_native_live_scope_'+done['scope'])==done
@@ -100,7 +101,7 @@ def test_timeout_retries_a_smaller_page_at_same_fence_without_skipping(tmp_path)
     s=Store(tmp_path/'native');started=(dt.datetime.now(UTC)-dt.timedelta(days=1)).replace(hour=12,minute=0,second=0,microsecond=0);seed={'through':(started-dt.timedelta(hours=1)).isoformat()};cfg=config();session=Session(started,[bucket(started.isoformat())]);session.fail_all=True
     collect_partitioned(s,cfg,session,cfg['source_agents'],ingest_source,started,seed);pending=s.state('ingest_partition_native_live')['pending'];assert pending['page_size']==250
     session.fail_all=False;collect_partitioned(s,cfg,session,cfg['source_agents'],ingest_source,started,seed)
-    query=session.calls[2][1];assert query['aggs']['items']['composite']['size']==250
+    query=next(query for _,query,_ in reversed(session.calls) if next(f['range']['timestamp'] for f in query['query']['bool']['filter'] if 'timestamp' in f.get('range',{}))=={'gte':pending['lower'],'lte':pending['upper']});assert query['aggs']['items']['composite']['size']==250
     assert next(f['range']['timestamp'] for f in query['query']['bool']['filter'] if 'timestamp' in f.get('range',{}))=={'gte':pending['lower'],'lte':pending['upper']}
     with s.connect() as db:assert db.execute('SELECT count(*) FROM evidence').fetchone()[0]==1
 
