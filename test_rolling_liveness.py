@@ -41,7 +41,8 @@ def test_alert_timestamp_can_be_indexed_hours_late_after_completed_recent_scan(t
  pending=copy.deepcopy(s.state('ingest_partition_native_live')['pending']);assert not s.describe('8.8.4.4')['evidence']
  completed=s.state('ingest_partition_native_rolling_waf_20261027');assert completed['rolling_cycle_completed_at'] and completed['pending'] is None
  session.visible=True;later=started+dt.timedelta(hours=26)
- for i in range(8):collect_partitioned(s,cfg,session,cfg['source_agents'],ingest_source,later+dt.timedelta(minutes=i),seed)
+ # Three backfill slots now rotate across four old lanes; allow a full fair cycle.
+ for i in range(12):collect_partitioned(s,cfg,session,cfg['source_agents'],ingest_source,later+dt.timedelta(minutes=i),seed)
  row=s.describe('8.8.4.4');assert row['score']==50 and not row['auto_candidate'] and len(row['evidence'])==1
  assert row['evidence'][0]['seen']=='2026-10-27T06:26:44+00:00'
  held=s.state('ingest_partition_native_live')['pending'];assert held['lower']==pending['lower'] and held['upper']==pending['upper'] and held['after']==pending['after']

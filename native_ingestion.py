@@ -1,7 +1,7 @@
 """Bounded daily source ingestion with independently durable coverage lanes.
 
-Native event time still controls eligibility. These cursors describe indexed
-arrival coverage, not historical source completeness or incident truth.
+Native event time still controls eligibility. These cursors describe alert timestamp query
+coverage, not historical source completeness or incident truth.
 """
 import copy,datetime as dt,hashlib,json,time,requests
 UTC=dt.timezone.utc
@@ -12,6 +12,88 @@ def parse(value):
     value=dt.datetime.fromisoformat(value.replace('Z','+00:00'))
     if value.tzinfo is None:raise PartitionUnavailable('Ingestion checkpoint requires timezone')
     return value.astimezone(UTC)
+
+def head_page(store,session,cfg,filters,apply,started):
+    """Sample newest alert timestamps afresh, independently of backfill cursors.
+
+    This is a bounded 24h observation, never an arrival watermark or exhaustive
+    coverage claim. Saturation/timestamp ties and later visibility remain the
+    responsibility of the retained daily reconciliation lanes. No head pending
+    fence, search_after or failure backoff can prevent the next fresh request.
+    """
+    key='native_head_observation';prior=store.state(key) or {}
+    scope=hashlib.sha256(json.dumps([cfg['index_url'],filters,'head-v1'],sort_keys=True).encode()).hexdigest()
+    if prior.get('scope')!=scope:prior={}
+    size=prior.get('next_page_size',500)
+    if type(size) is not int or not 1<=size<=500:raise PartitionUnavailable('Invalid head admission retained')
+    lower=started-dt.timedelta(hours=24);cutoff=started-dt.timedelta(days=30)
+    state={'scope':scope,'status':'partial','last_attempt_at':started.isoformat(),
+           'lower':lower.isoformat(),'upper':started.isoformat(),'page_size':size,
+           'last_success_at':prior.get('last_success_at'),'next_page_size':size,
+           'coverage':'Newest bounded alert timestamps only; not index-arrival or historical completeness'}
+    store.state(key,state)
+    query={'size':size,'timeout':'8s','sort':[{'timestamp':'desc'}],
+           '_source':['data','timestamp','agent','rule'],
+           'query':{'bool':{'filter':copy.deepcopy(filters)+[
+               {'range':{'timestamp':{'gte':lower.isoformat(),'lte':started.isoformat()}}},
+               {'range':{'data.edl_seen_utc':{'gte':cutoff.isoformat(),'lte':started.isoformat()}}},
+               {'terms':{'data.edl_qualifying':['yes','no']}}]}}}
+    # 24h spans at most two UTC alert partitions, including across midnight.
+    indices=['wazuh-alerts-*'+lower.strftime('%Y.%m.%d')]
+    if lower.date()!=started.date():indices.append('wazuh-alerts-*'+started.strftime('%Y.%m.%d'))
+    anchor=getattr(store,'_worker_connection',None)
+    if anchor is not None:store._worker_last_direct_commit='native_head_before_fetch';anchor.commit()
+    try:
+        deadline=time.monotonic()+15
+        response=session.post(cfg['index_url']+'/'+','.join(indices)+'/_search?ignore_unavailable=true&allow_no_indices=true&allow_partial_search_results=false',json=query,timeout=(3,8),stream=True)
+        value=bounded_response(response,deadline)
+        if value.get('timed_out') or value.get('_shards',{}).get('failed'):raise PartitionUnavailable('Incomplete head query',shrink=True)
+        if value.get('_shards',{}).get('total')==0:raise PartitionUnavailable('Head partitions unavailable')
+        try:
+            hits=value['hits']['hits']
+            if not isinstance(hits,list) or len(hits)>size:raise PartitionUnavailable('Head page admission exceeded',shrink=True)
+            buckets=[]
+            for hit in hits:
+                row=hit['_source'];data=row['data']
+                if any(not isinstance(data.get(field),str) for field in ('srcip','edl_source','edl_detector','edl_seen_utc')) or not isinstance(row.get('timestamp'),str):raise PartitionUnavailable('Invalid head document fields')
+                if data['edl_qualifying'] not in ('yes','no'):raise PartitionUnavailable('Invalid head qualification')
+                if not lower<=parse(row['timestamp'])<=started or not cutoff<=parse(data['edl_seen_utc'])<=started:raise PartitionUnavailable('Head event outside query window')
+                bucket={'key':{'ip':data['srcip'],'source':data['edl_source'],'detector':data['edl_detector']},'doc_count':1,'last':{'hits':{'hits':[hit]}}}
+                buckets.append(bucket)
+        except (KeyError,TypeError,ValueError) as exc:
+            if isinstance(exc,PartitionUnavailable):raise
+            raise PartitionUnavailable('Invalid head document response') from exc
+        # Apply individually: a No with the same IP/source/detector cannot hide
+        # an older Yes through top_hits grouping, or become scoring evidence.
+        for bucket in buckets:apply(bucket)
+        store.state(key,{**state,'last_success_at':started.isoformat(),'documents':len(hits),
+                         'saturated':len(hits)==size,'next_page_size':min(500,size*2)})
+        return len(hits)
+    except (requests.RequestException,PartitionUnavailable) as exc:
+        state={**state,'last_error':type(exc).__name__}
+        if isinstance(exc,requests.Timeout) or getattr(exc,'shrink',False):state['next_page_size']=max(1,size//2)
+        store.state(key,state)
+        raise
+
+
+def bounded_response(response,deadline):
+    try:
+        response.raise_for_status()
+        if hasattr(response,'iter_content'):
+            chunks=[];size=0
+            for chunk in response.iter_content(65536):
+                size+=len(chunk)
+                if size>8*1024**2 or time.monotonic()>deadline:raise PartitionUnavailable('Daily source response admission exhausted',shrink=True)
+                chunks.append(chunk)
+            try:value=json.loads(b''.join(chunks))
+            except json.JSONDecodeError as exc:raise PartitionUnavailable('Invalid daily source response') from exc
+        else:value=response.json() # isolated in-memory response fixtures
+        if time.monotonic()>deadline:raise PartitionUnavailable('Daily source response deadline exhausted',shrink=True)
+        if not isinstance(value,dict):raise PartitionUnavailable('Invalid daily source response')
+        return value
+    finally:
+        if callable(getattr(response,'close',None)):response.close()
+
 
 def page(store,session,cfg,name,filters,aggregation,apply,started,seed,*,history=False,rolling_window=None):
     key='ingest_partition_'+name;state=store.state(key) or {};cutoff=started-dt.timedelta(days=30)
@@ -67,19 +149,7 @@ def page(store,session,cfg,name,filters,aggregation,apply,started,seed,*,history
     if anchor is not None:store._worker_last_direct_commit='native_page_before_fetch' if name.startswith('native') else 'wazuh_page_before_fetch';anchor.commit()
     deadline=time.monotonic()+15
     response=session.post(cfg['index_url']+'/'+index+'/_search?ignore_unavailable=true&allow_no_indices=true&allow_partial_search_results=false',json=query,timeout=(3,8),stream=True)
-    try:
-        response.raise_for_status()
-        if hasattr(response,'iter_content'):
-            chunks=[];size=0
-            for chunk in response.iter_content(65536):
-                size+=len(chunk)
-                if size>8*1024**2 or time.monotonic()>deadline:raise PartitionUnavailable('Daily source response admission exhausted',shrink=True)
-                chunks.append(chunk)
-            try:value=json.loads(b''.join(chunks))
-            except json.JSONDecodeError as exc:raise PartitionUnavailable('Invalid daily source response') from exc
-        else:value=response.json() # isolated in-memory response fixtures
-    finally:
-        if callable(getattr(response,'close',None)):response.close()
+    value=bounded_response(response,deadline)
     if value.get('timed_out') or value.get('_shards',{}).get('failed'):raise PartitionUnavailable('Incomplete daily source query; partition retained',shrink=True)
     if value.get('_shards',{}).get('total')==0:
         # A successful empty search can mean an absent index/layout, not an
@@ -131,9 +201,17 @@ def collect_partitioned(store,cfg,session,enabled,ingest,started,seed):
     filters=[{'bool':{'should':source_scope or [{'match_none':{}}],'minimum_should_match':1}},{'terms':{'rule.id':['119900','119902']}},{'terms':{'data.edl_source':list(enabled)}}]
     comp={'size':500,'sources':[{'ip':{'terms':{'field':'data.srcip'}}},{'source':{'terms':{'field':'data.edl_source'}}},{'detector':{'terms':{'field':'data.edl_detector'}}}]}
     aggregation={'composite':comp,'aggs':{'last':{'top_hits':{'size':1,'sort':[{'data.edl_seen_utc':{'order':'desc','unmapped_type':'keyword'}},{'timestamp':'desc'}],'_source':['data','timestamp','agent']}}}}
+    aggregation['aggs']['qualified']={'filter':{'term':{'data.edl_qualifying':'yes'}},'aggs':{'last':copy.deepcopy(aggregation['aggs']['last'])}}
     def native(bucket):
-        key=bucket['key'];row=bucket['last']['hits']['hits'][0]['_source'];agent=row.get('agent',{}).get('name','')
-        if enabled.get(key['source']) in ('*',agent):ingest(store,key,row['data'],row['timestamp'],bucket['doc_count'],cfg)
+        key=bucket['key'];rows=[]
+        qualified=bucket.get('qualified')
+        if qualified and qualified.get('doc_count'):
+            rows.append((qualified['last']['hits']['hits'][0]['_source'],qualified['doc_count']))
+        latest=bucket['last']['hits']['hits'][0]['_source']
+        if not rows or latest['data'].get('edl_qualifying')=='no':rows.append((latest,bucket['doc_count']))
+        for row,records in rows:
+            agent=row.get('agent',{}).get('name','')
+            if enabled.get(key['source']) in ('*',agent):ingest(store,key,row['data'],row['timestamp'],records,cfg)
     tasks=[('native_live',filters,aggregation,native,False),('native_history',filters,aggregation,native,True)]
     if enabled.get('wazuh'):
         excluded=cfg.get('native_excluded_locations',[cfg['palo_location']] if cfg.get('palo_location') else [])
@@ -168,14 +246,31 @@ def collect_partitioned(store,cfg,session,enabled,ingest,started,seed):
     # This scheduling cache may expire old names; their actual cursor/debt
     # objects remain addressable in Store and are never deleted here.
     attempts={key:value for key,value in attempts.items() if key in {s[1] for s in slots}}
-    attempts[slot]=started.isoformat();schedule['retained_attempts' if retained else 'recent_attempts']=attempts;schedule['turn']=turn+1
-    store.state('native_rolling_schedule',schedule)
+    # Head always gets one slot. With four old lanes, rotate the omitted
+    # lane; every old lane gets three of four turns, without cursor mutation.
+    all_backfill_names=[name for name,*_ in tasks]
+    rotation=store.state('native_backfill_schedule') or {}
+    backfill_turn=int(rotation.get('turn',0))
+    if len(tasks)>3:
+        omitted=(len(tasks)-1-backfill_turn)%len(tasks)
+        tasks=[task for i,task in enumerate(tasks) if i!=omitted]
+    store.state('native_backfill_schedule',{'turn':(backfill_turn+1)%4})
+    if any(name==rolling_name for name,*_ in tasks):
+        attempts[slot]=started.isoformat();schedule['retained_attempts' if retained else 'recent_attempts']=attempts;schedule['turn']=turn+1
+        store.state('native_rolling_schedule',schedule)
     # Seed every lane from the original shared cursor BEFORE any lane advances.
     # Otherwise an unavailable general source could inherit newer native state
     # on the next pass and silently skip its own older interval.
     for name,*_ in tasks:
         if store.state('ingest_partition_'+name) is None:store.state('ingest_partition_'+name,{'through':seed.get('through'),'status':'partial'})
     processed=0;errors={}
+    selected_names={name for name,*_ in tasks}
+    for name in all_backfill_names:
+        if name not in selected_names:
+            checkpoint=store.state('ingest_partition_'+name) or {}
+            if checkpoint.get('consecutive_failures'):errors[name]=checkpoint.get('last_error','PartitionUnavailable')
+    try:processed+=head_page(store,session,cfg,filters,native,started)
+    except (requests.RequestException,PartitionUnavailable) as exc:errors['native_head']=type(exc).__name__
     for name,terms,agg,apply,history in tasks:
         checkpoint=store.state('ingest_partition_'+name) or {}
         retry=checkpoint.get('retry_after')
@@ -203,5 +298,5 @@ def collect_partitioned(store,cfg,session,enabled,ingest,started,seed):
     live=store.state('ingest_partition_native_live') or {};history=store.state('ingest_partition_native_history') or {}
     if live.get('through') and live.get('last_page_at'):
         store.state('native_ingest_cursor',{**seed,'through':live['through'],'reconciled':history.get('completed',seed.get('reconciled','')),'mode':'bounded_daily_partitions','scope':live['scope'],'overlap_seconds':600})
-    store.state('native_ingest_coverage',{'status':'partial','errors':errors,'lanes':[name for name,*_ in tasks],'index_scope':'Native: one UTC daily partition/page; general: fixed <=31 daily partitions/page preserving aggregate qualification; other index layouts not certified','historical_source_completeness':'not_established_by_index_cursor','rolling_reconciliation':'One source/day per turn; recent3days plus recurring31day retention sweep. Completed query windows do not certify future index visibility or source completeness.','maximum_pages_per_invocation':4})
+    store.state('native_ingest_coverage',{'status':'partial','errors':errors,'lanes':['native_head']+[name for name,*_ in tasks], 'head_observation':store.state('native_head_observation'), 'unselected_lanes':[name for name in all_backfill_names if name not in selected_names],'index_scope':'Head: newest <=500 documents in 24h across <=2 UTC days, not index-arrival coverage; retained native: one UTC daily partition/page; general: fixed <=31 daily partitions/page preserving aggregate qualification; other index layouts not certified','historical_source_completeness':'not_established_by_index_cursor','rolling_reconciliation':'At most one source/day page per invocation, fairly rotated with other backfill; recent3days plus recurring31day retention sweep. Completed query windows do not certify future index visibility or source completeness.','maximum_pages_per_invocation':4})
     return processed

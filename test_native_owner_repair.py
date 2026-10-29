@@ -104,6 +104,7 @@ def test_actual_two_page_source_only_commit_before_next_fetch_and_replay(w,tmp_p
  class Session:
   def mount(self,*a):pass
   def post(self,*a,**k):
+   if k['json'].get('size'):return types.SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'_shards':{'total':1,'failed':0},'hits':{'hits':[]}})
    second=bool(k['json']['aggs']['items']['composite'].get('after'))
    if second and fail[0]:raise TimeoutError('fixture next-page fetch failure')
    items={'buckets':buckets[4:] if second else buckets[:4]}

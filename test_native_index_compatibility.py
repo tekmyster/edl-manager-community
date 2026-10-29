@@ -37,6 +37,7 @@ def test_unmapped_index_keeps_native_order_scope_counters_and_reconciliation(tmp
  original=worker.requests.Session
  class MixedIndex(original):
   def post(self,url,json,timeout,**kwargs):
+   if json.get('size'):return SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'_shards':{'total':1,'failed':0},'hits':{'hits':[]}})
    calls.append(json)
    assert '/wazuh-alerts-*' in url and '/_search?' in url
    top=json['aggs']['items']['aggs']['last']['top_hits']
